@@ -47,82 +47,82 @@ services:
       - SYMBOL=ETH-USD-MATIC
       - WALLET_INDEX=1
 
-  # btc-usd-matic:
-  #   depends_on:
-  #     - blockchain-streamer
-  #   extends:
-  #     file: base.yml
-  #     service: base
-  #   environment:
-  #     - SYMBOL=BTC-USD-MATIC
-  #     - WALLET_INDEX=2
+  btc-usd-matic:
+    depends_on:
+      - blockchain-streamer
+    extends:
+      file: base.yml
+      service: base
+    environment:
+      - SYMBOL=BTC-USD-MATIC
+      - WALLET_INDEX=2
 
-  # matic-usd-matic:
-  #   depends_on:
-  #     - blockchain-streamer
-  #   extends:
-  #     file: base.yml
-  #     service: base
-  #   environment:
-  #     - SYMBOL=MATIC-USD-MATIC
-  #     - WALLET_INDEX=3
+  matic-usd-matic:
+    depends_on:
+      - blockchain-streamer
+    extends:
+      file: base.yml
+      service: base
+    environment:
+      - SYMBOL=MATIC-USD-MATIC
+      - WALLET_INDEX=3
 
-  # eth-usdc-usdc:
-  #   depends_on:
-  #     - blockchain-streamer
-  #   extends:
-  #     file: base.yml
-  #     service: base
-  #   environment:
-  #     - SYMBOL=ETH-USDC-USDC
-  #     - WALLET_INDEX=4
+  eth-usdc-usdc:
+    depends_on:
+      - blockchain-streamer
+    extends:
+      file: base.yml
+      service: base
+    environment:
+      - SYMBOL=ETH-USDC-USDC
+      - WALLET_INDEX=4
 
-  # matic-usdc-usdc:
-  #   depends_on:
-  #     - blockchain-streamer
-  #   extends:
-  #     file: base.yml
-  #     service: base
-  #   environment:
-  #     - SYMBOL=MATIC-USDC-USDC
-  #     - WALLET_INDEX=5
+  matic-usdc-usdc:
+    depends_on:
+      - blockchain-streamer
+    extends:
+      file: base.yml
+      service: base
+    environment:
+      - SYMBOL=MATIC-USDC-USDC
+      - WALLET_INDEX=5
 
-  # btc-usdc-usdc:
-  #   depends_on:
-  #     - blockchain-streamer
-  #   extends:
-  #     file: base.yml
-  #     service: base
-  #   environment:
-  #     - SYMBOL=BTC-USDC-USDC
-  #     - WALLET_INDEX=6
+  btc-usdc-usdc:
+    depends_on:
+      - blockchain-streamer
+    extends:
+      file: base.yml
+      service: base
+    environment:
+      - SYMBOL=BTC-USDC-USDC
+      - WALLET_INDEX=6
 
-  # chf-usdc-usdc:
-  #   depends_on:
-  #     - blockchain-streamer
-  #   extends:
-  #     file: base.yml
-  #     service: base
-  #   environment:
-  #     - SYMBOL=CHF-USDC-USDC
-  #     - WALLET_INDEX=7
+  chf-usdc-usdc:
+    depends_on:
+      - blockchain-streamer
+    extends:
+      file: base.yml
+      service: base
+    environment:
+      - SYMBOL=CHF-USDC-USDC
+      - WALLET_INDEX=7
 
-  # gbp-usdc-usdc:
-  #   depends_on:
-  #     - blockchain-streamer
-  #   extends:
-  #     file: base.yml
-  #     service: base
-  #   environment:
-  #     - SYMBOL=GBP-USDC-USDC
-  #     - WALLET_INDEX=8
+  gbp-usdc-usdc:
+    depends_on:
+      - blockchain-streamer
+    extends:
+      file: base.yml
+      service: base
+    environment:
+      - SYMBOL=GBP-USDC-USDC
+      - WALLET_INDEX=8
 
-  # xau-usdc-usdc:
-  #   depends_on:
-  #     - blockchain-streamer
-  #   extends:
-  #     file: base.yml
-  #     service: base
-  #   environment:
-  #     - SYMBOL=XAU-USDC-USDC
-  #     - WALLET_INDEX=9
+  xau-usdc-usdc:
+    depends_on:
+      - blockchain-streamer
+    extends:
+      file: base.yml
+      service: base
+    environment:
+      - SYMBOL=XAU-USDC-USDC
+      - WALLET_INDEX=9
