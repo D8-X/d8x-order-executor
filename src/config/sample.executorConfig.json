@@ -1,0 +1,24 @@
+[
+  {
+    "chainId": 1101,
+    "RPC": ["https://zkevm-rpc.com"],
+    "gasStation": "https://gasstation.polygon.technology/zkevm",
+    "maxGasPriceGWei": 0.1,
+    "executeIntervalSeconds": 60,
+    "refreshOrdersSeconds": 28800,
+    "maxExecutionBatchSize": 1,
+    "executeDelaySeconds": 5,
+    "priceFeedEndpoints": [{ "type": "pyth", "endpoints": ["https://hermes.pyth.network/api"] }]
+  },
+  {
+    "chainId": 1442,
+    "RPC": ["https://rpc.public.zkevm-test.net"],
+    "gasStation": "https://gasstation-testnet.polygon.technology/zkevm",
+    "maxGasPriceGWei": 0.1,
+    "executeIntervalSeconds": 60,
+    "refreshOrdersSeconds": 28800,
+    "maxExecutionBatchSize": 1,
+    "executeDelaySeconds": 5,
+    "priceFeedEndpoints": [{ "type": "pyth", "endpoints": ["https://hermes-beta.pyth.network/api"] }]
+  }
+]
