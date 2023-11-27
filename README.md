@@ -75,3 +75,125 @@ If you have already properly configured all the perpetuals you want to run in th
 ```
 $ sudo docker compose -f perpetuals.yml up --build
 ```
+
+## 4 - Monitoring & Maintenance
+
+## Monitoring via Docker
+
+### List services
+
+Open a command terminal and run
+
+`$ sudo docker ps`
+
+The output should look like this:
+
+```jsx
+m66260@bots-2:~$ sudo docker ps
+CONTAINER ID   IMAGE                                    COMMAND                  CREATED      STATUS             PORTS                                       NAMES
+70107b314975   d8x-order-referrer-btc-usd-matic         "docker-entrypoint.s…"   2 days ago   Up About an hour                                               d8x-order-referrer-btc-usd-matic-1
+fd5c32c01295   d8x-order-referrer-matic-usd-matic       "docker-entrypoint.s…"   2 days ago   Up About an hour                                               d8x-order-referrer-matic-usd-matic-1
+0105351965bb   d8x-order-referrer-chf-usdc-usdc         "docker-entrypoint.s…"   2 days ago   Up About an hour                                               d8x-order-referrer-chf-usdc-usdc-1
+d90fb46a981a   d8x-order-referrer-xau-usdc-usdc         "docker-entrypoint.s…"   2 days ago   Up About an hour                                               d8x-order-referrer-xau-usdc-usdc-1
+6e1bdb07657b   d8x-order-referrer-gbp-usdc-usdc         "docker-entrypoint.s…"   2 days ago   Up About an hour                                               d8x-order-referrer-gbp-usdc-usdc-1
+5e577996f0fc   d8x-order-referrer-eur-usdc-usdc         "docker-entrypoint.s…"   2 days ago   Up 35 hours                                                    d8x-order-referrer-eur-usdc-usdc-1
+7dd88d0ec0b8   d8x-order-referrer-matic-usdc-usdc       "docker-entrypoint.s…"   2 days ago   Up About an hour                                               d8x-order-referrer-matic-usdc-usdc-1
+93fb7abf9012   d8x-order-referrer-jpy-usdc-usdc         "docker-entrypoint.s…"   2 days ago   Up About an hour                                               d8x-order-referrer-jpy-usdc-usdc-1
+b72e9330d447   d8x-order-referrer-btc-usdc-usdc         "docker-entrypoint.s…"   2 days ago   Up About an hour                                               d8x-order-referrer-btc-usdc-usdc-1
+1762ebbebaff   d8x-order-referrer-eth-usdc-usdc         "docker-entrypoint.s…"   2 days ago   Up About an hour                                               d8x-order-referrer-eth-usdc-usdc-1
+f735b0a9f9e4   d8x-order-referrer-eth-usd-matic         "docker-entrypoint.s…"   2 days ago   Up About an hour                                               d8x-order-referrer-eth-usd-matic-1
+0a7afedf17d0   d8x-order-referrer-blockchain-streamer   "docker-entrypoint.s…"   2 days ago   Up 2 days                                                      d8x-order-referrer-blockchain-streamer-1
+752d8e5e8eb4   redis                                    "docker-entrypoint.s…"   2 days ago   Up 2 days          0.0.0.0:6379->6379/tcp, :::6379->6379/tcp   d8x-order-referrer-redis-1
+```
+
+**Container ID**
+
+Unique identifier for each service. You can use this to inspect in real-time the activity of each service.
+
+**Created and Status**
+
+- redis: this service should never stop running under normal circumstances. Expect to see a ‘status’ of several days or longer.
+- blockchain-streamer: this service listens to blockchain events and broker websocket messages. Expect to see a status of a few days.
+- all other services: these are the trading bots and they restart often due to e.g. RPCs failing, Pyth services not responding, insufficient wallet balance. Expect to see a status of a couple of hours or more.
+
+The most obvious sign of a malfunction is seeing any of the status fields showing a number much lower than what is expected according the above list. 
+
+Example: if a bot status does not last longer than a few minutes even after calling `docker ps` multiple times, this is a sign that it’s stuck performing an action that continues to fail.
+
+### Inspect individual services
+
+Individual services can be inspected in real-time by means of the docker command
+
+`sudo docker logs -f <CONTAINER_ID>`
+
+**Blockchain Streamer**
+
+Inspecting the blockchain streamer logs allows you to see:
+
+- On-chain events received by this server (orders created, cancelled, executed, failed, etc)
+- Periodic checks on the block-time (time elapsed between new blocks received)
+- Switching between Websocket and HTTP mode for event listening (e.g. when an RPC stops responding and/or block-time implied by the events is longer than the specified tolerance)
+- Current event-listening mode (WS or HTTP)
+
+**Bots**
+
+Inspecting individual bots you will see information logged at start-up time and ongoing activity:
+
+At startup:
+
+- Balances: bot-treasury and executor wallets
+- Configuration: perpetual Id, contract addresses, executor wallets, earnings wallet. For example:
+
+```jsx
+perpetualId: 200007,
+orderBook: '0x934b1c4D0f584F2B08d895424dd78B8113c61AeB',
+proxy: '0x0e23619704556945B1C7CB550Dee6D428f7d2E2B',
+earnings: '0x6FE871703EB23771c4016eB62140367944e8EdFc',
+servers: 1,
+serverIndex: 0,
+wallets: [
+'0x084FB09a56538714E7C77260f01722143aB41Cc1',
+'0x723dee1EA2e6973B2175feA96139E54B875a506E',
+'0xc237BA31dc5F30D74B00cc963d284259e24df738'
+]
+```
+
+- Orders posted, executed, failed, etc
+- Periodic refresh of the entire order book
+
+## Restarting
+
+**Pre-requisites:**
+
+- Check-out the main branch of the order-executor repository
+- Retrieve the config files from `/home/qShared/`: `.env` , `live.executorConfig.json`, and `live.listenerConfig.json`
+- Open a terminal and navigate to the root directory of the repo you checked out
+
+**Restarting without building:**
+
+If you believe the current configuration is correct and only want to restart the services without changing the specified parameters, you can stop and restart them as follows:
+
+```bash
+sudo docker compose -f perpetuals-testnet.yml down
+sudo docker compose -f perpetuals-testnet.yml up -d
+```
+
+**Rebuilding the services**
+
+Code changes or parameter changes require rebuilding the services before restarting.
+
+At the time of writing, there is a known issue with storage-leak in Docker subvolumes. This means in order to properly clear all the storage you must follow a few extra steps:
+
+```bash
+sudo docker rm -f $(sudo docker ps -aq)
+sudo docker rmi $(sudo docker images -aq)
+sudo systemctl stop docker
+sudo rm -rf /var/lib/docker
+sudo systemctl start docker
+```
+
+Now that all Docker services have been stopped and removed from storage, you may re-build them:
+
+```bash
+sudo docker compose -f perpetuals-testnet.yml up
+```
