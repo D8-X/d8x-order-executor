@@ -101,27 +101,40 @@ export default class Executor {
    * @param provider HTTP Provider
    */
   public async initialize() {
-    this.provider = new ethers.providers.StaticJsonRpcProvider(await this.rpcManager.getRPC());
+    this.provider = new ethers.providers.StaticJsonRpcProvider(
+      await this.rpcManager.getRPC()
+    );
     // infer config from provider
     const chainId = (await this.provider!.getNetwork()).chainId;
     const config = PerpetualDataHandler.readSDKConfig(chainId);
     // override default price feed endpoint (if an override is given)
-    if (this.config.priceFeedEndpoints && this.config.priceFeedEndpoints?.length > 0) {
+    if (
+      this.config.priceFeedEndpoints &&
+      this.config.priceFeedEndpoints?.length > 0
+    ) {
       config.priceFeedEndpoints = this.config.priceFeedEndpoints;
     }
 
     // MarketData (read only, no authentication needed)
     this.mktData = new MarketData(config);
-    this.orTool = this.privateKey.map((pk) => new OrderExecutorTool(config, pk));
+    this.orTool = this.privateKey.map(
+      (pk) => new OrderExecutorTool(config, pk)
+    );
 
     // Connect
-    this.log(`connecting to proxy with read-only access: ${config.proxyAddr} (chain id ${config.chainId})...`);
+    this.log(
+      `connecting to proxy with read-only access: ${config.proxyAddr} (chain id ${config.chainId})...`
+    );
     await this.mktData.createProxyInstance(this.provider);
 
     this.log(`connecting to order book with write access...`);
     await Promise.all(
       this.orTool.map(async (obj) =>
-        obj.createProxyInstance(new ethers.providers.StaticJsonRpcProvider(await this.rpcManager.getRPC()))
+        obj.createProxyInstance(
+          new ethers.providers.StaticJsonRpcProvider(
+            await this.rpcManager.getRPC()
+          )
+        )
       )
     );
 
@@ -135,7 +148,9 @@ export default class Executor {
     }
 
     // fetch lob address
-    this.obAddr = await this.mktData.getReadOnlyProxyInstance().getOrderBookAddress(this.perpetualId);
+    this.obAddr = await this.mktData
+      .getReadOnlyProxyInstance()
+      .getOrderBookAddress(this.perpetualId);
 
     // Fetch orders
     await this.refreshOpenOrders();
@@ -180,7 +195,10 @@ export default class Executor {
    * @returns True if order id is assigned to this server
    */
   private isMyOrder(orderBundle: OrderBundle): boolean {
-    return BigNumber.from(orderBundle.id.slice(0, 8)).toNumber() % this.moduloTS == this.residualTS;
+    return (
+      BigNumber.from(orderBundle.id.slice(0, 8)).toNumber() % this.moduloTS ==
+      this.residualTS
+    );
   }
 
   /**
@@ -196,7 +214,8 @@ export default class Executor {
       //   Math.max(tsNow / 1_000, orderBundle.order.executionTimestamp ?? 0, orderBundle.order.submittedTimestamp ?? 0) *
       //   1_000;
       ts =
-        orderBundle.order.executionTimestamp && orderBundle.order.executionTimestamp > 0
+        orderBundle.order.executionTimestamp &&
+        orderBundle.order.executionTimestamp > 0
           ? 1_000 * orderBundle.order.executionTimestamp
           : tsNow;
       this.peerNonExecutionTimestampMS.set(orderBundle.id, ts);
@@ -214,7 +233,8 @@ export default class Executor {
     return (
       order.type == ORDER_TYPE_MARKET &&
       (order.parentChildOrderIds == undefined ||
-        (order.parentChildOrderIds[0] == ZERO_ORDER_ID && order.parentChildOrderIds[1] == ZERO_ORDER_ID))
+        (order.parentChildOrderIds[0] == ZERO_ORDER_ID &&
+          order.parentChildOrderIds[1] == ZERO_ORDER_ID))
     );
   }
 
@@ -234,7 +254,10 @@ export default class Executor {
     return new Promise<void>(async (resolve, reject) => {
       setInterval(async () => {
         // should check if anything can be executed every minute +- 10 sec
-        if (!this.hasQueue && Date.now() - this.lastExecuteOrdersCall < this.EXECUTE_INTERVAL_MS) {
+        if (
+          !this.hasQueue &&
+          Date.now() - this.lastExecuteOrdersCall < this.EXECUTE_INTERVAL_MS
+        ) {
           return;
         }
         await this.executeOrders(false);
@@ -268,14 +291,19 @@ export default class Executor {
             numBlocks++;
             // new block - track
             this.blockNumber = Number(msg);
-            if (this.hasOffChainOrders && Date.now() - this.lastOffChainOrder < 60_000) {
+            if (
+              this.hasOffChainOrders &&
+              Date.now() - this.lastOffChainOrder < 60_000
+            ) {
               // this.log(`last off-chain order: ${Math.round((Date.now() - this.lastOffChainOrder) / 1000)}s ago`);
               await this.executeOrders(true);
             }
             if (numBlocks % 100 == 0) {
               this.log(
                 JSON.stringify({
-                  marketOrders: this.openOrders.filter((ob) => ob.order.type == ORDER_TYPE_MARKET).length,
+                  marketOrders: this.openOrders.filter(
+                    (ob) => ob.order.type == ORDER_TYPE_MARKET
+                  ).length,
                   totalOrders: this.openOrders.length,
                 })
               );
@@ -283,7 +311,8 @@ export default class Executor {
             break;
           }
           case "PerpetualLimitOrderCreated": {
-            const { perpetualId, trader, order, digest, fromEvent } = JSON.parse(msg);
+            const { perpetualId, trader, order, digest, fromEvent } =
+              JSON.parse(msg);
             if (this.perpetualId == perpetualId) {
               let ts = Math.floor(Date.now() / 1_000);
               this.log(`adding order ${digest} from trader ${trader}`);
@@ -400,15 +429,24 @@ export default class Executor {
     }
 
     this.orderIds.add(digest);
-    let orderBundle = { id: digest, order: order, isLocked: false, ts: ts } as OrderBundle;
+    let orderBundle = {
+      id: digest,
+      order: order,
+      isLocked: false,
+      ts: ts,
+    } as OrderBundle;
     let idx = this.openOrders.findIndex((b) => b.id == digest);
     if (idx >= 0) {
-      this.openOrders[idx].order = onChain ? order! : this.openOrders[idx].order;
+      this.openOrders[idx].order = onChain
+        ? order!
+        : this.openOrders[idx].order;
       this.openOrders[idx].onChain = onChain || this.openOrders[idx].onChain;
     } else {
       let jdx = this.newOrders.findIndex((b) => b.id == digest);
       if (jdx >= 0) {
-        this.newOrders[jdx].order = onChain ? order! : this.newOrders[jdx].order;
+        this.newOrders[jdx].order = onChain
+          ? order!
+          : this.newOrders[jdx].order;
         this.newOrders[jdx].onChain = onChain || this.newOrders[jdx].onChain;
       } else {
         this.newOrders.push(orderBundle);
@@ -439,7 +477,9 @@ export default class Executor {
    */
   private moveNewOrdersToOrders() {
     for (let k = this.newOrders.length - 1; k >= 0; k--) {
-      this.log(`moved new ${this.newOrders[k].order?.type} order to open orders, id ${this.newOrders[k].id}`);
+      this.log(
+        `moved new ${this.newOrders[k].order?.type} order to open orders, id ${this.newOrders[k].id}`
+      );
       // remove if it exists
       let newOb = this.newOrders[k];
       this.openOrders = this.openOrders.filter((ob) => {
@@ -460,7 +500,9 @@ export default class Executor {
     });
     this.removedOrders = new Set<string>();
     this.newOrders = [];
-    this.hasQueue = this.openOrders.some((ob) => ob.order?.type === ORDER_TYPE_MARKET);
+    this.hasQueue = this.openOrders.some(
+      (ob) => ob.order?.type === ORDER_TYPE_MARKET
+    );
   }
 
   /**
@@ -488,9 +530,14 @@ export default class Executor {
     const totalOrders = await this.orTool[0].numberOfOpenOrders(this.symbol, {
       rpcURL: await this.rpcManager.getRPC(),
     });
-    const allOrders = await this.orTool[0].pollLimitOrders(this.symbol, totalOrders, undefined, {
-      rpcURL: await this.rpcManager.getRPC(),
-    });
+    const allOrders = await this.orTool[0].pollLimitOrders(
+      this.symbol,
+      totalOrders,
+      undefined,
+      {
+        rpcURL: await this.rpcManager.getRPC(),
+      }
+    );
     const ts = Math.round(Date.now() / 1000);
     const orders = allOrders[0];
     const orderIds = allOrders[1];
@@ -531,17 +578,27 @@ export default class Executor {
   }
 
   private async _isExecutable(
-    submission: { submission: PriceFeedSubmission; pxS2S3: [number, number | undefined] },
+    submission: {
+      submission: PriceFeedSubmission;
+      pxS2S3: [number, number | undefined];
+    },
     ts: number,
     marketOnly: boolean
   ) {
     let hasOffChainOrders = false;
     for (let orderBundle of this.openOrders) {
       if (!orderBundle.onChain) {
-        this.log(`order ${orderBundle.id} on-chain status unknown - checking...`);
-        const thisOrder = await this.orTool![0].getOrderById(this.symbol, orderBundle.id);
+        this.log(
+          `order ${orderBundle.id} on-chain status unknown - checking...`
+        );
+        const thisOrder = await this.orTool![0].getOrderById(
+          this.symbol,
+          orderBundle.id
+        );
         if (thisOrder != undefined) {
-          this.log(`order ${orderBundle.id} found on-chain - execution proceeds`);
+          this.log(
+            `order ${orderBundle.id} found on-chain - execution proceeds`
+          );
           orderBundle.onChain = true;
           orderBundle.order = thisOrder;
         } else {
@@ -553,79 +610,102 @@ export default class Executor {
     // this.hasOffChainOrders = orders.some((orderBundle) => !orderBundle.onChain);
     this.hasOffChainOrders = hasOffChainOrders;
     // determine which orders could be executed now
-    const isExecutable = this.openOrders.map((orderBundle: OrderBundle, idx: number) => {
-      // is this order currently locked or not yet on-chain
-      if (
-        orderBundle.isLocked ||
-        !orderBundle.onChain ||
-        (orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly
-      ) {
-        return false;
-      }
-      if (
-        (orderBundle.order.submittedTimestamp ?? Infinity) + this.config.executeDelaySeconds >
-        Math.max(...submission.submission.timestamps)
-      ) {
-        // too early
-        return false;
-      }
-      if (
-        Math.max(orderBundle.order.executionTimestamp ?? 0, orderBundle.order.submittedTimestamp ?? 0) >
-        Math.min(...submission.submission.timestamps)
-      ) {
-        const timeLimit = Math.max(
-          orderBundle.order.executionTimestamp ?? 0,
-          orderBundle.order.submittedTimestamp ?? 0
-        );
-        const oracleTime = Math.min(...submission.submission.timestamps);
-        this.log(`oracle time older than order limit time: ${oracleTime} < ${timeLimit}`);
-        return false;
-      }
-      const overdueMS = this.overdueForMS(orderBundle);
-      const isMine = this.isMyOrder(orderBundle);
-      // is this order not ours and not overdue?
-      if (!isMine && overdueMS < 0) {
-        return false;
-      }
-      // is it a market order without parents (so no need to check conditions)?
-      if (this.isSingleMarketOrder(orderBundle.order)) {
-        if (overdueMS > 0) {
-          if (isMine) {
-            this.log(
-              `OWN ${orderBundle.order.type} order ${orderBundle.id}, late for ${
-                (overdueMS + this.NON_EXECUTION_WAIT_TIME_MS) / 1_000
-              } seconds`
-            );
-          } else {
-            this.log(
-              `PEER ${orderBundle.order.type} order ${orderBundle.id}, late for ${
-                (overdueMS + this.NON_EXECUTION_WAIT_TIME_MS) / 1_000
-              } seconds`
-            );
-            this.peerNonExecutionTimestampMS.delete(orderBundle.id);
-          }
+    const isExecutable = this.openOrders.map(
+      (orderBundle: OrderBundle, idx: number) => {
+        // is this order currently locked or not yet on-chain
+        if (
+          orderBundle.isLocked ||
+          !orderBundle.onChain ||
+          (orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly
+        ) {
+          return false;
         }
-        return overdueMS > 0;
+        if (
+          (orderBundle.order.submittedTimestamp ?? Infinity) +
+            this.config.executeDelaySeconds >
+          Math.max(...submission.submission.timestamps)
+        ) {
+          // too early
+          return false;
+        }
+        if (
+          Math.max(
+            orderBundle.order.executionTimestamp ?? 0,
+            orderBundle.order.submittedTimestamp ?? 0
+          ) > Math.min(...submission.submission.timestamps)
+        ) {
+          const timeLimit = Math.max(
+            orderBundle.order.executionTimestamp ?? 0,
+            orderBundle.order.submittedTimestamp ?? 0
+          );
+          const oracleTime = Math.min(...submission.submission.timestamps);
+          this.log(
+            `oracle time older than order limit time: ${oracleTime} < ${timeLimit}`
+          );
+          return false;
+        }
+        const overdueMS = this.overdueForMS(orderBundle);
+        const isMine = this.isMyOrder(orderBundle);
+        // is this order not ours and not overdue?
+        if (!isMine && overdueMS < 0) {
+          return false;
+        }
+        // is it a market order without parents (so no need to check conditions)?
+        if (this.isSingleMarketOrder(orderBundle.order)) {
+          if (overdueMS > 0) {
+            if (isMine) {
+              this.log(
+                `OWN ${orderBundle.order.type} order ${
+                  orderBundle.id
+                }, late for ${
+                  (overdueMS + this.NON_EXECUTION_WAIT_TIME_MS) / 1_000
+                } seconds`
+              );
+            } else {
+              this.log(
+                `PEER ${orderBundle.order.type} order ${
+                  orderBundle.id
+                }, late for ${
+                  (overdueMS + this.NON_EXECUTION_WAIT_TIME_MS) / 1_000
+                } seconds`
+              );
+              this.peerNonExecutionTimestampMS.delete(orderBundle.id);
+            }
+          }
+          return overdueMS > 0;
+        }
+        // it's not an unconditional market order, so the conditions should be checked
+        return undefined;
       }
-      // it's not an unconditional market order, so the conditions should be checked
-      return undefined;
-    });
+    );
     // if anything is undetermined, we check the blockchain for prices
-    const ordersToCheck = { orders: new Array<Order>(), ids: new Array<string>(), idxInOrders: new Array<number>() };
+    const ordersToCheck = {
+      orders: new Array<Order>(),
+      ids: new Array<string>(),
+      idxInOrders: new Array<number>(),
+    };
     if (isExecutable.some((x) => x == undefined)) {
       let midPrice = await this.mktData!.getPerpetualMidPrice(this.symbol);
       for (let i = 0; i < isExecutable.length; i++) {
         if (isExecutable[i] == undefined) {
-          if (this.openOrders[i].onChain && this.openOrders[i].order?.reduceOnly) {
+          if (
+            this.openOrders[i].onChain &&
+            this.openOrders[i].order?.reduceOnly
+          ) {
             if (this.traders.has(this.openOrders[i].traderAddr)) {
-              const side = this.traders.get(this.openOrders[i].traderAddr)?.side;
-              isExecutable[i] = side !== CLOSED_SIDE && side !== this.openOrders[i].order.side;
+              const side = this.traders.get(
+                this.openOrders[i].traderAddr
+              )?.side;
+              isExecutable[i] =
+                side !== CLOSED_SIDE && side !== this.openOrders[i].order.side;
             } else {
               isExecutable[i] = false;
             }
           } else if (
-            (this.openOrders[i].order.side == BUY_SIDE && midPrice < this.openOrders[i].order.limitPrice!) ||
-            (this.openOrders[i].order.side == SELL_SIDE && midPrice > this.openOrders[i].order.limitPrice!)
+            (this.openOrders[i].order.side == BUY_SIDE &&
+              midPrice < this.openOrders[i].order.limitPrice!) ||
+            (this.openOrders[i].order.side == SELL_SIDE &&
+              midPrice > this.openOrders[i].order.limitPrice!)
           ) {
             ordersToCheck.orders.push(this.openOrders[i].order);
             ordersToCheck.ids.push(this.openOrders[i].id);
@@ -686,13 +766,18 @@ export default class Executor {
     let numExecuted = 0;
     let numTraded = 0;
     let isExecutable: (boolean | undefined)[];
-    let submission: { submission: PriceFeedSubmission; pxS2S3: [number, number | undefined] };
+    let submission: {
+      submission: PriceFeedSubmission;
+      pxS2S3: [number, number | undefined];
+    };
     this.lastExecuteOrdersCall = Date.now();
     try {
       //lock
       this.isExecuting = true;
       // get price submission
-      submission = await this.orTool[0].fetchPriceSubmissionInfoForPerpetual(this.symbol);
+      submission = await this.orTool[0].fetchPriceSubmissionInfoForPerpetual(
+        this.symbol
+      );
       if (
         submission.submission.isMarketClosed.some((x) => x) ||
         !this.checkSubmissionsInSync(submission.submission.timestamps)
@@ -713,7 +798,11 @@ export default class Executor {
       throw e;
     }
 
-    if (isExecutable == undefined || isExecutable.length == 0 || !isExecutable.some((x) => x)) {
+    if (
+      isExecutable == undefined ||
+      isExecutable.length == 0 ||
+      !isExecutable.some((x) => x)
+    ) {
       this.isExecuting = false;
       return {
         numOpen: this.openOrders.length,
@@ -727,7 +816,10 @@ export default class Executor {
         const gasInfo = await fetch(this.config.gasStation)
           .then((res) => res.json())
           .then((info) => info as GasInfo);
-        const gasPrice = typeof gasInfo.safeLow == "number" ? gasInfo.safeLow : (gasInfo.safeLow as GasPriceV2).maxfee;
+        const gasPrice =
+          typeof gasInfo.safeLow == "number"
+            ? gasInfo.safeLow
+            : (gasInfo.safeLow as GasPriceV2).maxfee;
         if (gasPrice > this.config.maxGasPriceGWei) {
           // if the lowest we need to pay is higher than the max allowed, we cannot proceed
           this.log(
@@ -751,7 +843,8 @@ export default class Executor {
       let executeIdxInOpenOrders: Array<number> = [];
       for (
         let k = 0;
-        k < this.openOrders.length && numExecuted < this.orTool.length * this.config.maxExecutionBatchSize;
+        k < this.openOrders.length &&
+        numExecuted < this.orTool.length * this.config.maxExecutionBatchSize;
         k++
       ) {
         if (isExecutable[k]) {
@@ -780,12 +873,18 @@ export default class Executor {
             const ot = this.orTool![idx];
             this.log(`bot: ${idx}, addr ${ot.getAddress()}, ids: ${ids}`);
             promiseArray.push(
-              ot.executeOrders(this.symbol, ids, this.earningsAddr, submission.submission, {
-                gasLimit: 2_000_000 + 1_000_000 * (ids.length - 1),
-                nonce: ot.getTransactionCount(),
-                rpcURL: await this.rpcManager.getRPC(),
-                splitTx: this.SPLIT_PX_UPDATE,
-              })
+              ot.executeOrders(
+                this.symbol,
+                ids,
+                this.earningsAddr,
+                submission.submission,
+                {
+                  gasLimit: 2_000_000 + 1_000_000 * (ids.length - 1),
+                  nonce: ot.getTransactionCount(),
+                  rpcURL: await this.rpcManager.getRPC(),
+                  splitTx: this.SPLIT_PX_UPDATE,
+                }
+              )
             );
           }
         }
@@ -799,9 +898,15 @@ export default class Executor {
                 hash: tx.hash,
                 nonce: tx.nonce,
                 from: tx.from,
-                value: tx.value ? `${ethers.utils.formatUnits(tx.value, "wei")} wei` : undefined,
-                gasPrice: tx.gasPrice ? `${ethers.utils.formatUnits(tx.gasPrice!, "gwei")} gwei` : undefined,
-                gasLimit: tx.gasLimit ? `${tx.gasLimit.toString()} gas` : undefined,
+                value: tx.value
+                  ? `${ethers.utils.formatUnits(tx.value, "wei")} wei`
+                  : undefined,
+                gasPrice: tx.gasPrice
+                  ? `${ethers.utils.formatUnits(tx.gasPrice!, "gwei")} gwei`
+                  : undefined,
+                gasLimit: tx.gasLimit
+                  ? `${tx.gasLimit.toString()} gas`
+                  : undefined,
               })
             );
           } catch (e) {
@@ -819,7 +924,10 @@ export default class Executor {
           for (let idx = 0; idx < this.orTool!.length; idx++) {
             const ids = executeIds.get(idx);
             if (ids && ids.length > 0) {
-              const status = await this.mktData!.getOrdersStatus(this.symbol, ids);
+              const status = await this.mktData!.getOrdersStatus(
+                this.symbol,
+                ids
+              );
               for (let i = 0; i < status.length; i++) {
                 if (status[i] != OrderStatus.OPEN) {
                   this.removedOrders.add(ids[i]);
@@ -839,7 +947,11 @@ export default class Executor {
         let receipt: ethers.ContractReceipt;
         try {
           // console.log("waiting for block...");
-          receipt = await executeWithTimeout(txArray[idx].wait(), 10_000, "txn receipt timeout");
+          receipt = await executeWithTimeout(
+            txArray[idx].wait(),
+            10_000,
+            "txn receipt timeout"
+          );
           if (receipt.status != 1) {
             this.log(`receipt indicates txn failed: ${txArray[idx].hash}`);
             // transaction reverted, orders are probably still on the order book
