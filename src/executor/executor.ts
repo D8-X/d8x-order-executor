@@ -117,7 +117,6 @@ export default class Executor {
     // Connect
     this.log(`connecting to proxy with read-only access: ${config.proxyAddr} (chain id ${config.chainId})...`);
     await this.mktData.createProxyInstance(this.provider);
-    this.priceIds = await this.mktData.getPriceIds(this.symbol);
 
     this.log(`connecting to order book with write access...`);
     await Promise.all(
@@ -127,7 +126,13 @@ export default class Executor {
     );
 
     // Create contracts
-    this.perpetualId = this.mktData.getPerpIdFromSymbol(this.symbol);
+    try {
+      this.perpetualId = this.mktData.getPerpIdFromSymbol(this.symbol);
+    } catch (e) {
+      // no such perpetual - exit gracefully without restart
+      console.log(e);
+      process.exit(0);
+    }
 
     // fetch lob address
     this.obAddr = await this.mktData.getReadOnlyProxyInstance().getOrderBookAddress(this.perpetualId);
@@ -716,26 +721,28 @@ export default class Executor {
         numTraded: 0,
       };
     }
-    try {
-      // check gas price
-      const gasInfo = await fetch(this.config.gasStation)
-        .then((res) => res.json())
-        .then((info) => info as GasInfo);
-      const gasPrice = typeof gasInfo.safeLow == "number" ? gasInfo.safeLow : (gasInfo.safeLow as GasPriceV2).maxfee;
-      if (gasPrice > this.config.maxGasPriceGWei) {
-        // if the lowest we need to pay is higher than the max allowed, we cannot proceed
-        this.log(
-          `gas price is too high: ${gasPrice} > ${this.config.maxGasPriceGWei} (low/market/high) = (${gasInfo.safeLow}/${gasInfo.standard}/${gasInfo.fast}) gwei, target max = ${this.config.maxGasPriceGWei} gwei)`
-        );
-        this.isExecuting = false;
-        return {
-          numOpen: this.openOrders.length,
-          numExecuted: 0,
-          numTraded: 0,
-        };
+    if (this.config.gasStation !== undefined && this.config.gasStation !== "") {
+      try {
+        // check gas price
+        const gasInfo = await fetch(this.config.gasStation)
+          .then((res) => res.json())
+          .then((info) => info as GasInfo);
+        const gasPrice = typeof gasInfo.safeLow == "number" ? gasInfo.safeLow : (gasInfo.safeLow as GasPriceV2).maxfee;
+        if (gasPrice > this.config.maxGasPriceGWei) {
+          // if the lowest we need to pay is higher than the max allowed, we cannot proceed
+          this.log(
+            `gas price is too high: ${gasPrice} > ${this.config.maxGasPriceGWei} (low/market/high) = (${gasInfo.safeLow}/${gasInfo.standard}/${gasInfo.fast}) gwei, target max = ${this.config.maxGasPriceGWei} gwei)`
+          );
+          this.isExecuting = false;
+          return {
+            numOpen: this.openOrders.length,
+            numExecuted: 0,
+            numTraded: 0,
+          };
+        }
+      } catch (e) {
+        this.log("could not fetch gas price");
       }
-    } catch (e) {
-      this.log("could not fetch gas price");
     }
 
     try {
