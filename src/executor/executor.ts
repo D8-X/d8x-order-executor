@@ -618,6 +618,13 @@ export default class Executor {
           !orderBundle.onChain ||
           (orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly
         ) {
+          if ((orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly) {
+            this.log(
+              `order ${orderBundle.id} is market during conditional execution, or limit during market execution`
+            );
+          } else {
+            this.log(`order ${orderBundle.id} is locked or not on-chain`);
+          }
           return false;
         }
         if (
@@ -626,6 +633,7 @@ export default class Executor {
           Math.max(...submission.submission.timestamps)
         ) {
           // too early
+          this.log(`order ${orderBundle.id} is too early`);
           return false;
         }
         if (
@@ -949,7 +957,7 @@ export default class Executor {
           // console.log("waiting for block...");
           receipt = await executeWithTimeout(
             txArray[idx].wait(),
-            10_000,
+            60_000,
             "txn receipt timeout"
           );
           if (receipt.status != 1) {
@@ -973,7 +981,21 @@ export default class Executor {
           }
         } catch (e) {
           // verifying txn failed - this is fine, events/regular refresh will remove or unlock as needed
-          this.log(`could not fetch txn receipt: ${txArray[idx].hash}`);
+          this.log(
+            `could not fetch txn receipt: ${txArray[idx].hash} - checking status on-chain`
+          );
+          const ids = new Set(executeIds.get(idx));
+          for (const id of ids) {
+            const isOpen = await this.mktData?.getOrderStatus(this.symbol, id);
+            if (isOpen) {
+              // order is still open - unlock it
+              this.openOrders.forEach((ob) => {
+                if (ob.id === id) {
+                  ob.isLocked = false;
+                }
+              });
+            }
+          }
           console.error(e);
         }
       }
