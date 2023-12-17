@@ -986,8 +986,11 @@ export default class Executor {
           );
           const ids = new Set(executeIds.get(idx));
           for (const id of ids) {
-            const isOpen = await this.mktData?.getOrderStatus(this.symbol, id);
-            if (isOpen) {
+            const orderStatus = await this.mktData?.getOrderStatus(
+              this.symbol,
+              id
+            );
+            if (orderStatus === OrderStatus.OPEN) {
               // order is still open - unlock it
               this.openOrders.forEach((ob) => {
                 if (ob.id === id) {
