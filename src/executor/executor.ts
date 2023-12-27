@@ -147,7 +147,7 @@ export default class Executor {
     await this.updateExchangeInfo();
 
     await Promise.all(
-      this.orTool.map(async (obj) => obj.createProxyInstance(this.mktData!))
+      this.orTool.map(async (obj) => obj.createProxyInstance(this.provider))
     );
 
     // Fetch orders
@@ -528,13 +528,15 @@ export default class Executor {
         )[0] as BigNumber
     );
     for (let i = 0; i < this.symbols.length; i++) {
-      if (this.orderCount.get(this.symbols[i])!.lt(orderCounts[i])) {
+      const curCount =
+        this.orderCount.get(this.symbols[i]) ?? BigNumber.from(0);
+      this.orderCount.set(this.symbols[i], orderCounts[i]);
+      if (curCount.lt(orderCounts[i])) {
         // new order - refresh and execute in perp
         this.log("recount triggered refresh + execution");
         await this.refreshPerpetualOrders(this.symbols[i]);
         await this.executeOrders(this.symbols[i], true);
       }
-      this.orderCount.set(this.symbols[i], orderCounts[i]);
     }
   }
 
