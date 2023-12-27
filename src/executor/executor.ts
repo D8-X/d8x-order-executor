@@ -12,6 +12,11 @@ import {
   OrderStatus,
   MarginAccount,
   CLOSED_SIDE,
+  Multicall3__factory,
+  MULTICALL_ADDRESS,
+  LimitOrderBook__factory,
+  PERP_STATE_STR,
+  ZERO_ADDRESS,
 } from "@d8x/perpetuals-sdk";
 import { BigNumber, ethers } from "ethers";
 import { emitWarning } from "process";
@@ -19,6 +24,8 @@ import { GasInfo, GasPriceV2, OrderBundle, ExecutorConfig } from "../types";
 import { Redis } from "ioredis";
 import { constructRedis, executeWithTimeout } from "../utils";
 import RPCManager from "./rpcManager";
+import { IClientOrder } from "@d8x/perpetuals-sdk/dist/esm/contracts/LimitOrderBook";
+import { formatUnits, parseUnits } from "@ethersproject/units";
 
 export default class Executor {
   // objects
@@ -29,13 +36,11 @@ export default class Executor {
   private rpcManager: RPCManager;
 
   // parameters
-  private symbol: string;
   private earningsAddr: string;
   private privateKey: string[];
   private config: ExecutorConfig;
   private moduloTS: number; // primarily submit orders with createdTimestamp divisible by moduloTS (if defined), or all orders (if undefined)
   private residualTS: number;
-  private perpetualId: number | undefined;
 
   // constants
   private NON_EXECUTION_WAIT_TIME_MS = 30_000; // maximal time we leave for owner-peer to execute an executable order
@@ -45,33 +50,33 @@ export default class Executor {
   private EXECUTE_INTERVAL_MS: number;
 
   // state
-  private openOrders: OrderBundle[] = new Array<OrderBundle>();
-  private newOrders: OrderBundle[] = new Array<OrderBundle>();
-  private removedOrders: Set<string> = new Set<string>();
-  private orderIds: Set<string> = new Set();
+  // private openOrders: OrderBundle[] = new Array<OrderBundle>();
+  private newOrders: Map<number, OrderBundle[]> = new Map();
+  private removedOrders: Set<string> = new Set();
   private isExecuting: boolean = false;
-  private isRefreshing: boolean = false;
   private hasQueue: boolean = false;
   private peerNonExecutionTimestampMS: Map<string, number>; // orderId -> timestamp
   private lastRefreshTime: number = 0;
   private lastExecuteOrdersCall: number = 0;
-  private obAddr: string | undefined;
   private blockNumber: number;
   private hasOffChainOrders: boolean = false;
   private lastOffChainOrder: number = Infinity;
-  private priceIds: string[] | undefined;
-  private traders: Map<string, MarginAccount> = new Map();
+  private traders: Map<string, MarginAccount[]> = new Map(); // traderAddr => margin accounts (all perps)
+
+  private symbols: string[] = [];
+  private perpetualIds: number[] = [];
+  private orderBooks: string[] = []; // order book addresses
+  private orders: Map<number, OrderBundle[]> = new Map(); // perp id => all (open) order bundles in order book
+  private orderCount: Map<string, BigNumber> = new Map(); // symbol => count of all orders ever posted to order book
 
   constructor(
     privateKey: string | string[],
-    symbol: string,
     config: ExecutorConfig,
     moduloTS: number,
     residualTS: number,
     earningsAddr: string
   ) {
     this.privateKey = typeof privateKey == "string" ? [privateKey] : privateKey;
-    this.symbol = symbol;
     this.earningsAddr = earningsAddr;
     this.moduloTS = moduloTS;
     this.residualTS = residualTS;
@@ -90,7 +95,6 @@ export default class Executor {
         time: new Date(Date.now()).toISOString(),
         timestamp: Date.now() / 1000,
         latestBlock: this.blockNumber,
-        symbol: this.symbol,
       }),
       x
     );
@@ -126,34 +130,14 @@ export default class Executor {
       `connecting to proxy with read-only access: ${config.proxyAddr} (chain id ${config.chainId})...`
     );
     await this.mktData.createProxyInstance(this.provider);
+    await this.updateExchangeInfo();
 
-    this.log(`connecting to order book with write access...`);
     await Promise.all(
-      this.orTool.map(async (obj) =>
-        obj.createProxyInstance(
-          new ethers.providers.StaticJsonRpcProvider(
-            await this.rpcManager.getRPC()
-          )
-        )
-      )
+      this.orTool.map(async (obj) => obj.createProxyInstance(this.mktData!))
     );
 
-    // Create contracts
-    try {
-      this.perpetualId = this.mktData.getPerpIdFromSymbol(this.symbol);
-    } catch (e) {
-      // no such perpetual - exit gracefully without restart
-      console.log(e);
-      process.exit(0);
-    }
-
-    // fetch lob address
-    this.obAddr = await this.mktData
-      .getReadOnlyProxyInstance()
-      .getOrderBookAddress(this.perpetualId);
-
     // Fetch orders
-    await this.refreshOpenOrders();
+    await this.refreshAllOrders();
 
     // Subscribe to blockchain events
     this.log(`subscribing to blockchain streamer...`);
@@ -175,8 +159,6 @@ export default class Executor {
     );
     // initialization complete
     this.log({
-      perpetualId: this.perpetualId,
-      orderBook: this.obAddr,
       proxy: config.proxyAddr,
       earnings: this.earningsAddr,
       servers: this.moduloTS,
@@ -194,9 +176,9 @@ export default class Executor {
    * @param orderBundle Order bundle
    * @returns True if order id is assigned to this server
    */
-  private isMyOrder(orderBundle: OrderBundle): boolean {
+  private isMyOrder(orderId: string): boolean {
     return (
-      BigNumber.from(orderBundle.id.slice(0, 8)).toNumber() % this.moduloTS ==
+      BigNumber.from(orderId.slice(0, 8)).toNumber() % this.moduloTS ==
       this.residualTS
     );
   }
@@ -206,19 +188,18 @@ export default class Executor {
    * @param orderBundle Order bundle
    * @returns
    */
-  private overdueForMS(orderBundle: OrderBundle): number {
-    let ts = this.peerNonExecutionTimestampMS.get(orderBundle.id);
+  private overdueForMS({ id, order }: { id: string; order: Order }): number {
+    let ts = this.peerNonExecutionTimestampMS.get(id);
     let tsNow = Date.now();
     if (ts == undefined) {
       // ts =
       //   Math.max(tsNow / 1_000, orderBundle.order.executionTimestamp ?? 0, orderBundle.order.submittedTimestamp ?? 0) *
       //   1_000;
       ts =
-        orderBundle.order.executionTimestamp &&
-        orderBundle.order.executionTimestamp > 0
-          ? 1_000 * orderBundle.order.executionTimestamp
+        order.executionTimestamp && order.executionTimestamp > 0
+          ? 1_000 * order.executionTimestamp
           : tsNow;
-      this.peerNonExecutionTimestampMS.set(orderBundle.id, ts);
+      this.peerNonExecutionTimestampMS.set(id, ts);
       // this.log(`${orderBundle.order.type} order ${orderBundle.id} recorded at ${ts}`);
     }
     return tsNow - (ts + this.NON_EXECUTION_WAIT_TIME_MS);
@@ -268,7 +249,7 @@ export default class Executor {
         if (Date.now() - this.lastRefreshTime < this.REFRESH_INTERVAL_MS) {
           return;
         }
-        await this.refreshOpenOrders();
+        await this.refreshAllOrders();
       }, 10_000);
 
       // setInterval(async () => {
@@ -284,7 +265,7 @@ export default class Executor {
         switch (channel) {
           case "switch-mode": {
             // listener changed mode: something failed so refresh orders
-            await this.refreshOpenOrders();
+            await this.refreshAllOrders();
             break;
           }
           case "block": {
@@ -298,28 +279,34 @@ export default class Executor {
               // this.log(`last off-chain order: ${Math.round((Date.now() - this.lastOffChainOrder) / 1000)}s ago`);
               await this.executeOrders(true);
             }
-            if (numBlocks % 100 == 0) {
-              this.log(
-                JSON.stringify({
-                  marketOrders: this.openOrders.filter(
-                    (ob) => ob.order.type == ORDER_TYPE_MARKET
-                  ).length,
-                  totalOrders: this.openOrders.length,
-                })
-              );
-            }
+            // if (numBlocks % 100 == 0) {
+            //   this.log(
+            //     JSON.stringify({
+            //       marketOrders: this.openOrders.filter(
+            //         (ob) => ob.order.type == ORDER_TYPE_MARKET
+            //       ).length,
+            //       totalOrders: this.openOrders.length,
+            //     })
+            //   );
+            // }
             break;
           }
           case "PerpetualLimitOrderCreated": {
             const { perpetualId, trader, order, digest, fromEvent } =
               JSON.parse(msg);
-            if (this.perpetualId == perpetualId) {
-              let ts = Math.floor(Date.now() / 1_000);
-              this.log(`adding order ${digest} from trader ${trader}`);
-              // addOrder can trigger an early call to execute if it's a market order
-              await this.addOrder(trader, digest, order, ts, fromEvent);
-              this.lastOffChainOrder = Date.now();
-            }
+            let ts = Math.floor(Date.now() / 1_000);
+            this.log(`adding order ${digest} from trader ${trader}`);
+            // addOrder can trigger an early call to execute if it's a market order
+            await this.addOrder(
+              perpetualId,
+              trader,
+              digest,
+              order,
+              ts,
+              fromEvent
+            );
+            this.lastOffChainOrder = Date.now();
+
             break;
           }
           case "ExecutionFailed": {
@@ -328,35 +315,34 @@ export default class Executor {
             // else:
             //  --> order is removed from the book
             const { perpetualId, digest, reason } = JSON.parse(msg);
-            if (this.perpetualId == perpetualId) {
-              let ts = Math.floor(Date.now() / 1_000);
-              this.log(`execution of ${digest} failed with reason ${reason}`);
-              if (reason != "cancel delay required") {
-                this.removeOrder(digest, ts);
-              } else {
-                // unlock to try again
-                this.unlockOrder(digest);
-              }
+
+            let ts = Math.floor(Date.now() / 1_000);
+            this.log(`execution of ${digest} failed with reason ${reason}`);
+            if (reason != "cancel delay required") {
+              this.removeOrder(perpetualId, digest, ts);
+            } else {
+              // unlock to try again
+              this.unlockOrder(perpetualId, digest);
             }
+
             break;
           }
           case "PerpetualLimitOrderCancelled": {
             const { perpetualId, digest } = JSON.parse(msg);
-            if (this.perpetualId == perpetualId) {
-              let ts = Math.floor(Date.now() / 1_000);
-              this.log(`order ${digest} has been cancelled`);
-              this.removeOrder(digest, ts);
-            }
+            let ts = Math.floor(Date.now() / 1_000);
+            this.log(`order ${digest} has been cancelled`);
+            this.removeOrder(perpetualId, digest, ts);
+
             break;
           }
           case "Trade": {
             const { perpetualId, digest, traderAddr } = JSON.parse(msg);
-            if (this.perpetualId == perpetualId) {
-              let ts = Math.floor(Date.now() / 1_000);
-              this.log(`order ${digest} has been executed`);
-              this.removeOrder(digest, ts);
-              this.updateAccount(traderAddr);
-            }
+
+            let ts = Math.floor(Date.now() / 1_000);
+            this.log(`order ${digest} has been executed`);
+            this.removeOrder(perpetualId, digest, ts);
+            this.updateAccount(traderAddr);
+
             break;
           }
           default: {
@@ -369,33 +355,15 @@ export default class Executor {
   }
 
   private async updateAccount(trader: string) {
-    const acct = await this.mktData!.positionRisk(trader, this.symbol);
-    this.traders.set(trader, acct[0]);
+    const acct = await this.mktData!.positionRisk(trader);
+    this.traders.set(trader, acct);
   }
 
-  private unlockOrder(id: string) {
-    // this.openOrders.forEach((o) => {
-    //   if (o.id.toLocaleLowerCase() == id.toLocaleLowerCase()) {
-    //     o.isLocked = false;
-    //   }
-    // });
-    for (const o of this.openOrders) {
-      if (o.id.toLocaleLowerCase() === id.toLocaleLowerCase()) {
+  private unlockOrder(perpetualId: number, orderId: string) {
+    const orders = this.orders.get(perpetualId)!;
+    for (const o of orders) {
+      if (o.id.toLocaleLowerCase() === orderId.toLocaleLowerCase()) {
         o.isLocked = false;
-        return;
-      }
-    }
-  }
-
-  private lockOrder(id: string) {
-    // this.openOrders.forEach((o) => {
-    //   if (o.id.toLocaleLowerCase() == id.toLocaleLowerCase()) {
-    //     o.isLocked = true;
-    //   }
-    // });
-    for (const o of this.openOrders) {
-      if (o.id.toLocaleLowerCase() === id.toLocaleLowerCase()) {
-        o.isLocked = true;
         return;
       }
     }
@@ -408,6 +376,7 @@ export default class Executor {
    * @param digest order id
    */
   private async addOrder(
+    perpetualId: number,
     fromTrader: string,
     digest: string,
     scOrder: SmartContractOrder,
@@ -428,19 +397,19 @@ export default class Executor {
       this.hasOffChainOrders = true;
     }
 
-    this.orderIds.add(digest);
     let orderBundle = {
       id: digest,
       order: order,
       isLocked: false,
       ts: ts,
     } as OrderBundle;
-    let idx = this.openOrders.findIndex((b) => b.id == digest);
+
+    let bundles = this.orders.get(perpetualId)!;
+    let idx = bundles.findIndex((b) => b.id === digest);
+
     if (idx >= 0) {
-      this.openOrders[idx].order = onChain
-        ? order!
-        : this.openOrders[idx].order;
-      this.openOrders[idx].onChain = onChain || this.openOrders[idx].onChain;
+      bundles[idx].order = onChain ? order! : bundles[idx].order;
+      bundles[idx].onChain = onChain || bundles[idx].onChain;
     } else {
       let jdx = this.newOrders.findIndex((b) => b.id == digest);
       if (jdx >= 0) {
@@ -453,8 +422,8 @@ export default class Executor {
       }
     }
     if (!this.traders.has(fromTrader)) {
-      const acct = await this.mktData!.positionRisk(fromTrader, this.symbol);
-      this.traders.set(fromTrader, acct[0]);
+      const acct = await this.mktData!.positionRisk(fromTrader);
+      this.traders.set(fromTrader, acct);
     }
 
     if (order && this.isSingleMarketOrder(order)) {
@@ -462,59 +431,186 @@ export default class Executor {
         this.hasQueue = true;
       } else {
         this.log(`${onChain ? "event" : "ws"} triggered execution`);
-        await this.executeOrders(true);
+        await this.executeOrders(order.symbol, true);
       }
     }
   }
 
   public removeOrder(digest: string, ts: number) {
     this.removedOrders.add(digest);
-    this.orderIds.delete(digest);
   }
 
   /**
    * Copy new orders to order array and delete reference in newOrders
    */
   private moveNewOrdersToOrders() {
-    for (let k = this.newOrders.length - 1; k >= 0; k--) {
-      this.log(
-        `moved new ${this.newOrders[k].order?.type} order to open orders, id ${this.newOrders[k].id}`
-      );
-      // remove if it exists
-      let newOb = this.newOrders[k];
-      this.openOrders = this.openOrders.filter((ob) => {
-        return newOb.id != ob.id;
-      });
-      // append
-      this.openOrders.push(newOb);
-      // remove from new orders
-      this.newOrders.pop();
-    }
-    // remove
-    this.openOrders = this.openOrders.filter((ob) => {
-      const remove = this.removedOrders.has(ob.id);
-      if (remove) {
-        this.log(`removing order ${ob.id} from open orders`);
+    for (const perpId of this.perpetualIds) {
+      const newOrders = this.newOrders.get(perpId);
+      if (newOrders === undefined) {
+        continue;
       }
-      return !this.removedOrders.has(ob.id);
-    });
+      for (let k = newOrders.length - 1; k >= 0; k--) {
+        this.log(
+          `moving new ${newOrders[k].order?.type} order to open orders, id ${newOrders[k].id}`
+        );
+        // remove if it exists
+        let newOb = newOrders[k];
+        const orders = this.orders.get(perpId)!;
+        const idxInOpenOrders = orders.findIndex((b) => b.id === newOb.id);
+        if (idxInOpenOrders < 0) {
+          orders.push(newOb);
+        } else {
+          orders[idxInOpenOrders] = newOb;
+        }
+        // remove from new orders
+        newOrders.pop();
+        // remove other orders from open orders
+        this.orders.set(
+          perpId,
+          orders.filter((ob) => !this.removedOrders.has(ob.id))
+        );
+      }
+    }
+
     this.removedOrders = new Set<string>();
-    this.newOrders = [];
-    this.hasQueue = this.openOrders.some(
-      (ob) => ob.order?.type === ORDER_TYPE_MARKET
+    this.newOrders = new Map();
+    // this.hasQueue = this.openOrders.some(
+    //   (ob) => ob.order?.type === ORDER_TYPE_MARKET
+    // );
+  }
+
+  private async recount() {
+    const obI = LimitOrderBook__factory.createInterface();
+    const multicall = Multicall3__factory.connect(
+      MULTICALL_ADDRESS,
+      this.provider!
     );
+    const calls = this.symbols.map((symbol) => ({
+      target: this.mktData!.getOrderBookContract(symbol).address,
+      allowFailure: false,
+      callData: obI.encodeFunctionData("numberOfAllDigests"),
+    }));
+    // order count in all perps (all - irrespective of deletion)
+    const res = await multicall.callStatic.aggregate3(calls);
+    const orderCounts = res.map(
+      ({ success, returnData }) =>
+        obI.decodeFunctionResult(
+          "numberOfAllDigests",
+          returnData
+        )[0] as BigNumber
+    );
+    this.symbols.forEach((symbol, idx) => {
+      if (this.orderCount.get(symbol)!.lt(orderCounts[idx])) {
+        // new order - refresh and execute in perp
+      }
+    });
+  }
+
+  private async updateExchangeInfo() {
+    const md = this.mktData!;
+    // exchange info
+    const info = await md.exchangeInfo();
+    this.symbols = info.pools
+      .filter(({ isRunning }) => isRunning)
+      .map(({ poolSymbol, perpetuals }) =>
+        perpetuals
+          .filter(({ state }) => state == "NORMAL")
+          .map(
+            ({ baseCurrency, quoteCurrency }) =>
+              `${baseCurrency}-${quoteCurrency}-${poolSymbol}`
+          )
+      )
+      .flat();
+    this.perpetualIds = info.pools
+      .filter(({ isRunning }) => isRunning)
+      .map(({ poolSymbol, perpetuals }) =>
+        perpetuals.filter(({ state }) => state == "NORMAL").map(({ id }) => id)
+      )
+      .flat();
+    this.orderBooks = this.symbols.map(
+      (symbol) => md.getOrderBookContract(symbol).address
+    );
+    const obI = LimitOrderBook__factory.createInterface();
+    const multicall = Multicall3__factory.connect(
+      MULTICALL_ADDRESS,
+      this.provider!
+    );
+    const calls = this.symbols.map((symbol) => ({
+      target: this.mktData!.getOrderBookContract(symbol).address,
+      allowFailure: false,
+      callData: obI.encodeFunctionData("numberOfAllDigests"),
+    }));
+    // order count in all perps (all - irrespective of deletion)
+    const res = await multicall.callStatic.aggregate3(calls);
+    res.forEach(({ success, returnData }, idx) => {
+      const count = obI.decodeFunctionResult(
+        "numberOfAllDigests",
+        returnData
+      )[0] as BigNumber;
+      this.orderCount.set(this.symbols[idx], count);
+    });
+  }
+
+  private async refreshAllOrders() {
+    const md = this.mktData!;
+    const obI = LimitOrderBook__factory.createInterface();
+    const multicall = Multicall3__factory.connect(
+      MULTICALL_ADDRESS,
+      this.provider!
+    );
+    const calls = this.symbols.map((symbol) => ({
+      target: md.getOrderBookContract(symbol).address,
+      allowFailure: false,
+      callData: obI.encodeFunctionData("orderCount"),
+    }));
+    // order count in all perps (open only)
+    const res = await multicall.callStatic.aggregate3(calls);
+    const orderCounts = res.map(
+      ({ success, returnData }) =>
+        obI.decodeFunctionResult("orderCount", returnData)[0] as number
+    );
+    const calls2 = this.symbols.map((symbol, i) => ({
+      target: md.getOrderBookContract(symbol).address,
+      allowFailure: false,
+      callData: obI.encodeFunctionData("pollLimitOrders", [
+        ZERO_ORDER_ID,
+        orderCounts[i],
+      ]),
+    }));
+    const res2 = await multicall.callStatic.aggregate3(calls2);
+    const ts = Date.now();
+    const orders = res2
+      .map(
+        ({ returnData }) =>
+          obI.decodeFunctionResult("pollLimitOrders", returnData)[0] as [
+            IClientOrder.ClientOrderStructOutput[],
+            string[]
+          ]
+      )
+      .map(([scOrders, orderIds]) =>
+        orderIds.map(
+          (id, j) =>
+            ({
+              id: id,
+              order: md.smartContractOrderToOrder(scOrders[j]),
+              onChain: true,
+              ts: ts,
+              isLocked: false,
+              traderAddr: scOrders[j].traderAddr,
+            } as OrderBundle)
+        )
+      );
+    orders.forEach((orderBundles, i) => {
+      this.orders.set(this.perpetualIds[i], orderBundles);
+    });
+    this.lastRefreshTime = ts;
   }
 
   /**
    * Reset open orders-array; refresh all open orders
    */
-  public async refreshOpenOrders() {
-    if (this.isExecuting) {
-      // return without updating refresh time
-      return;
-    }
-    this.log(`refreshing orders`);
-    this.isExecuting = true;
+  public async refreshPerpetualOrders(symbol: string) {
+    this.log(`refreshing ${symbol} orders`);
     if (this.orTool == undefined) {
       throw Error("orTool not defined");
     }
@@ -527,11 +623,11 @@ export default class Executor {
     this.removedOrders = new Set<string>();
 
     this.lastRefreshTime = Date.now();
-    const totalOrders = await this.orTool[0].numberOfOpenOrders(this.symbol, {
+    const totalOrders = await this.orTool[0].numberOfOpenOrders(symbol, {
       rpcURL: await this.rpcManager.getRPC(),
     });
     const allOrders = await this.orTool[0].pollLimitOrders(
-      this.symbol,
+      symbol,
       totalOrders,
       undefined,
       {
@@ -555,12 +651,123 @@ export default class Executor {
         this.orderIds.add(orderIds[k]);
       }
     }
-    this.isExecuting = false;
     this.log(
       `${this.orderIds.size} open orders, ${
         this.openOrders.filter((o) => o.order.type == ORDER_TYPE_MARKET).length
       } of which are market orders`
     );
+  }
+
+  private async refreshOffChainStatus() {
+    let hasOffChainOrders = false;
+    let ordersToCheck: { perpId: number; orderId: string }[] = [];
+    for (const perpId of this.perpetualIds) {
+      for (let orderBundle of this.orders.get(perpId)!) {
+        if (!orderBundle.onChain) {
+          if (Date.now() > orderBundle.ts + 60_000) {
+            this.log(
+              `order ${orderBundle.id} off-chain for over a minute - ignoring`
+            );
+          } else {
+            this.log(
+              `order ${orderBundle.id} on-chain status unknown - checking...`
+            );
+            ordersToCheck.push({ perpId: perpId, orderId: orderBundle.id });
+            hasOffChainOrders = true;
+          }
+        }
+      }
+    }
+    this.hasOffChainOrders = hasOffChainOrders;
+    if (ordersToCheck.length < 1) {
+      return;
+    }
+    const multicall = Multicall3__factory.connect(
+      MULTICALL_ADDRESS,
+      this.provider!
+    );
+    const obI = LimitOrderBook__factory.createInterface();
+    const calls = ordersToCheck.map(({ perpId, orderId }) => ({
+      target: this.orderBooks[perpId],
+      allowFailure: false,
+      callData: obI.encodeFunctionData("orderOfDigest", [orderId]),
+    }));
+    const res = await multicall.callStatic.aggregate3(calls);
+    const orders = res.map(({ returnData }) => {
+      const scOrder = obI.decodeFunctionResult("orderOfDigest", returnData)[0];
+      return {
+        traderAddr: scOrder.traderAddr,
+        order: this.mktData!.smartContractOrderToOrder(scOrder),
+      };
+    });
+    ordersToCheck.forEach(({ perpId, orderId }, idx) => {
+      const bundles = this.orders.get(perpId)!;
+      for (let i = 0; i < bundles.length; i++) {
+        if (bundles[i].id === orderId) {
+          bundles[i].onChain = orders[idx].traderAddr !== ZERO_ADDRESS;
+          bundles[i].order = orders[idx].order;
+          bundles[i].ts = Date.now();
+        }
+      }
+      // this.orders.set(perpId, bundles);
+    });
+  }
+
+  private async getExecutableOffChain(market: boolean) {
+    let executable: OrderBundle[] = [];
+    for (let i = 0; i < this.perpetualIds.length; i++) {
+      const perpId = this.perpetualIds[i];
+      const symbol = this.symbols[i];
+      const submission =
+        await this.mktData!.fetchPriceSubmissionInfoForPerpetual(symbol);
+      const bundles = this.orders.get(perpId)!;
+      const executableIds: string[] = [];
+      bundles.forEach(({ id, order, onChain, isLocked }) => {
+        if (
+          !isLocked &&
+          onChain &&
+          (order.type === ORDER_TYPE_MARKET) === market &&
+          Math.max(...submission.submission.timestamps) -
+            Math.min(...submission.submission.timestamps) <=
+            this.MAX_OUTOFSYNC_SECONDS &&
+          order.submittedTimestamp! + this.config.executeDelaySeconds >
+            Math.max(...submission.submission.timestamps) &&
+          order.executionTimestamp <=
+            Math.min(...submission.submission.timestamps)
+        ) {
+          const overdueMS = this.overdueForMS({ id, order });
+          const isMine = this.isMyOrder(id);
+          // is this order not ours and not overdue?
+          if (!isMine && overdueMS < 0) {
+            return;
+          }
+          // is it a market order without parents (so no need to check conditions)?
+          if (this.isSingleMarketOrder(order)) {
+            if (overdueMS > 0) {
+              if (isMine) {
+                this.log(
+                  `OWN ${order.type} order ${id}, late for ${
+                    (overdueMS + this.NON_EXECUTION_WAIT_TIME_MS) / 1_000
+                  } seconds`
+                );
+              } else {
+                this.log(
+                  `PEER ${order.type} order ${id}, late for ${
+                    (overdueMS + this.NON_EXECUTION_WAIT_TIME_MS) / 1_000
+                  } seconds`
+                );
+                this.peerNonExecutionTimestampMS.delete(id);
+              }
+            }
+            if (overdueMS > 0) {
+              executableIds.push(id);
+            }
+          }
+          // it's not an unconditional market order, so the conditions should be checked
+          return undefined;
+        }
+      });
+    }
   }
 
   /**
@@ -577,7 +784,8 @@ export default class Executor {
     return true;
   }
 
-  private async _isExecutable(
+  private async getExecutableMask(
+    symbol: string,
     submission: {
       submission: PriceFeedSubmission;
       pxS2S3: [number, number | undefined];
@@ -585,30 +793,7 @@ export default class Executor {
     ts: number,
     marketOnly: boolean
   ) {
-    let hasOffChainOrders = false;
-    for (let orderBundle of this.openOrders) {
-      if (!orderBundle.onChain) {
-        this.log(
-          `order ${orderBundle.id} on-chain status unknown - checking...`
-        );
-        const thisOrder = await this.orTool![0].getOrderById(
-          this.symbol,
-          orderBundle.id
-        );
-        if (thisOrder != undefined) {
-          this.log(
-            `order ${orderBundle.id} found on-chain - execution proceeds`
-          );
-          orderBundle.onChain = true;
-          orderBundle.order = thisOrder;
-        } else {
-          hasOffChainOrders = true;
-          this.log(`order ${orderBundle.id} is NOT on-chain - won't execute`);
-        }
-      }
-    }
-    // this.hasOffChainOrders = orders.some((orderBundle) => !orderBundle.onChain);
-    this.hasOffChainOrders = hasOffChainOrders;
+    await this.refreshOffChainStatus();
     // determine which orders could be executed now
     const isExecutable = this.openOrders.map(
       (orderBundle: OrderBundle, idx: number) => {
@@ -653,7 +838,7 @@ export default class Executor {
           return false;
         }
         const overdueMS = this.overdueForMS(orderBundle);
-        const isMine = this.isMyOrder(orderBundle);
+        const isMine = this.isMyOrder(orderBundle.id);
         // is this order not ours and not overdue?
         if (!isMine && overdueMS < 0) {
           return false;
@@ -686,14 +871,15 @@ export default class Executor {
         return undefined;
       }
     );
+
     // if anything is undetermined, we check the blockchain for prices
     const ordersToCheck = {
-      orders: new Array<Order>(),
-      ids: new Array<string>(),
-      idxInOrders: new Array<number>(),
+      orders: [] as Order[],
+      ids: [] as string[],
+      idxInOrders: [] as number[],
     };
     if (isExecutable.some((x) => x == undefined)) {
-      let midPrice = await this.mktData!.getPerpetualMidPrice(this.symbol);
+      let midPrice = await this.mktData!.getPerpetualMidPrice(symbol);
       for (let i = 0; i < isExecutable.length; i++) {
         if (isExecutable[i] == undefined) {
           if (
@@ -751,11 +937,27 @@ export default class Executor {
     return isExecutable;
   }
 
+  private async checkGasPrice() {
+    const gasPrice = await this.provider!.getGasPrice();
+    if (gasPrice > parseUnits(this.config.maxGasPriceGWei.toString(), "gwei")) {
+      this.log(
+        `gas price is too high: ${formatUnits(gasPrice, "gwei")} gwei > ${
+          this.config.maxGasPriceGWei
+        } gwei`
+      );
+      return false;
+    }
+    return true;
+  }
+
   /**
    * execute collected orders. Removes executed or cancelled orders from list
    * @returns statistics for execution
    */
-  public async executeOrders(marketOnly: boolean): Promise<{
+  public async executeOrders(
+    symbol: string,
+    marketOnly: boolean
+  ): Promise<{
     numOpen: number;
     numExecuted: number;
     numTraded: number;
@@ -779,12 +981,13 @@ export default class Executor {
       pxS2S3: [number, number | undefined];
     };
     this.lastExecuteOrdersCall = Date.now();
+
     try {
       //lock
       this.isExecuting = true;
       // get price submission
       submission = await this.orTool[0].fetchPriceSubmissionInfoForPerpetual(
-        this.symbol
+        symbol
       );
       if (
         submission.submission.isMarketClosed.some((x) => x) ||
@@ -798,7 +1001,12 @@ export default class Executor {
         };
       }
       let ts = Math.floor(Date.now() / 1_000);
-      isExecutable = await this._isExecutable(submission, ts, marketOnly);
+      isExecutable = await this.getExecutableMask(
+        symbol,
+        submission,
+        ts,
+        marketOnly
+      );
     } catch (e: any) {
       // these are read only, if they fail for any reason we stop to force a network change
       this.log(`RPC error`);
@@ -818,37 +1026,20 @@ export default class Executor {
         numTraded: 0,
       };
     }
-    if (this.config.gasStation !== undefined && this.config.gasStation !== "") {
-      try {
-        // check gas price
-        const gasInfo = await fetch(this.config.gasStation)
-          .then((res) => res.json())
-          .then((info) => info as GasInfo);
-        const gasPrice =
-          typeof gasInfo.safeLow == "number"
-            ? gasInfo.safeLow
-            : (gasInfo.safeLow as GasPriceV2).maxfee;
-        if (gasPrice > this.config.maxGasPriceGWei) {
-          // if the lowest we need to pay is higher than the max allowed, we cannot proceed
-          this.log(
-            `gas price is too high: ${gasPrice} > ${this.config.maxGasPriceGWei} (low/market/high) = (${gasInfo.safeLow}/${gasInfo.standard}/${gasInfo.fast}) gwei, target max = ${this.config.maxGasPriceGWei} gwei)`
-          );
-          this.isExecuting = false;
-          return {
-            numOpen: this.openOrders.length,
-            numExecuted: 0,
-            numTraded: 0,
-          };
-        }
-      } catch (e) {
-        this.log("could not fetch gas price");
-      }
+
+    if (!(await this.checkGasPrice())) {
+      this.isExecuting = false;
+      return {
+        numOpen: this.openOrders.length,
+        numExecuted: numExecuted,
+        numTraded: numTraded,
+      };
     }
 
     try {
       // try to execute all executable ones we can handle in our executor tools
       let executeIds: Map<number, string[]> = new Map(); // executor idx -> order ids
-      let executeIdxInOpenOrders: Array<number> = [];
+      let executeIdxInOpenOrders: number[] = [];
       for (
         let k = 0;
         k < this.openOrders.length &&
@@ -856,13 +1047,13 @@ export default class Executor {
         k++
       ) {
         if (isExecutable[k]) {
-          numExecuted++;
           let refIdx = numExecuted % this.orTool.length;
           if (executeIds.get(refIdx) == undefined) {
             executeIds.set(refIdx, [this.openOrders[k].id]);
           } else {
             executeIds.get(refIdx)!.push(this.openOrders[k].id);
           }
+          numExecuted++;
           // will try to execute
           this.log(
             `${this.openOrders[k].order.type} order ${this.openOrders[k].id} assigned to bot #${refIdx} in this batch:\n${this.openOrders[k].order.side} ${this.openOrders[k].order.quantity} @ ${this.openOrders[k].order.limitPrice}`
@@ -874,7 +1065,7 @@ export default class Executor {
 
       let txArray: ethers.ContractTransaction[] = [];
       try {
-        let promiseArray: Array<Promise<ethers.ContractTransaction>> = [];
+        let promiseArray: Promise<ethers.ContractTransaction>[] = [];
         for (let idx = 0; idx < this.orTool!.length; idx++) {
           let ids = executeIds.get(idx);
           if (ids !== undefined && ids.length > 0) {
@@ -882,7 +1073,7 @@ export default class Executor {
             this.log(`bot: ${idx}, addr ${ot.getAddress()}, ids: ${ids}`);
             promiseArray.push(
               ot.executeOrders(
-                this.symbol,
+                symbol,
                 ids,
                 this.earningsAddr,
                 submission.submission,
@@ -932,10 +1123,7 @@ export default class Executor {
           for (let idx = 0; idx < this.orTool!.length; idx++) {
             const ids = executeIds.get(idx);
             if (ids && ids.length > 0) {
-              const status = await this.mktData!.getOrdersStatus(
-                this.symbol,
-                ids
-              );
+              const status = await this.mktData!.getOrdersStatus(symbol, ids);
               for (let i = 0; i < status.length; i++) {
                 if (status[i] != OrderStatus.OPEN) {
                   this.removedOrders.add(ids[i]);
@@ -986,10 +1174,7 @@ export default class Executor {
           );
           const ids = new Set(executeIds.get(idx));
           for (const id of ids) {
-            const orderStatus = await this.mktData?.getOrderStatus(
-              this.symbol,
-              id
-            );
+            const orderStatus = await this.mktData?.getOrderStatus(symbol, id);
             if (orderStatus === OrderStatus.OPEN) {
               // order is still open - unlock it
               this.openOrders.forEach((ob) => {
