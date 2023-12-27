@@ -4,23 +4,23 @@ import { chooseRPC, loadAccounts, loadExecutorConfig, sleep } from "../utils";
 
 require("dotenv").config();
 
+/**
+ * args (command line):
+ */
 async function run() {
   let args = process.argv.slice(2);
-  if (args.length != 2) {
-    throw new Error("check arguments");
-  }
   // args
-  const symbol = args[0];
-  const idxFrom = Number(args[1]);
+  const idxFrom = Number(args[0]);
   // validate
-  if (symbol.split("-").length != 3) {
-    throw new Error(`Invalid 'symbol' argument for bot: ${symbol}. It should be of the form ETH-USD-MATIC.`);
-  }
   if (idxFrom <= 0) {
-    throw new Error(`Invalid wallet starting index for bot: ${idxFrom}. It should be a positive integer.`);
+    throw new Error(
+      `Invalid wallet starting index for bot: ${idxFrom}. It should be a positive integer.`
+    );
   }
   // env
-  const chainId = process.env.CHAIN_ID ? BigNumber.from(process.env.CHAIN_ID as string) : undefined;
+  const chainId = process.env.CHAIN_ID
+    ? BigNumber.from(process.env.CHAIN_ID as string)
+    : undefined;
   const mnemonicSeed = process.env.SEED_PHRASE;
   const earningsAddr = process.env.EARNINGS_WALLET;
   const accountsPerPerp = Number(process.env.ACCOUNTS_PER_BOT ?? "1");
@@ -28,10 +28,14 @@ async function run() {
   const residual = Number(process.env.PEER_INDEX as string);
   // validate
   if (!chainId) {
-    throw new Error("Please enter a chain ID in .env file, e.g. export CHAIN_ID=42");
+    throw new Error(
+      "Please enter a chain ID in .env file, e.g. export CHAIN_ID=42"
+    );
   }
   if (mnemonicSeed === undefined) {
-    throw new Error("Please enter a mnemonic seed in .env file, e.g. export SEED_PHRASE='your seed phrase'");
+    throw new Error(
+      "Please enter a mnemonic seed in .env file, e.g. export SEED_PHRASE='your seed phrase'"
+    );
   }
   if (earningsAddr === undefined) {
     throw new Error(
@@ -39,9 +43,17 @@ async function run() {
     );
   }
   if (accountsPerPerp === undefined || accountsPerPerp <= 0) {
-    throw new Error("Please enter a valid number of wallets per bot in .env file, e.g. export ACCOUNTS_PER_BOT=5");
+    throw new Error(
+      "Please enter a valid number of wallets per bot in .env file, e.g. export ACCOUNTS_PER_BOT=5"
+    );
   }
-  if (modulo == undefined || modulo < 1 || residual == undefined || residual < 0 || residual >= modulo) {
+  if (
+    modulo == undefined ||
+    modulo < 1 ||
+    residual == undefined ||
+    residual < 0 ||
+    residual >= modulo
+  ) {
     throw new Error(`Invalid peer index/count pair ${residual}/${modulo}`);
   }
   // bot treasury
@@ -50,7 +62,11 @@ async function run() {
     pk: [treasuryPK],
   } = loadAccounts(mnemonicSeed, 0, 0);
   // bot wallets
-  const { addr, pk } = loadAccounts(mnemonicSeed, idxFrom, idxFrom + accountsPerPerp - 1);
+  const { addr, pk } = loadAccounts(
+    mnemonicSeed,
+    idxFrom,
+    idxFrom + accountsPerPerp - 1
+  );
   // load config
   const execConfig = loadExecutorConfig(chainId);
   // check that price services are up
@@ -61,14 +77,16 @@ async function run() {
       someOk = someOk || response.ok;
     }
     if (!someOk) {
-      console.log(`${pxServices.type} price service is down. Reconnecting in 1 minute`);
+      console.log(
+        `${pxServices.type} price service is down. Reconnecting in 1 minute`
+      );
       await sleep(60_000);
       process.exit(1);
     }
   }
   console.log("Price services are live");
   // start bot
-  console.log(`\nStarting ${addr.length} ${symbol} executors with addresses:`);
+  console.log(`\nStarting executor with ${addr.length} wallets:`);
   for (let refAddr of addr) {
     console.log(refAddr);
   }
@@ -77,27 +95,44 @@ async function run() {
   let executor: Executor;
   let runPromise: Promise<void>;
   try {
-    executor = new Executor(pk, symbol, execConfig, modulo, residual, earningsAddr);
-    let currRPC = chooseRPC(execConfig.RPC, lastRPC);
+    executor = new Executor(pk, execConfig, modulo, residual, earningsAddr);
+    let currRPC = chooseRPC(execConfig.executeRPC, lastRPC);
     console.log(`using RPC:\n${currRPC}`);
     lastRPC = currRPC;
     const provider = new ethers.providers.StaticJsonRpcProvider(currRPC);
     const treasury = new ethers.Wallet(treasuryPK, provider);
     // min balance should cover 1e7 gas
-    const minBalance = ethers.utils.parseUnits(`${execConfig.maxGasPriceGWei * 1e7}`, "gwei"); //ethers.BigNumber.from(Math.round(refConfig.maxGasPriceGWei * 1e16)); // 1e9: to wei, 1e7: 10 million
+    const minBalance = ethers.utils.parseUnits(
+      `${execConfig.maxGasPriceGWei * 1e7}`,
+      "gwei"
+    ); //ethers.BigNumber.from(Math.round(refConfig.maxGasPriceGWei * 1e16)); // 1e9: to wei, 1e7: 10 million
     for (let execAddr of addr) {
       const executorBalance = await provider.getBalance(execAddr);
-      console.log(`Executor (${execAddr}) balance: ${ethers.utils.formatUnits(executorBalance)} ETH (or native token)`);
+      console.log(
+        `Executor (${execAddr}) balance: ${ethers.utils.formatUnits(
+          executorBalance
+        )} ETH (or native token)`
+      );
       const treasuryBalance = await provider.getBalance(treasuryAddr);
       console.log(
-        `Treasury (${treasuryAddr}) balance: ${ethers.utils.formatUnits(treasuryBalance)} ETH (or native token)`
+        `Treasury (${treasuryAddr}) balance: ${ethers.utils.formatUnits(
+          treasuryBalance
+        )} ETH (or native token)`
       );
-      console.log(`Minimum balance: ${ethers.utils.formatUnits(minBalance)} ETH (or native token)`);
+      console.log(
+        `Minimum balance: ${ethers.utils.formatUnits(
+          minBalance
+        )} ETH (or native token)`
+      );
       if (executorBalance.lt(minBalance)) {
         // transfer twice the min so it doesn't transfer every time
         const transferAmount = minBalance.mul(2).sub(executorBalance);
         if (transferAmount.lt(treasuryBalance)) {
-          console.log(`Funding relayer with ${ethers.utils.formatUnits(transferAmount)} tokens...`);
+          console.log(
+            `Funding relayer with ${ethers.utils.formatUnits(
+              transferAmount
+            )} tokens...`
+          );
           const tx = await treasury.sendTransaction({
             to: execAddr,
             value: transferAmount,

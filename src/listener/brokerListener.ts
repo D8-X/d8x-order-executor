@@ -3,7 +3,11 @@ import { ethers } from "ethers";
 import { Redis } from "ioredis";
 import SturdyWebSocket from "sturdy-websocket";
 import Websocket from "ws";
-import { BrokerListenerConfig, BrokerWSMessage, BrokerWSUpdateData } from "../types";
+import {
+  BrokerListenerConfig,
+  BrokerWSMessage,
+  BrokerWSUpdateData,
+} from "../types";
 import { chooseRPC, constructRedis, executeWithTimeout } from "../utils";
 
 enum ListeningMode {
@@ -13,6 +17,7 @@ enum ListeningMode {
 
 export default class BackendListener {
   private config: BrokerListenerConfig;
+  private wsIndex: number;
 
   // objects
   private httpProvider: ethers.providers.StaticJsonRpcProvider;
@@ -24,16 +29,25 @@ export default class BackendListener {
   private perpIds: number[] = [];
   private chainId: number | undefined = undefined;
 
-  constructor(config: BrokerListenerConfig) {
+  constructor(config: BrokerListenerConfig, wsIndex: number) {
     this.config = config;
-    this.md = new MarketData(PerpetualDataHandler.readSDKConfig(this.config.sdkConfig));
+    this.wsIndex = wsIndex;
+    this.md = new MarketData(
+      PerpetualDataHandler.readSDKConfig(this.config.sdkConfig)
+    );
     this.redisPubClient = constructRedis("BlockchainListener");
-    this.httpProvider = new ethers.providers.StaticJsonRpcProvider(chooseRPC(this.config.httpRPC));
-    this.ws = new SturdyWebSocket(this.config.brokerWS, { wsConstructor: Websocket });
+    this.httpProvider = new ethers.providers.StaticJsonRpcProvider(
+      chooseRPC(this.config.httpRPC)
+    );
+    this.ws = new SturdyWebSocket(this.config.brokerWS[wsIndex], {
+      wsConstructor: Websocket,
+    });
   }
 
   public unsubscribe() {
-    console.log(`${new Date(Date.now()).toISOString()} unsubscribing not implemented`);
+    console.log(
+      `${new Date(Date.now()).toISOString()} unsubscribing not implemented`
+    );
   }
 
   public async start() {
@@ -41,19 +55,23 @@ export default class BackendListener {
     const network = await executeWithTimeout(this.httpProvider.ready, 10_000);
     // connect to http provider
     console.log(
-      `${new Date(Date.now()).toISOString()}: Broker listener connected to ${network.name}, chain id ${
-        network.chainId
-      }, using HTTP provider`
+      `${new Date(Date.now()).toISOString()}: Broker listener connected to ${
+        network.name
+      }, chain id ${network.chainId}, using HTTP provider`
     );
     this.chainId = network.chainId;
 
     await this.md.createProxyInstance(this.httpProvider);
     console.log(
-      `${new Date(Date.now()).toISOString()}: http connection established with proxy @ ${this.md.getProxyAddress()}`
+      `${new Date(
+        Date.now()
+      ).toISOString()}: http connection established with proxy @ ${this.md.getProxyAddress()}`
     );
 
     // get perpetuals and order books
-    this.perpIds = (await this.md.getReadOnlyProxyInstance().getPoolStaticInfo(1, 255))[0].flat();
+    this.perpIds = (
+      await this.md.getReadOnlyProxyInstance().getPoolStaticInfo(1, 255)
+    )[0].flat();
 
     // subscribe
     this.addListeners();
@@ -61,7 +79,9 @@ export default class BackendListener {
     // reconnect
     setInterval(() => {
       if (!this.ws.OPEN && !this.ws.CLOSING && !this.ws.CONNECTING) {
-        this.ws = new SturdyWebSocket(this.config.brokerWS, { wsConstructor: Websocket });
+        this.ws = new SturdyWebSocket(this.config.brokerWS[this.wsIndex], {
+          wsConstructor: Websocket,
+        });
         this.addListeners();
       }
     }, this.config.brokerReconnectIntervalMS);
@@ -69,16 +89,22 @@ export default class BackendListener {
 
   private addListeners() {
     this.ws.addEventListener("open", () => {
-      console.log(`${new Date(Date.now()).toISOString()} Connected to broker WS`);
+      console.log(
+        `${new Date(Date.now()).toISOString()} Connected to broker WS`
+      );
     });
 
     this.ws.addEventListener("close", () => {
-      console.log(`${new Date(Date.now()).toISOString()} Disconnected from broker WS`);
+      console.log(
+        `${new Date(Date.now()).toISOString()} Disconnected from broker WS`
+      );
     });
 
     this.perpIds.forEach((id) => {
       console.log(
-        `${new Date(Date.now()).toISOString()} Subscribing to perpetual id ${id} via broker WS on chain ID ${
+        `${new Date(
+          Date.now()
+        ).toISOString()} Subscribing to perpetual id ${id} via broker WS on chain ID ${
           this.chainId
         }`
       );
@@ -96,16 +122,30 @@ export default class BackendListener {
       switch (msg.type) {
         case "subscribe":
           if (msg.data === "ack") {
-            console.log(`${new Date(Date.now()).toISOString()} Subscribed to perpetual id ${perpId} via broker WS`);
+            console.log(
+              `${new Date(
+                Date.now()
+              ).toISOString()} Subscribed to perpetual id ${perpId} via broker WS`
+            );
           } else {
             console.log(
-              `${new Date(Date.now()).toISOString()} Error subscribing to perpetual id ${perpId} via broker WS`
+              `${new Date(
+                Date.now()
+              ).toISOString()} Error subscribing to perpetual id ${perpId} via broker WS`
             );
           }
           break;
         case "update":
-          const { iDeadline, traderAddr, flags, fAmount, fLimitPrice, fTriggerPrice, executionTimestamp, orderId } =
-            msg.data as BrokerWSUpdateData;
+          const {
+            iDeadline,
+            traderAddr,
+            flags,
+            fAmount,
+            fLimitPrice,
+            fTriggerPrice,
+            executionTimestamp,
+            orderId,
+          } = msg.data as BrokerWSUpdateData;
           this.redisPubClient.publish(
             "PerpetualLimitOrderCreated",
             JSON.stringify({
@@ -124,7 +164,9 @@ export default class BackendListener {
             })
           );
           console.log(
-            `${new Date(Date.now()).toISOString()} Perpetual Order ${perpId}:${orderId} received via broker WS`
+            `${new Date(
+              Date.now()
+            ).toISOString()} Perpetual Order ${perpId}:${orderId} received via broker WS`
           );
         default:
           break;

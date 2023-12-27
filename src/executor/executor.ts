@@ -26,6 +26,7 @@ import { constructRedis, executeWithTimeout } from "../utils";
 import RPCManager from "./rpcManager";
 import { IClientOrder } from "@d8x/perpetuals-sdk/dist/esm/contracts/LimitOrderBook";
 import { formatUnits, parseUnits } from "@ethersproject/units";
+import { StaticJsonRpcProvider } from "@ethersproject/providers";
 
 export default class Executor {
   // objects
@@ -34,6 +35,7 @@ export default class Executor {
   private orTool: OrderExecutorTool[] | undefined;
   private redisSubClient: Redis;
   private rpcManager: RPCManager;
+  private rpcManagerRecount: RPCManager;
 
   // parameters
   private earningsAddr: string;
@@ -48,6 +50,7 @@ export default class Executor {
   private SPLIT_PX_UPDATE: boolean = true; // needed on zk because of performance issues on Polygon side
   private REFRESH_INTERVAL_MS: number; // how often to force a refresh of all orders, in miliseconds
   private EXECUTE_INTERVAL_MS: number;
+  private RECOUNT_INTERVAL_MS: number;
 
   // state
   // private openOrders: OrderBundle[] = new Array<OrderBundle>();
@@ -59,7 +62,7 @@ export default class Executor {
   private lastRefreshTime: number = 0;
   private lastExecuteOrdersCall: number = 0;
   private blockNumber: number;
-  private hasOffChainOrders: boolean = false;
+  private hasOffChainOrders: Map<number, boolean> = new Map(); // perpId => any orders received via broker ws?
   private lastOffChainOrder: number = Infinity;
   private traders: Map<string, MarginAccount[]> = new Map(); // traderAddr => margin accounts (all perps)
 
@@ -83,10 +86,12 @@ export default class Executor {
     this.config = config;
     this.EXECUTE_INTERVAL_MS = this.config.executeIntervalSeconds * 1_000;
     this.REFRESH_INTERVAL_MS = this.config.refreshOrdersSeconds * 1_000;
+    this.RECOUNT_INTERVAL_MS = this.config.recountIntervalSeconds * 1_000;
     this.peerNonExecutionTimestampMS = new Map<string, number>();
     this.redisSubClient = constructRedis("ExecutorListener");
     this.blockNumber = 0;
-    this.rpcManager = new RPCManager(this.config.RPC);
+    this.rpcManager = new RPCManager(this.config.executeRPC);
+    this.rpcManagerRecount = new RPCManager(this.config.recountRPC);
   }
 
   private log(x: any) {
@@ -161,13 +166,13 @@ export default class Executor {
     this.log({
       proxy: config.proxyAddr,
       earnings: this.earningsAddr,
-      servers: this.moduloTS,
-      serverIndex: this.residualTS,
+      botCount: this.moduloTS,
+      botIndex: this.residualTS,
       wallets: this.orTool.map((ot) => ot.getAddress()),
     });
-    // execute if needed, then wait for events
-    await this.executeOrders(true);
-    await this.executeOrders(false);
+    // // execute if needed, then wait for events
+    // await this.executeOrders(true);
+    // await this.executeOrders(false);
   }
 
   /**
@@ -233,16 +238,18 @@ export default class Executor {
     let numBlocks = -1;
 
     return new Promise<void>(async (resolve, reject) => {
-      setInterval(async () => {
-        // should check if anything can be executed every minute +- 10 sec
-        if (
-          !this.hasQueue &&
-          Date.now() - this.lastExecuteOrdersCall < this.EXECUTE_INTERVAL_MS
-        ) {
-          return;
-        }
-        await this.executeOrders(false);
-      }, 10_000);
+      for (const symbol of this.symbols) {
+        setInterval(async () => {
+          // should check if anything can be executed every minute +- 10 sec
+          if (
+            !this.hasQueue &&
+            Date.now() - this.lastExecuteOrdersCall < this.EXECUTE_INTERVAL_MS
+          ) {
+            return;
+          }
+          await this.executeOrders(symbol, false);
+        }, 10_000);
+      }
 
       setInterval(async () => {
         // checks that we refresh all orders every hour +- 10 sec
@@ -252,14 +259,9 @@ export default class Executor {
         await this.refreshAllOrders();
       }, 10_000);
 
-      // setInterval(async () => {
-      //   // tries to execute frequently if the broker signed an order,
-      //   // until the order is found on chain or it's been long enough
-      //   if (this.hasOffChainOrders && Date.now() - this.lastOffChainOrder < 60_000) {
-      //     this.log(`last off-chain order: ${Math.round((Date.now() - this.lastOffChainOrder) / 1000)}s ago`);
-      //     await this.executeOrders();
-      //   }
-      // }, 1_000);
+      setInterval(async () => {
+        await this.recount();
+      }, this.RECOUNT_INTERVAL_MS);
 
       this.redisSubClient.on("message", async (channel: any, msg: string) => {
         switch (channel) {
@@ -272,13 +274,13 @@ export default class Executor {
             numBlocks++;
             // new block - track
             this.blockNumber = Number(msg);
-            if (
-              this.hasOffChainOrders &&
-              Date.now() - this.lastOffChainOrder < 60_000
-            ) {
-              // this.log(`last off-chain order: ${Math.round((Date.now() - this.lastOffChainOrder) / 1000)}s ago`);
-              await this.executeOrders(true);
+            for (let i = 0; i < this.symbols.length; i++) {
+              if (this.hasOffChainOrders.get(this.perpetualIds[i])) {
+                this.log(`execution attempt (broker sent order)`);
+                await this.executeOrders(this.symbols[i], true);
+              }
             }
+
             // if (numBlocks % 100 == 0) {
             //   this.log(
             //     JSON.stringify({
@@ -305,7 +307,6 @@ export default class Executor {
               ts,
               fromEvent
             );
-            this.lastOffChainOrder = Date.now();
 
             break;
           }
@@ -319,7 +320,7 @@ export default class Executor {
             let ts = Math.floor(Date.now() / 1_000);
             this.log(`execution of ${digest} failed with reason ${reason}`);
             if (reason != "cancel delay required") {
-              this.removeOrder(perpetualId, digest, ts);
+              this.removeOrder(digest, ts);
             } else {
               // unlock to try again
               this.unlockOrder(perpetualId, digest);
@@ -328,10 +329,10 @@ export default class Executor {
             break;
           }
           case "PerpetualLimitOrderCancelled": {
-            const { perpetualId, digest } = JSON.parse(msg);
+            const { digest } = JSON.parse(msg);
             let ts = Math.floor(Date.now() / 1_000);
             this.log(`order ${digest} has been cancelled`);
-            this.removeOrder(perpetualId, digest, ts);
+            this.removeOrder(digest, ts);
 
             break;
           }
@@ -340,9 +341,8 @@ export default class Executor {
 
             let ts = Math.floor(Date.now() / 1_000);
             this.log(`order ${digest} has been executed`);
-            this.removeOrder(perpetualId, digest, ts);
+            this.removeOrder(digest, ts);
             this.updateAccount(traderAddr);
-
             break;
           }
           default: {
@@ -394,7 +394,7 @@ export default class Executor {
         return;
       }
     } else {
-      this.hasOffChainOrders = true;
+      this.hasOffChainOrders.set(perpetualId, true);
     }
 
     let orderBundle = {
@@ -411,14 +411,15 @@ export default class Executor {
       bundles[idx].order = onChain ? order! : bundles[idx].order;
       bundles[idx].onChain = onChain || bundles[idx].onChain;
     } else {
-      let jdx = this.newOrders.findIndex((b) => b.id == digest);
+      const newOrders = this.newOrders.get(perpetualId)!;
+      let jdx = newOrders.findIndex((b) => b.id == digest);
       if (jdx >= 0) {
-        this.newOrders[jdx].order = onChain
+        newOrders[jdx].order = onChain
           ? order!
-          : this.newOrders[jdx].order;
-        this.newOrders[jdx].onChain = onChain || this.newOrders[jdx].onChain;
+          : this.newOrders.get(perpetualId)![jdx].order;
+        newOrders[jdx].onChain = onChain || newOrders[jdx].onChain;
       } else {
-        this.newOrders.push(orderBundle);
+        newOrders.push(orderBundle);
       }
     }
     if (!this.traders.has(fromTrader)) {
@@ -444,6 +445,7 @@ export default class Executor {
    * Copy new orders to order array and delete reference in newOrders
    */
   private moveNewOrdersToOrders() {
+    let hasQueue = false;
     for (const perpId of this.perpetualIds) {
       const newOrders = this.newOrders.get(perpId);
       if (newOrders === undefined) {
@@ -470,20 +472,23 @@ export default class Executor {
           orders.filter((ob) => !this.removedOrders.has(ob.id))
         );
       }
+      hasQueue =
+        hasQueue ||
+        this.orders
+          .get(perpId)!
+          .some((x) => x.order?.type === ORDER_TYPE_MARKET);
     }
 
     this.removedOrders = new Set<string>();
     this.newOrders = new Map();
-    // this.hasQueue = this.openOrders.some(
-    //   (ob) => ob.order?.type === ORDER_TYPE_MARKET
-    // );
+    this.hasQueue = hasQueue;
   }
 
   private async recount() {
     const obI = LimitOrderBook__factory.createInterface();
     const multicall = Multicall3__factory.connect(
       MULTICALL_ADDRESS,
-      this.provider!
+      new StaticJsonRpcProvider(await this.rpcManagerRecount.getRPC(false))
     );
     const calls = this.symbols.map((symbol) => ({
       target: this.mktData!.getOrderBookContract(symbol).address,
@@ -493,17 +498,19 @@ export default class Executor {
     // order count in all perps (all - irrespective of deletion)
     const res = await multicall.callStatic.aggregate3(calls);
     const orderCounts = res.map(
-      ({ success, returnData }) =>
+      ({ returnData }) =>
         obI.decodeFunctionResult(
           "numberOfAllDigests",
           returnData
         )[0] as BigNumber
     );
-    this.symbols.forEach((symbol, idx) => {
-      if (this.orderCount.get(symbol)!.lt(orderCounts[idx])) {
+    for (let i = 0; i < this.symbols.length; i++) {
+      if (this.orderCount.get(this.symbols[i])!.lt(orderCounts[i])) {
         // new order - refresh and execute in perp
+        await this.refreshPerpetualOrders(this.symbols[i]);
+        await this.executeOrders(this.symbols[i], true);
       }
-    });
+    }
   }
 
   private async updateExchangeInfo() {
@@ -552,6 +559,7 @@ export default class Executor {
   }
 
   private async refreshAllOrders() {
+    this.log("refreshing all orders");
     const md = this.mktData!;
     const obI = LimitOrderBook__factory.createInterface();
     const multicall = Multicall3__factory.connect(
@@ -577,29 +585,27 @@ export default class Executor {
         orderCounts[i],
       ]),
     }));
+
     const res2 = await multicall.callStatic.aggregate3(calls2);
     const ts = Date.now();
     const orders = res2
-      .map(
-        ({ returnData }) =>
-          obI.decodeFunctionResult("pollLimitOrders", returnData)[0] as [
-            IClientOrder.ClientOrderStructOutput[],
-            string[]
-          ]
+      .map(({ returnData }) =>
+        obI.decodeFunctionResult("pollLimitOrders", returnData)
       )
-      .map(([scOrders, orderIds]) =>
-        orderIds.map(
-          (id, j) =>
-            ({
-              id: id,
-              order: md.smartContractOrderToOrder(scOrders[j]),
-              onChain: true,
-              ts: ts,
-              isLocked: false,
-              traderAddr: scOrders[j].traderAddr,
-            } as OrderBundle)
-        )
-      );
+      .map((decoded) => {
+        const scOrders = decoded[0] as IClientOrder.ClientOrderStructOutput[];
+        const orderIds = decoded[1] as string[];
+        return orderIds.map((id, j) => {
+          return {
+            id: id,
+            order: md.smartContractOrderToOrder(scOrders[j]),
+            onChain: true,
+            ts: ts,
+            isLocked: false,
+            traderAddr: scOrders[j].traderAddr,
+          } as OrderBundle;
+        });
+      });
     orders.forEach((orderBundles, i) => {
       this.orders.set(this.perpetualIds[i], orderBundles);
     });
@@ -614,12 +620,15 @@ export default class Executor {
     if (this.orTool == undefined) {
       throw Error("orTool not defined");
     }
+    const perpId = this.mktData!.getPerpIdFromSymbol(symbol);
     // let openOrders = new Array<OrderBundle>();
-    this.openOrders = [];
+    // this.openOrders = [];
+    this.orders.set(perpId, []);
     // let newOrderIds = new Set<string>();
-    this.orderIds = new Set();
+    // this.orderIds = new Set();
 
-    this.newOrders = [];
+    // this.newOrders = [];
+    this.newOrders.set(perpId, []);
     this.removedOrders = new Set<string>();
 
     this.lastRefreshTime = Date.now();
@@ -640,7 +649,7 @@ export default class Executor {
     const traders = allOrders[2];
     for (let k = 0; k < orders.length; k++) {
       if (orders[k].deadline == undefined || orders[k].deadline! > ts) {
-        this.openOrders.push({
+        this.orders.get(perpId)!.push({
           id: orderIds[k],
           order: orders[k],
           isLocked: false,
@@ -648,20 +657,23 @@ export default class Executor {
           onChain: true,
           traderAddr: traders[k],
         });
-        this.orderIds.add(orderIds[k]);
+        // this.orderIds.add(orderIds[k]);
       }
     }
-    this.log(
-      `${this.orderIds.size} open orders, ${
-        this.openOrders.filter((o) => o.order.type == ORDER_TYPE_MARKET).length
-      } of which are market orders`
-    );
+    this.perpetualIds.forEach((id) => {
+      this.log(
+        `${this.orders.get(id)!.length} open orders, ${
+          this.orders.get(id)!.filter((o) => o.order.type == ORDER_TYPE_MARKET)
+            .length
+        } of which are market orders`
+      );
+    });
   }
 
   private async refreshOffChainStatus() {
-    let hasOffChainOrders = false;
     let ordersToCheck: { perpId: number; orderId: string }[] = [];
     for (const perpId of this.perpetualIds) {
+      let hasOffChainOrders = false;
       for (let orderBundle of this.orders.get(perpId)!) {
         if (!orderBundle.onChain) {
           if (Date.now() > orderBundle.ts + 60_000) {
@@ -677,8 +689,9 @@ export default class Executor {
           }
         }
       }
+      this.hasOffChainOrders.set(perpId, hasOffChainOrders);
     }
-    this.hasOffChainOrders = hasOffChainOrders;
+
     if (ordersToCheck.length < 1) {
       return;
     }
@@ -709,7 +722,6 @@ export default class Executor {
           bundles[i].ts = Date.now();
         }
       }
-      // this.orders.set(perpId, bundles);
     });
   }
 
@@ -794,83 +806,83 @@ export default class Executor {
     marketOnly: boolean
   ) {
     await this.refreshOffChainStatus();
+    const perpId = this.mktData!.getPerpIdFromSymbol(symbol);
+    const orders = this.orders.get(perpId)!;
     // determine which orders could be executed now
-    const isExecutable = this.openOrders.map(
-      (orderBundle: OrderBundle, idx: number) => {
-        // is this order currently locked or not yet on-chain
-        if (
-          orderBundle.isLocked ||
-          !orderBundle.onChain ||
-          (orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly
-        ) {
-          if ((orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly) {
+    const isExecutable = orders.map((orderBundle: OrderBundle, idx: number) => {
+      // is this order currently locked or not yet on-chain
+      if (
+        orderBundle.isLocked ||
+        !orderBundle.onChain ||
+        (orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly
+      ) {
+        if ((orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly) {
+          this.log(
+            `order ${orderBundle.id} is market during conditional execution, or limit during market execution`
+          );
+        } else {
+          this.log(`order ${orderBundle.id} is locked or not on-chain`);
+        }
+        return false;
+      }
+      if (
+        orderBundle.order.submittedTimestamp! +
+          this.config.executeDelaySeconds >
+        Math.max(...submission.submission.timestamps)
+      ) {
+        // too early
+        // this.log(`order ${orderBundle.id} is too early`);
+        return false;
+      }
+      if (
+        Math.max(
+          orderBundle.order.executionTimestamp ?? 0,
+          orderBundle.order.submittedTimestamp ?? 0
+        ) > Math.min(...submission.submission.timestamps)
+      ) {
+        const timeLimit = Math.max(
+          orderBundle.order.executionTimestamp ?? 0,
+          orderBundle.order.submittedTimestamp ?? 0
+        );
+        const oracleTime = Math.min(...submission.submission.timestamps);
+        this.log(
+          `oracle time older than order limit time: ${oracleTime} < ${timeLimit}`
+        );
+        return false;
+      }
+      const overdueMS = this.overdueForMS(orderBundle);
+      const isMine = this.isMyOrder(orderBundle.id);
+      // is this order not ours and not overdue?
+      if (!isMine && overdueMS < 0) {
+        return false;
+      }
+      // is it a market order without parents (so no need to check conditions)?
+      if (this.isSingleMarketOrder(orderBundle.order)) {
+        if (overdueMS > 0) {
+          if (isMine) {
             this.log(
-              `order ${orderBundle.id} is market during conditional execution, or limit during market execution`
+              `OWN ${orderBundle.order.type} order ${
+                orderBundle.id
+              }, late for ${
+                (overdueMS + this.NON_EXECUTION_WAIT_TIME_MS) / 1_000
+              } seconds`
             );
           } else {
-            this.log(`order ${orderBundle.id} is locked or not on-chain`);
+            this.log(
+              `PEER ${orderBundle.order.type} order ${
+                orderBundle.id
+              }, late for ${
+                (overdueMS + this.NON_EXECUTION_WAIT_TIME_MS) / 1_000
+              } seconds`
+            );
+            this.peerNonExecutionTimestampMS.delete(orderBundle.id);
           }
-          return false;
         }
-        if (
-          (orderBundle.order.submittedTimestamp ?? Infinity) +
-            this.config.executeDelaySeconds >
-          Math.max(...submission.submission.timestamps)
-        ) {
-          // too early
-          this.log(`order ${orderBundle.id} is too early`);
-          return false;
-        }
-        if (
-          Math.max(
-            orderBundle.order.executionTimestamp ?? 0,
-            orderBundle.order.submittedTimestamp ?? 0
-          ) > Math.min(...submission.submission.timestamps)
-        ) {
-          const timeLimit = Math.max(
-            orderBundle.order.executionTimestamp ?? 0,
-            orderBundle.order.submittedTimestamp ?? 0
-          );
-          const oracleTime = Math.min(...submission.submission.timestamps);
-          this.log(
-            `oracle time older than order limit time: ${oracleTime} < ${timeLimit}`
-          );
-          return false;
-        }
-        const overdueMS = this.overdueForMS(orderBundle);
-        const isMine = this.isMyOrder(orderBundle.id);
-        // is this order not ours and not overdue?
-        if (!isMine && overdueMS < 0) {
-          return false;
-        }
-        // is it a market order without parents (so no need to check conditions)?
-        if (this.isSingleMarketOrder(orderBundle.order)) {
-          if (overdueMS > 0) {
-            if (isMine) {
-              this.log(
-                `OWN ${orderBundle.order.type} order ${
-                  orderBundle.id
-                }, late for ${
-                  (overdueMS + this.NON_EXECUTION_WAIT_TIME_MS) / 1_000
-                } seconds`
-              );
-            } else {
-              this.log(
-                `PEER ${orderBundle.order.type} order ${
-                  orderBundle.id
-                }, late for ${
-                  (overdueMS + this.NON_EXECUTION_WAIT_TIME_MS) / 1_000
-                } seconds`
-              );
-              this.peerNonExecutionTimestampMS.delete(orderBundle.id);
-            }
-          }
-          return overdueMS > 0;
-        }
-        // it's not an unconditional market order, so the conditions should be checked
-        return undefined;
+        return overdueMS > 0;
       }
-    );
+      // it's not an unconditional market order, so the conditions should be checked
+      return undefined;
+    });
 
     // if anything is undetermined, we check the blockchain for prices
     const ordersToCheck = {
@@ -882,27 +894,26 @@ export default class Executor {
       let midPrice = await this.mktData!.getPerpetualMidPrice(symbol);
       for (let i = 0; i < isExecutable.length; i++) {
         if (isExecutable[i] == undefined) {
-          if (
-            this.openOrders[i].onChain &&
-            this.openOrders[i].order?.reduceOnly
-          ) {
-            if (this.traders.has(this.openOrders[i].traderAddr)) {
-              const side = this.traders.get(
-                this.openOrders[i].traderAddr
-              )?.side;
+          if (orders[i].onChain && orders[i].order?.reduceOnly) {
+            if (this.traders.has(orders[i].traderAddr)) {
+              const side = this.traders
+                .get(orders[i].traderAddr)
+                ?.find((acct) => acct.symbol === symbol)?.side;
               isExecutable[i] =
-                side !== CLOSED_SIDE && side !== this.openOrders[i].order.side;
+                side !== undefined &&
+                side !== CLOSED_SIDE &&
+                side !== orders[i].order.side;
             } else {
               isExecutable[i] = false;
             }
           } else if (
-            (this.openOrders[i].order.side == BUY_SIDE &&
-              midPrice < this.openOrders[i].order.limitPrice!) ||
-            (this.openOrders[i].order.side == SELL_SIDE &&
-              midPrice > this.openOrders[i].order.limitPrice!)
+            (orders[i].order.side == BUY_SIDE &&
+              midPrice < orders[i].order.limitPrice!) ||
+            (orders[i].order.side == SELL_SIDE &&
+              midPrice > orders[i].order.limitPrice!)
           ) {
-            ordersToCheck.orders.push(this.openOrders[i].order);
-            ordersToCheck.ids.push(this.openOrders[i].id);
+            ordersToCheck.orders.push(orders[i].order);
+            ordersToCheck.ids.push(orders[i].id);
             ordersToCheck.idxInOrders.push(i);
             // isExecutable[i] = await this.orTool![i % this.orTool!.length].isTradeable(
             //   this.openOrders[i].order,
@@ -966,9 +977,11 @@ export default class Executor {
       throw Error("objects not initialized");
     }
     this.moveNewOrdersToOrders();
+    const perpId = this.mktData!.getPerpIdFromSymbol(symbol);
+    const orders = this.orders.get(perpId)!;
     if (this.isExecuting) {
       return {
-        numOpen: this.openOrders.length,
+        numOpen: orders.length,
         numExecuted: -1,
         numTraded: 0,
       };
@@ -995,7 +1008,7 @@ export default class Executor {
       ) {
         this.isExecuting = false;
         return {
-          numOpen: this.openOrders.length,
+          numOpen: orders.length,
           numExecuted: numExecuted,
           numTraded: numTraded,
         };
@@ -1021,7 +1034,7 @@ export default class Executor {
     ) {
       this.isExecuting = false;
       return {
-        numOpen: this.openOrders.length,
+        numOpen: orders.length,
         numExecuted: 0,
         numTraded: 0,
       };
@@ -1030,7 +1043,7 @@ export default class Executor {
     if (!(await this.checkGasPrice())) {
       this.isExecuting = false;
       return {
-        numOpen: this.openOrders.length,
+        numOpen: orders.length,
         numExecuted: numExecuted,
         numTraded: numTraded,
       };
@@ -1042,24 +1055,24 @@ export default class Executor {
       let executeIdxInOpenOrders: number[] = [];
       for (
         let k = 0;
-        k < this.openOrders.length &&
+        k < this.orders.get(perpId)!.length &&
         numExecuted < this.orTool.length * this.config.maxExecutionBatchSize;
         k++
       ) {
         if (isExecutable[k]) {
           let refIdx = numExecuted % this.orTool.length;
           if (executeIds.get(refIdx) == undefined) {
-            executeIds.set(refIdx, [this.openOrders[k].id]);
+            executeIds.set(refIdx, [this.orders.get(perpId)![k].id]);
           } else {
-            executeIds.get(refIdx)!.push(this.openOrders[k].id);
+            executeIds.get(refIdx)!.push(this.orders.get(perpId)![k].id);
           }
           numExecuted++;
           // will try to execute
           this.log(
-            `${this.openOrders[k].order.type} order ${this.openOrders[k].id} assigned to bot #${refIdx} in this batch:\n${this.openOrders[k].order.side} ${this.openOrders[k].order.quantity} @ ${this.openOrders[k].order.limitPrice}`
+            `${orders[k].order.type} order ${orders[k].id} assigned to bot #${refIdx} in this batch:\n${orders[k].order.side} ${orders[k].order.quantity} @ ${orders[k].order.limitPrice}`
           );
           executeIdxInOpenOrders.push(k);
-          this.openOrders[k].isLocked = true;
+          orders[k].isLocked = true;
         }
       }
 
@@ -1154,7 +1167,7 @@ export default class Executor {
             // unless someone executed them, but then events will take care of it before next round
             // which ids were executed by this bot?
             const ids = new Set(executeIds.get(idx));
-            this.openOrders.forEach((ob) => {
+            orders.forEach((ob) => {
               if (ids.has(ob.id)) {
                 // in this txn: unlock
                 ob.isLocked = false;
@@ -1164,8 +1177,14 @@ export default class Executor {
             // leave locked, events will take care of it
             this.log(`receipt indicates txn success: ${txArray[idx].hash}`);
             const ids = new Set(executeIds.get(idx));
-            this.openOrders = this.openOrders.filter((ob) => !ids.has(ob.id));
-            this.newOrders = this.newOrders.filter((ob) => !ids.has(ob.id));
+            this.orders.set(
+              perpId,
+              orders.filter((ob) => !ids.has(ob.id))
+            );
+            this.newOrders.set(
+              perpId,
+              this.newOrders.get(perpId)!.filter((ob) => !ids.has(ob.id))
+            );
           }
         } catch (e) {
           // verifying txn failed - this is fine, events/regular refresh will remove or unlock as needed
@@ -1177,7 +1196,7 @@ export default class Executor {
             const orderStatus = await this.mktData?.getOrderStatus(symbol, id);
             if (orderStatus === OrderStatus.OPEN) {
               // order is still open - unlock it
-              this.openOrders.forEach((ob) => {
+              orders.forEach((ob) => {
                 if (ob.id === id) {
                   ob.isLocked = false;
                 }
@@ -1193,7 +1212,7 @@ export default class Executor {
     }
     this.isExecuting = false;
     return {
-      numOpen: this.openOrders.length,
+      numOpen: orders.length,
       numExecuted: numExecuted,
       numTraded: numTraded,
     };

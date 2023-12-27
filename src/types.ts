@@ -11,18 +11,19 @@ export interface OrderBundle {
 
 export interface ExecutorConfig {
   chainId: number;
-  RPC: string[];
-  gasStation: string;
+  executeRPC: string[];
+  recountRPC: string[];
   executeIntervalSeconds: number;
   refreshOrdersSeconds: number;
   maxGasPriceGWei: number;
   maxExecutionBatchSize: number;
   executeDelaySeconds: number;
+  recountIntervalSeconds: 10;
   priceFeedEndpoints: Array<{ type: string; endpoints: string[] }>;
 }
 
 export interface BrokerListenerConfig {
-  brokerWS: string;
+  brokerWS: string[];
   brokerReconnectIntervalMS: number;
   sdkConfig: string;
   httpRPC: string[];
@@ -37,7 +38,9 @@ export interface BlockchainListenerConfig {
   healthCheckSeconds: number;
 }
 
-export interface ListenerConfig extends BlockchainListenerConfig, BrokerListenerConfig {}
+export interface ListenerConfig
+  extends BlockchainListenerConfig,
+    BrokerListenerConfig {}
 
 export interface BrokerWSErrorData {
   error: string;

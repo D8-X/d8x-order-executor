@@ -9,13 +9,15 @@ async function start() {
   if (chainId == undefined) {
     throw new Error(`Environment variable CHAIN_ID not defined.`);
   }
-  const listenerConfig = loadListenerConfig(Number(process.env.CHAIN_ID as string));
+  const listenerConfig = loadListenerConfig(
+    Number(process.env.CHAIN_ID as string)
+  );
 
   const eventStreamer = new BlockhainListener(listenerConfig);
   eventStreamer.start();
 
-  if (listenerConfig.brokerWS !== "") {
-    const wsStreamer = new BrokerListener(listenerConfig);
+  for (let i = 0; i < listenerConfig.brokerWS.length; i++) {
+    const wsStreamer = new BrokerListener(listenerConfig, i);
     wsStreamer.start();
   }
 }

@@ -4,7 +4,7 @@
     "sdkConfig": "zkevm",
     "httpRPC": ["https://zkevm-rpc.com"],
     "wsRPC": [],
-    "brokerWS": "",
+    "brokerWS": [],
     "brokerReconnectIntervalMS": 7200000,
     "waitForBlockseconds": 30,
     "healthCheckSeconds": 2000
@@ -14,7 +14,7 @@
     "sdkConfig": "zkevmTestnet",
     "httpRPC": ["https://rpc.public.zkevm-test.net"],
     "wsRPC": [],
-    "brokerWS": "",
+    "brokerWS": [],
     "brokerReconnectIntervalMS": 7200000,
     "waitForBlockseconds": 30,
     "healthCheckSeconds": 2000
