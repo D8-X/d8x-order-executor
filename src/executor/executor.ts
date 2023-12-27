@@ -31,6 +31,7 @@ import { StaticJsonRpcProvider } from "@ethersproject/providers";
 export default class Executor {
   // objects
   private provider: ethers.providers.Provider | undefined;
+  private recountProvider: StaticJsonRpcProvider[];
   private mktData: MarketData | undefined;
   private orTool: OrderExecutorTool[] | undefined;
   private redisSubClient: Redis;
@@ -71,6 +72,7 @@ export default class Executor {
   private orderBooks: string[] = []; // order book addresses
   private orders: Map<number, OrderBundle[]> = new Map(); // perp id => all (open) order bundles in order book
   private orderCount: Map<string, BigNumber> = new Map(); // symbol => count of all orders ever posted to order book
+  private currentRecountProvider: number = 0;
 
   constructor(
     privateKey: string | string[],
@@ -92,6 +94,13 @@ export default class Executor {
     this.blockNumber = 0;
     this.rpcManager = new RPCManager(this.config.executeRPC);
     this.rpcManagerRecount = new RPCManager(this.config.recountRPC);
+    this.recountProvider = this.config.recountRPC.map(
+      (url) =>
+        new StaticJsonRpcProvider(url, {
+          name: "",
+          chainId: this.config.chainId,
+        })
+    );
   }
 
   private log(x: any) {
@@ -260,7 +269,13 @@ export default class Executor {
       }, 10_000);
 
       setInterval(async () => {
-        await this.recount();
+        try {
+          await this.recount();
+        } catch (e) {
+          console.log(e);
+          this.currentRecountProvider =
+            (this.currentRecountProvider + 1) % this.recountProvider.length;
+        }
       }, this.RECOUNT_INTERVAL_MS);
 
       this.redisSubClient.on("message", async (channel: any, msg: string) => {
@@ -297,7 +312,11 @@ export default class Executor {
             const { perpetualId, trader, order, digest, fromEvent } =
               JSON.parse(msg);
             let ts = Math.floor(Date.now() / 1_000);
-            this.log(`adding order ${digest} from trader ${trader}`);
+            this.log(
+              `order received via ${
+                fromEvent ? "event" : "broker"
+              }: ${digest} from trader ${trader}`
+            );
             // addOrder can trigger an early call to execute if it's a market order
             await this.addOrder(
               perpetualId,
@@ -411,6 +430,9 @@ export default class Executor {
       bundles[idx].order = onChain ? order! : bundles[idx].order;
       bundles[idx].onChain = onChain || bundles[idx].onChain;
     } else {
+      if (!this.newOrders.has(perpetualId)) {
+        this.newOrders.set(perpetualId, []);
+      }
       const newOrders = this.newOrders.get(perpetualId)!;
       let jdx = newOrders.findIndex((b) => b.id == digest);
       if (jdx >= 0) {
@@ -485,10 +507,11 @@ export default class Executor {
   }
 
   private async recount() {
+    this.log("recount");
     const obI = LimitOrderBook__factory.createInterface();
     const multicall = Multicall3__factory.connect(
       MULTICALL_ADDRESS,
-      new StaticJsonRpcProvider(await this.rpcManagerRecount.getRPC(false))
+      this.recountProvider[this.currentRecountProvider]
     );
     const calls = this.symbols.map((symbol) => ({
       target: this.mktData!.getOrderBookContract(symbol).address,
@@ -507,9 +530,11 @@ export default class Executor {
     for (let i = 0; i < this.symbols.length; i++) {
       if (this.orderCount.get(this.symbols[i])!.lt(orderCounts[i])) {
         // new order - refresh and execute in perp
+        this.log("recount triggered refresh + execution");
         await this.refreshPerpetualOrders(this.symbols[i]);
         await this.executeOrders(this.symbols[i], true);
       }
+      this.orderCount.set(this.symbols[i], orderCounts[i]);
     }
   }
 
@@ -816,13 +841,13 @@ export default class Executor {
         !orderBundle.onChain ||
         (orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly
       ) {
-        if ((orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly) {
-          this.log(
-            `order ${orderBundle.id} is market during conditional execution, or limit during market execution`
-          );
-        } else {
-          this.log(`order ${orderBundle.id} is locked or not on-chain`);
-        }
+        // if ((orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly) {
+        //   this.log(
+        //     `order ${orderBundle.id} is market during conditional execution, or limit during market execution`
+        //   );
+        // } else {
+        //   this.log(`order ${orderBundle.id} is locked or not on-chain`);
+        // }
         return false;
       }
       if (
