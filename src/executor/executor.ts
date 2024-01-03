@@ -507,7 +507,7 @@ export default class Executor {
   }
 
   private async recount() {
-    this.log("recount");
+    // this.log("recount");
     const obI = LimitOrderBook__factory.createInterface();
     const multicall = Multicall3__factory.connect(
       MULTICALL_ADDRESS,
@@ -531,7 +531,7 @@ export default class Executor {
       const curCount =
         this.orderCount.get(this.symbols[i]) ?? BigNumber.from(0);
       this.orderCount.set(this.symbols[i], orderCounts[i]);
-      if (curCount.lt(orderCounts[i])) {
+      if (curCount.lt(orderCounts[i]) && !this.isExecuting) {
         // new order - refresh and execute in perp
         this.log("recount triggered refresh + execution");
         await this.refreshPerpetualOrders(this.symbols[i]);
