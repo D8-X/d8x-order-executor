@@ -407,7 +407,7 @@ export default class Executor {
       throw Error("orTool not defined");
     }
     let order: Order | undefined;
-    if (onChain) {
+    if (onChain && scOrder.iPerpetualId !== 0) {
       order = this.orTool[0].smartContractOrderToOrder(scOrder);
       if (order == undefined) {
         emitWarning(`order ${digest} not found on-chain - not adding`);
@@ -996,7 +996,7 @@ export default class Executor {
 
   private async checkGasPrice() {
     const gasPrice = await this.provider!.getGasPrice();
-    if (gasPrice > parseUnits(this.config.maxGasPriceGWei.toString(), "gwei")) {
+    if (+formatUnits(gasPrice, "gwei") > this.config.maxGasPriceGWei) {
       this.log(
         `gas price is too high: ${formatUnits(gasPrice, "gwei")} gwei > ${
           this.config.maxGasPriceGWei
