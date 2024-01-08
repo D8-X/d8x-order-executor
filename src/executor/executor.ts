@@ -685,17 +685,10 @@ export default class Executor {
     this.removedOrders = new Set<string>();
 
     this.lastRefreshTime = Date.now();
-    const totalOrders = await this.orTool[0].numberOfOpenOrders(symbol, {
-      rpcURL: await this.rpcManager.getRPC(),
-    });
-    const allOrders = await this.orTool[0].pollLimitOrders(
-      symbol,
-      totalOrders,
-      undefined,
-      {
-        rpcURL: await this.rpcManager.getRPC(),
-      }
-    );
+    // const totalOrders = await this.orTool[0].numberOfOpenOrders(symbol, {
+    //   rpcURL: await this.rpcManager.getRPC(),
+    // });
+    const allOrders = await this.orTool[0].getAllOpenOrders(symbol);
     const ts = Math.round(Date.now() / 1000);
     const orders = allOrders[0];
     const orderIds = allOrders[1];
