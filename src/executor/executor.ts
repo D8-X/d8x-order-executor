@@ -46,6 +46,7 @@ export default class Executor {
   private residualTS: number;
 
   // constants
+  private MAX_ORDERS_POLLED = 500;
   private NON_EXECUTION_WAIT_TIME_MS = 40_000; // maximal time we leave for owner-peer to execute an executable order
   private MAX_OUTOFSYNC_SECONDS: number = 10; // publish times must be within 10 seconds of each other, or submission will fail on-chain
   private SPLIT_PX_UPDATE: boolean = false; // needed on zk because of performance issues on Polygon side
@@ -606,41 +607,62 @@ export default class Executor {
         obI.decodeFunctionResult("orderCount", returnData)[0] as number
     );
 
-    const calls2 = this.symbols.map((symbol, i) => ({
-      target: md.getOrderBookContract(symbol).address,
-      allowFailure: true,
-      callData: obI.encodeFunctionData("pollLimitOrders", [
-        ZERO_ORDER_ID,
-        orderCounts[i],
-      ]),
-    }));
+    while (orderCounts.some((count) => count > 0)) {
+      const ordersToPoll = new Array<number>(orderCounts.length).fill(0);
+      let totalCount = 0;
+      for (let j = 0; j < orderCounts.length; j++) {
+        if (totalCount < this.MAX_ORDERS_POLLED) {
+          ordersToPoll[j] = Math.min(
+            orderCounts[j],
+            this.MAX_ORDERS_POLLED - totalCount
+          );
+          totalCount += ordersToPoll[j];
+          orderCounts[j] -= ordersToPoll[j];
+        }
+      }
+      const calls2 = this.symbols.map((symbol, i) => ({
+        target: md.getOrderBookContract(symbol).address,
+        allowFailure: false,
+        callData: obI.encodeFunctionData("pollLimitOrders", [
+          ZERO_ORDER_ID,
+          ordersToPoll[i],
+        ]),
+      }));
 
-    const res2 = await multicall.callStatic.aggregate3(calls2);
-    const ts = Date.now();
-    const orders = res2
-      .map(({ success, returnData }) =>
-        success
-          ? obI.decodeFunctionResult("pollLimitOrders", returnData)
-          : [[], []]
-      )
-      .map((decoded) => {
-        const scOrders = decoded[0] as IClientOrder.ClientOrderStructOutput[];
-        const orderIds = decoded[1] as string[];
-        return orderIds.map((id, j) => {
-          return {
-            id: id,
-            order: md.smartContractOrderToOrder(scOrders[j]),
-            onChain: true,
-            ts: ts,
-            isLocked: false,
-            traderAddr: scOrders[j].traderAddr,
-          } as OrderBundle;
+      const res2 = await multicall.callStatic.aggregate3(calls2);
+      const ts = Date.now();
+      const orders = res2
+        .map(({ success, returnData }) =>
+          success
+            ? obI.decodeFunctionResult("pollLimitOrders", returnData)
+            : [[], []]
+        )
+        .map((decoded) => {
+          const scOrders = decoded[0] as IClientOrder.ClientOrderStructOutput[];
+          const orderIds = decoded[1] as string[];
+          return orderIds.map((id, j) => {
+            return {
+              id: id,
+              order: md.smartContractOrderToOrder(scOrders[j]),
+              onChain: true,
+              ts: ts,
+              isLocked: false,
+              traderAddr: scOrders[j].traderAddr,
+            } as OrderBundle;
+          });
         });
+      orders.forEach((orderBundles, i) => {
+        if (!this.orders.has(this.perpetualIds[i])) {
+          this.orders.set(this.perpetualIds[i], orderBundles);
+        } else {
+          this.orders.set(
+            this.perpetualIds[i],
+            this.orders.get(this.perpetualIds[i])!.concat(orderBundles)
+          );
+        }
       });
-    orders.forEach((orderBundles, i) => {
-      this.orders.set(this.perpetualIds[i], orderBundles);
-    });
-    this.lastRefreshTime = ts;
+    }
+    this.lastRefreshTime = Date.now();
   }
 
   /**
