@@ -605,9 +605,10 @@ export default class Executor {
       ({ success, returnData }) =>
         obI.decodeFunctionResult("orderCount", returnData)[0] as number
     );
+
     const calls2 = this.symbols.map((symbol, i) => ({
       target: md.getOrderBookContract(symbol).address,
-      allowFailure: false,
+      allowFailure: true,
       callData: obI.encodeFunctionData("pollLimitOrders", [
         ZERO_ORDER_ID,
         orderCounts[i],
@@ -617,8 +618,10 @@ export default class Executor {
     const res2 = await multicall.callStatic.aggregate3(calls2);
     const ts = Date.now();
     const orders = res2
-      .map(({ returnData }) =>
-        obI.decodeFunctionResult("pollLimitOrders", returnData)
+      .map(({ success, returnData }) =>
+        success
+          ? obI.decodeFunctionResult("pollLimitOrders", returnData)
+          : [[], []]
       )
       .map((decoded) => {
         const scOrders = decoded[0] as IClientOrder.ClientOrderStructOutput[];
