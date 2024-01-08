@@ -10,11 +10,6 @@ import {
 } from "../types";
 import { chooseRPC, constructRedis, executeWithTimeout } from "../utils";
 
-enum ListeningMode {
-  Polling = "Polling",
-  Events = "Events",
-}
-
 export default class BackendListener {
   private config: BrokerListenerConfig;
   private wsIndex: number;

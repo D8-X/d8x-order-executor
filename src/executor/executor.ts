@@ -46,9 +46,9 @@ export default class Executor {
   private residualTS: number;
 
   // constants
-  private NON_EXECUTION_WAIT_TIME_MS = 30_000; // maximal time we leave for owner-peer to execute an executable order
+  private NON_EXECUTION_WAIT_TIME_MS = 40_000; // maximal time we leave for owner-peer to execute an executable order
   private MAX_OUTOFSYNC_SECONDS: number = 10; // publish times must be within 10 seconds of each other, or submission will fail on-chain
-  private SPLIT_PX_UPDATE: boolean = true; // needed on zk because of performance issues on Polygon side
+  private SPLIT_PX_UPDATE: boolean = false; // needed on zk because of performance issues on Polygon side
   private REFRESH_INTERVAL_MS: number; // how often to force a refresh of all orders, in miliseconds
   private EXECUTE_INTERVAL_MS: number;
   private RECOUNT_INTERVAL_MS: number;
@@ -424,7 +424,8 @@ export default class Executor {
     } as OrderBundle;
 
     let bundles = this.orders.get(perpetualId)!;
-    let idx = bundles.findIndex((b) => b.id === digest);
+    let idx =
+      bundles === undefined ? -1 : bundles.findIndex((b) => b.id === digest);
 
     if (idx >= 0) {
       bundles[idx].order = onChain ? order! : bundles[idx].order;
@@ -1208,10 +1209,13 @@ export default class Executor {
               perpId,
               orders.filter((ob) => !ids.has(ob.id))
             );
-            this.newOrders.set(
-              perpId,
-              this.newOrders.get(perpId)!.filter((ob) => !ids.has(ob.id))
-            );
+            const newOrders = this.newOrders.get(perpId);
+            if (newOrders !== undefined) {
+              this.newOrders.set(
+                perpId,
+                newOrders.filter((ob) => !ids.has(ob.id))
+              );
+            }
           }
         } catch (e) {
           // verifying txn failed - this is fine, events/regular refresh will remove or unlock as needed
