@@ -40,7 +40,7 @@ export default class Executor {
   // constants
   private NON_EXECUTION_WAIT_TIME_MS = 30_000; // maximal time we leave for owner-peer to execute an executable order
   private MAX_OUTOFSYNC_SECONDS: number = 10; // publish times must be within 10 seconds of each other, or submission will fail on-chain
-  private SPLIT_PX_UPDATE: boolean = true; // needed on zk because of performance issues on Polygon side
+  private SPLIT_PX_UPDATE: boolean = false; // needed on zk because of performance issues on Polygon side
   private REFRESH_INTERVAL_MS: number; // how often to force a refresh of all orders, in miliseconds
   private EXECUTE_INTERVAL_MS: number;
 
@@ -143,7 +143,7 @@ export default class Executor {
       this.perpetualId = this.mktData.getPerpIdFromSymbol(this.symbol);
     } catch (e) {
       // no such perpetual - exit gracefully without restart
-      console.log(e);
+      console.log(`Perpetual ${this.symbol} not found - bot not running`);
       process.exit(0);
     }
 
@@ -151,9 +151,6 @@ export default class Executor {
     this.obAddr = await this.mktData
       .getReadOnlyProxyInstance()
       .getOrderBookAddress(this.perpetualId);
-
-    // Fetch orders
-    await this.refreshOpenOrders();
 
     // Subscribe to blockchain events
     this.log(`subscribing to blockchain streamer...`);
@@ -183,9 +180,10 @@ export default class Executor {
       serverIndex: this.residualTS,
       wallets: this.orTool.map((ot) => ot.getAddress()),
     });
-    // execute if needed, then wait for events
-    await this.executeOrders(true);
-    await this.executeOrders(false);
+    // Fetch orders
+    this.refreshOpenOrders()
+      .then(() => this.executeOrders(true))
+      .then(() => this.executeOrders(false));
   }
 
   /**
@@ -260,6 +258,7 @@ export default class Executor {
         ) {
           return;
         }
+        await this.executeOrders(true);
         await this.executeOrders(false);
       }, 10_000);
 
@@ -268,7 +267,7 @@ export default class Executor {
         if (Date.now() - this.lastRefreshTime < this.REFRESH_INTERVAL_MS) {
           return;
         }
-        await this.refreshOpenOrders();
+        this.refreshOpenOrders();
       }, 10_000);
 
       // setInterval(async () => {
@@ -284,13 +283,16 @@ export default class Executor {
         switch (channel) {
           case "switch-mode": {
             // listener changed mode: something failed so refresh orders
-            await this.refreshOpenOrders();
+            this.refreshOpenOrders();
             break;
           }
           case "block": {
             numBlocks++;
             // new block - track
             this.blockNumber = Number(msg);
+            if (!this.isExecuting) {
+              this.moveNewOrdersToOrders();
+            }
             if (
               this.hasOffChainOrders &&
               Date.now() - this.lastOffChainOrder < 60_000
@@ -298,15 +300,21 @@ export default class Executor {
               // this.log(`last off-chain order: ${Math.round((Date.now() - this.lastOffChainOrder) / 1000)}s ago`);
               await this.executeOrders(true);
             }
-            if (numBlocks % 100 == 0) {
+            if (numBlocks % 500 == 0) {
+              const mktOrders = this.openOrders.filter(
+                (ob) => ob.order?.type == ORDER_TYPE_MARKET
+              ).length;
               this.log(
                 JSON.stringify({
-                  marketOrders: this.openOrders.filter(
-                    (ob) => ob.order.type == ORDER_TYPE_MARKET
-                  ).length,
+                  marketOrders: mktOrders,
                   totalOrders: this.openOrders.length,
                 })
               );
+              if (mktOrders > 0) {
+                await this.executeOrders(true).then(() => {
+                  this.executeOrders(false);
+                });
+              }
             }
             break;
           }
@@ -482,9 +490,11 @@ export default class Executor {
       );
       // remove if it exists
       let newOb = this.newOrders[k];
-      this.openOrders = this.openOrders.filter((ob) => {
-        return newOb.id != ob.id;
-      });
+      this.openOrders = this.openOrders
+        .filter((ob) => {
+          return newOb.id != ob.id;
+        })
+        .reverse();
       // append
       this.openOrders.push(newOb);
       // remove from new orders
@@ -514,34 +524,22 @@ export default class Executor {
       return;
     }
     this.log(`refreshing orders`);
-    this.isExecuting = true;
-    if (this.orTool == undefined) {
-      throw Error("orTool not defined");
-    }
-    // let openOrders = new Array<OrderBundle>();
-    this.openOrders = [];
-    // let newOrderIds = new Set<string>();
-    this.orderIds = new Set();
 
+    // const totalOrders = await this.orTool[0].numberOfOpenOrders(this.symbol, {
+    //   rpcURL: await this.rpcManager.getRPC(),
+    // });
+    const allOrders = await this.orTool![0].getAllOpenOrders(this.symbol);
+    this.isExecuting = true;
+    this.openOrders = [];
+    this.orderIds = new Set();
     this.newOrders = [];
     this.removedOrders = new Set<string>();
-
     this.lastRefreshTime = Date.now();
-    const totalOrders = await this.orTool[0].numberOfOpenOrders(this.symbol, {
-      rpcURL: await this.rpcManager.getRPC(),
-    });
-    const allOrders = await this.orTool[0].pollLimitOrders(
-      this.symbol,
-      totalOrders,
-      undefined,
-      {
-        rpcURL: await this.rpcManager.getRPC(),
-      }
-    );
+
     const ts = Math.round(Date.now() / 1000);
-    const orders = allOrders[0];
-    const orderIds = allOrders[1];
-    const traders = allOrders[2];
+    const orders = allOrders[0].reverse();
+    const orderIds = allOrders[1].reverse();
+    const traders = allOrders[2].reverse();
     for (let k = 0; k < orders.length; k++) {
       if (orders[k].deadline == undefined || orders[k].deadline! > ts) {
         this.openOrders.push({
@@ -558,8 +556,10 @@ export default class Executor {
     this.isExecuting = false;
     this.log(
       `${this.orderIds.size} open orders, ${
-        this.openOrders.filter((o) => o.order.type == ORDER_TYPE_MARKET).length
-      } of which are market orders`
+        this.openOrders.filter(
+          (o) => o.order === undefined || o.order?.type == ORDER_TYPE_MARKET
+        ).length
+      } of which are market orders or unknown type`
     );
   }
 
@@ -588,9 +588,9 @@ export default class Executor {
     let hasOffChainOrders = false;
     for (let orderBundle of this.openOrders) {
       if (!orderBundle.onChain) {
-        this.log(
-          `order ${orderBundle.id} on-chain status unknown - checking...`
-        );
+        // this.log(
+        //   `order ${orderBundle.id} on-chain status unknown - checking...`
+        // );
         const thisOrder = await this.orTool![0].getOrderById(
           this.symbol,
           orderBundle.id
@@ -603,7 +603,7 @@ export default class Executor {
           orderBundle.order = thisOrder;
         } else {
           hasOffChainOrders = true;
-          this.log(`order ${orderBundle.id} is NOT on-chain - won't execute`);
+          // this.log(`order ${orderBundle.id} is NOT on-chain - won't execute`);
         }
       }
     }
@@ -616,15 +616,15 @@ export default class Executor {
         if (
           orderBundle.isLocked ||
           !orderBundle.onChain ||
-          (orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly
+          (orderBundle.order?.type === ORDER_TYPE_MARKET) !== marketOnly
         ) {
-          if ((orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly) {
-            this.log(
-              `order ${orderBundle.id} is market during conditional execution, or limit during market execution`
-            );
-          } else {
-            this.log(`order ${orderBundle.id} is locked or not on-chain`);
-          }
+          // if ((orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly) {
+          //   this.log(
+          //     `order ${orderBundle.id} is market during conditional execution, or limit during market execution`
+          //   );
+          // } else {
+          //   this.log(`order ${orderBundle.id} is locked or not on-chain`);
+          // }
           return false;
         }
         if (
@@ -710,10 +710,10 @@ export default class Executor {
               isExecutable[i] = false;
             }
           } else if (
-            (this.openOrders[i].order.side == BUY_SIDE &&
-              midPrice < this.openOrders[i].order.limitPrice!) ||
-            (this.openOrders[i].order.side == SELL_SIDE &&
-              midPrice > this.openOrders[i].order.limitPrice!)
+            (this.openOrders[i].order?.side == BUY_SIDE &&
+              midPrice < this.openOrders[i].order?.limitPrice!) ||
+            (this.openOrders[i].order?.side == SELL_SIDE &&
+              midPrice > this.openOrders[i].order?.limitPrice!)
           ) {
             ordersToCheck.orders.push(this.openOrders[i].order);
             ordersToCheck.ids.push(this.openOrders[i].id);
@@ -922,8 +922,6 @@ export default class Executor {
           }
           this.log("txns submitted");
         }
-        // now we can release the main lock
-        this.isExecuting = false;
       } catch (e: any) {
         this.log(`error submitting txns`);
         // txn may have still made it, so we wait a bit and check before throwing the error
@@ -940,8 +938,17 @@ export default class Executor {
                 if (status[i] != OrderStatus.OPEN) {
                   this.removedOrders.add(ids[i]);
                 } else {
-                  // definitely not executed - error was real
-                  throw e;
+                  // definitely not executed - error was real, rethrow unless it's just gas price
+                  if ((e?.body as string)?.includes("gas price too low")) {
+                    this.openOrders.forEach((ob) => {
+                      if (ids.indexOf(ob.id) >= 0) {
+                        // in this txn: unlock
+                        ob.isLocked = false;
+                      }
+                    });
+                  } else {
+                    throw e;
+                  }
                 }
               }
             }
