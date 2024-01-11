@@ -17,7 +17,7 @@ import { BigNumber, ethers } from "ethers";
 import { emitWarning } from "process";
 import { GasInfo, GasPriceV2, OrderBundle, ExecutorConfig } from "../types";
 import { Redis } from "ioredis";
-import { constructRedis, executeWithTimeout } from "../utils";
+import { constructRedis, executeWithTimeout, sleep } from "../utils";
 import RPCManager from "./rpcManager";
 
 export default class Executor {
@@ -181,9 +181,9 @@ export default class Executor {
       wallets: this.orTool.map((ot) => ot.getAddress()),
     });
     // Fetch orders
-    this.refreshOpenOrders()
-      .then(() => this.executeOrders(true))
-      .then(() => this.executeOrders(false));
+    this.refreshOpenOrders();
+      // .then(() => this.executeOrders(true))
+      // .then(() => this.executeOrders(false));
   }
 
   /**
@@ -485,9 +485,9 @@ export default class Executor {
    */
   private moveNewOrdersToOrders() {
     for (let k = this.newOrders.length - 1; k >= 0; k--) {
-      this.log(
-        `moved new ${this.newOrders[k].order?.type} order to open orders, id ${this.newOrders[k].id}`
-      );
+      // this.log(
+      //   `moved new ${this.newOrders[k].order?.type} order to open orders, id ${this.newOrders[k].id}`
+      // );
       // remove if it exists
       let newOb = this.newOrders[k];
       this.openOrders = this.openOrders
@@ -525,16 +525,15 @@ export default class Executor {
     }
     this.log(`refreshing orders`);
 
-    // const totalOrders = await this.orTool[0].numberOfOpenOrders(this.symbol, {
-    //   rpcURL: await this.rpcManager.getRPC(),
-    // });
+
+    this.lastRefreshTime = Date.now();
     const allOrders = await this.orTool![0].getAllOpenOrders(this.symbol);
     this.isExecuting = true;
     this.openOrders = [];
     this.orderIds = new Set();
     this.newOrders = [];
     this.removedOrders = new Set<string>();
-    this.lastRefreshTime = Date.now();
+    
 
     const ts = Math.round(Date.now() / 1000);
     const orders = allOrders[0].reverse();
@@ -616,7 +615,8 @@ export default class Executor {
         if (
           orderBundle.isLocked ||
           !orderBundle.onChain ||
-          (orderBundle.order?.type === ORDER_TYPE_MARKET) !== marketOnly
+          orderBundle.order === undefined ||
+          (orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly
         ) {
           // if ((orderBundle.order.type === ORDER_TYPE_MARKET) !== marketOnly) {
           //   this.log(
@@ -662,21 +662,21 @@ export default class Executor {
         if (this.isSingleMarketOrder(orderBundle.order)) {
           if (overdueMS > 0) {
             if (isMine) {
-              this.log(
-                `OWN ${orderBundle.order.type} order ${
-                  orderBundle.id
-                }, late for ${
-                  (overdueMS + this.NON_EXECUTION_WAIT_TIME_MS) / 1_000
-                } seconds`
-              );
+              // this.log(
+              //   `OWN ${orderBundle.order.type} order ${
+              //     orderBundle.id
+              //   }, late for ${
+              //     (overdueMS + this.NON_EXECUTION_WAIT_TIME_MS) / 1_000
+              //   } seconds`
+              // );
             } else {
-              this.log(
-                `PEER ${orderBundle.order.type} order ${
-                  orderBundle.id
-                }, late for ${
-                  (overdueMS + this.NON_EXECUTION_WAIT_TIME_MS) / 1_000
-                } seconds`
-              );
+              // this.log(
+              //   `PEER ${orderBundle.order.type} order ${
+              //     orderBundle.id
+              //   }, late for ${
+              //     (overdueMS + this.NON_EXECUTION_WAIT_TIME_MS) / 1_000
+              //   } seconds`
+              // );
               this.peerNonExecutionTimestampMS.delete(orderBundle.id);
             }
           }
@@ -741,7 +741,7 @@ export default class Executor {
             submission.submission.isMarketClosed[0],
             submission.submission.isMarketClosed[1],
           ],
-          { rpcURL: await this.rpcManager.getRPC() }
+          { rpcURL: "https://x1-testnet.blockpi.network/v1/rpc/public" } // await this.rpcManager.getRPC() }
         );
         executableBatch.forEach((val, j) => {
           isExecutable[ordersToCheck.idxInOrders[j]] = val;
@@ -763,14 +763,14 @@ export default class Executor {
     if (this.orTool == undefined) {
       throw Error("objects not initialized");
     }
-    this.moveNewOrdersToOrders();
-    if (this.isExecuting) {
+    if (this.isExecuting || Date.now() < this.lastExecuteOrdersCall + 2_000) {
       return {
         numOpen: this.openOrders.length,
         numExecuted: -1,
         numTraded: 0,
       };
     }
+    this.moveNewOrdersToOrders();
     let numExecuted = 0;
     let numTraded = 0;
     let isExecutable: (boolean | undefined)[];
@@ -864,9 +864,9 @@ export default class Executor {
             executeIds.get(refIdx)!.push(this.openOrders[k].id);
           }
           // will try to execute
-          this.log(
-            `${this.openOrders[k].order.type} order ${this.openOrders[k].id} assigned to bot #${refIdx} in this batch:\n${this.openOrders[k].order.side} ${this.openOrders[k].order.quantity} @ ${this.openOrders[k].order.limitPrice}`
-          );
+          // this.log(
+          //   `${this.openOrders[k].order?.type} order ${this.openOrders[k].id} assigned to bot #${refIdx} in this batch:\n${this.openOrders[k].order.side} ${this.openOrders[k].order.quantity} @ ${this.openOrders[k].order.limitPrice}`
+          // );
           executeIdxInOpenOrders.push(k);
           this.openOrders[k].isLocked = true;
         }
@@ -986,7 +986,7 @@ export default class Executor {
             this.openOrders = this.openOrders.filter((ob) => !ids.has(ob.id));
             this.newOrders = this.newOrders.filter((ob) => !ids.has(ob.id));
           }
-        } catch (e) {
+        } catch (e: any) {
           // verifying txn failed - this is fine, events/regular refresh will remove or unlock as needed
           this.log(
             `could not fetch txn receipt: ${txArray[idx].hash} - checking status on-chain`
@@ -1006,7 +1006,11 @@ export default class Executor {
               });
             }
           }
-          console.error(e);
+          if ((e?.reason as string) == "replaced") {
+            await sleep(5_000);
+          } else {
+            console.error(e);
+          }
         }
       }
     } catch (e: any) {

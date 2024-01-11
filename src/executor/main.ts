@@ -54,19 +54,19 @@ async function run() {
   // load config
   const execConfig = loadExecutorConfig(chainId);
   // check that price services are up
-  for (const pxServices of execConfig.priceFeedEndpoints) {
-    let someOk = false;
-    for (const endpoint of pxServices.endpoints) {
-      const response = await fetch(endpoint.replace("/api", "/live"));
-      someOk = someOk || response.ok;
-    }
-    if (!someOk) {
-      console.log(`${pxServices.type} price service is down. Reconnecting in 1 minute`);
-      await sleep(60_000);
-      process.exit(1);
-    }
-  }
-  console.log("Price services are live");
+  // for (const pxServices of execConfig.priceFeedEndpoints) {
+  //   let someOk = false;
+  //   for (const endpoint of pxServices.endpoints) {
+  //     const response = await fetch(endpoint.replace("/api", "/live"));
+  //     someOk = someOk || response.ok;
+  //   }
+  //   if (!someOk) {
+  //     console.log(`${pxServices.type} price service is down. Reconnecting in 1 minute`);
+  //     await sleep(60_000);
+  //     process.exit(1);
+  //   }
+  // }
+  // console.log("Price services are live");
   // start bot
   console.log(`\nStarting ${addr.length} ${symbol} executors with addresses:`);
   for (let refAddr of addr) {
