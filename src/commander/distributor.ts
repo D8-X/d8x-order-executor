@@ -19,8 +19,11 @@ import { providers } from "ethers";
 import { Redis } from "ioredis";
 import { constructRedis } from "../utils";
 import {
+  BrokerOrderMsg,
+  ExecutionFailedMsg,
   ExecutorConfig,
   OrderBundle,
+  PerpetualLimitOrderCancelledMsg,
   PerpetualLimitOrderCreatedMsg,
   Position,
   UpdateMarginAccountMsg,
@@ -166,6 +169,7 @@ export default class Distributor {
       "ExecutionFailedEvent",
       "PerpetualLimitOrderCreatedEvent",
       "PerpetualLimitOrderCancelledEvent",
+      "BrokerOrderCreatedEvent",
       (err, count) => {
         if (err) {
           console.log(
@@ -263,6 +267,26 @@ export default class Distributor {
             }: PerpetualLimitOrderCreatedMsg = JSON.parse(msg);
             this.updateOrder(symbol, trader, digest, order);
           }
+
+          case "PerpetualLimitOrderCancelledEvent": {
+            const { symbol, digest }: PerpetualLimitOrderCancelledMsg =
+              JSON.parse(msg);
+            this.openOrders.get(symbol)?.delete(digest);
+          }
+
+          case "ExecutionFailedEvent": {
+            const { symbol, digest, reason }: ExecutionFailedMsg =
+              JSON.parse(msg);
+            if (reason != "cancel delay required") {
+              this.openOrders.get(symbol)?.delete(digest);
+            }
+          }
+
+          case "BrokerOrderCreatedEvent": {
+            const { symbol, traderAddr, digest }: BrokerOrderMsg =
+              JSON.parse(msg);
+            this.updateOrder(symbol, traderAddr, digest, undefined);
+          }
         }
       });
       await this.refreshAllOpenOrders();
@@ -273,17 +297,19 @@ export default class Distributor {
     symbol: string,
     trader: string,
     digest: string,
-    order: Order
+    order?: Order
   ) {
     if (!this.openOrders.has(symbol)) {
       this.openOrders.set(symbol, new Map());
     }
-    this.openOrders.get(symbol)!.set(digest, {
-      trader: trader,
-      digest: digest,
-      order: order,
-      symbol: symbol,
-    });
+    if (order != undefined || !this.openOrders.get(symbol)?.has(digest)) {
+      this.openOrders.get(symbol)!.set(digest, {
+        trader: trader,
+        digest: digest,
+        order: order,
+        symbol: symbol,
+      });
+    }
   }
 
   private updatePosition(position: Position) {
@@ -489,6 +515,10 @@ export default class Distributor {
     ) {
       return undefined;
     }
+    const orders = this.openOrders.get(symbol)!;
+    if (orders.size == 0) {
+      return;
+    }
     try {
       const newPxSubmission =
         await this.md.fetchPriceSubmissionInfoForPerpetual(symbol);
@@ -501,7 +531,7 @@ export default class Distributor {
       console.log(e);
       return false;
     }
-    const orders = this.openOrders.get(symbol)!;
+
     const curPx = this.pxSubmission.get(symbol)!;
     const ordersSent: Set<string> = new Set();
 
@@ -511,12 +541,14 @@ export default class Distributor {
         const msg = JSON.stringify({
           symbol: symbol,
           digest: digest,
+          trader: orderBundle.trader,
+          onChain: orderBundle.order !== undefined,
         });
         if (
           Date.now() - (this.messageSentAt.get(msg) ?? 0) >
           this.config.executeIntervalSecondsMin * 1_000
         ) {
-          await this.redisPubClient.publish("LiquidateTrader", msg);
+          await this.redisPubClient.publish("ExecuteOrder", msg);
           this.messageSentAt.set(msg, Date.now());
         }
         ordersSent.add(msg);
@@ -529,6 +561,9 @@ export default class Distributor {
     order: OrderBundle,
     pxS2S3: [number, number | undefined]
   ) {
+    if (!order.order) {
+      return true;
+    }
     if (order.order.executionTimestamp > Date.now() / 1_000) {
       return false;
     }

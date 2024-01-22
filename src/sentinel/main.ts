@@ -1,23 +1,21 @@
-import { loadListenerConfig } from "../utils";
+import { loadConfig } from "../utils";
 import BlockhainListener from "./blockchainListener";
 import BrokerListener from "./brokerListener";
 
 require("dotenv").config();
 
 async function start() {
-  const chainId = Number(process.env.CHAIN_ID as string);
-  if (chainId == undefined) {
-    throw new Error(`Environment variable CHAIN_ID not defined.`);
+  const sdkConfig = process.env.SDK_CONFIG;
+  if (sdkConfig == undefined) {
+    throw new Error(`Environment variable SDK_CONFIG not defined.`);
   }
-  const listenerConfig = loadListenerConfig(
-    Number(process.env.CHAIN_ID as string)
-  );
+  const cfg = loadConfig(sdkConfig);
 
-  const eventStreamer = new BlockhainListener(listenerConfig);
+  const eventStreamer = new BlockhainListener(cfg);
   eventStreamer.start();
 
-  for (let i = 0; i < listenerConfig.brokerWS.length; i++) {
-    const wsStreamer = new BrokerListener(listenerConfig, i);
+  for (let i = 0; i < cfg.brokerWS.length; i++) {
+    const wsStreamer = new BrokerListener(cfg, i);
     wsStreamer.start();
   }
 }

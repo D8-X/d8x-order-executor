@@ -20,6 +20,7 @@ import {
   LiquidateMsg,
   PerpetualLimitOrderCancelledMsg,
   PerpetualLimitOrderCreatedMsg,
+  TradeMsg,
   UpdateMarginAccountMsg,
   UpdateMarkPriceMsg,
   UpdateUnitAccumulatedFundingMsg,
@@ -29,6 +30,7 @@ import {
   IPerpetualOrder,
   LiquidateEvent,
   PerpetualLimitOrderCancelledEvent,
+  TradeEvent,
   UpdateMarginAccountEvent,
   UpdateMarkPriceEvent,
   UpdateUnitAccumulatedFundingEvent,
@@ -281,12 +283,6 @@ export default class BlockhainListener {
           id: `${event.transactionHash}:${event.logIndex}`,
         };
         this.redisPubClient.publish("LiquidateEvent", JSON.stringify(msg));
-        console.log({
-          event: "Liquidate",
-          time: new Date(Date.now()).toISOString(),
-          mode: ListeningMode,
-          ...msg,
-        });
       }
     );
 
@@ -374,29 +370,66 @@ export default class BlockhainListener {
     );
 
     proxy.on(
-      "ExecutionFailed",
+      "Trade",
       (
         perpetualId: number,
         trader: string,
-        digest: string,
-        reason: string,
-        event: ExecutionFailedEvent
+        positionId: string,
+        scOrder: IPerpetualOrder.OrderStructOutput,
+        orderDigest: string,
+        newPositionSizeBC: BigNumber,
+        price: BigNumber,
+        fFeeCC: BigNumber,
+        fPnlCC: BigNumber,
+        fB2C: BigNumber,
+        event: TradeEvent
       ) => {
-        const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
-        const msg: ExecutionFailedMsg = {
+        const order = this.md!.smartContractOrderToOrder(scOrder);
+        const msg: TradeMsg = {
           perpetualId: perpetualId,
-          symbol: symbol,
           trader: trader,
+          digest: orderDigest,
+          ...order,
+          block: event.blockNumber,
+          hash: event.transactionHash,
+          id: `${event.transactionHash}:${event.logIndex}`,
+        };
+        this.redisPubClient.publish("TradeEvent", JSON.stringify(msg));
+        console.log({
+          event: "Trade",
+          time: new Date(Date.now()).toISOString(),
+          mode: this.mode,
+          ...msg,
+        });
+      }
+    );
+
+    proxy.on(
+      "PerpetualLimitOrderCancelled",
+      (
+        perpetualId: number,
+        digest: string,
+        event: PerpetualLimitOrderCancelledEvent
+      ) => {
+        const symbol = this.md!.getSymbolFromPerpId(perpetualId)!;
+        const msg: PerpetualLimitOrderCancelledMsg = {
+          symbol: symbol,
+          perpetualId: perpetualId,
           digest: digest,
-          reason: reason,
           block: event.blockNumber,
           hash: event.transactionHash,
           id: `${event.transactionHash}:${event.logIndex}`,
         };
         this.redisPubClient.publish(
-          "ExecutionFailedEvent",
+          "PerpetualLimitOrderCancelledEvent",
           JSON.stringify(msg)
         );
+        console.log({
+          event: "PerpetualLimitOrderCancelled",
+          time: new Date(Date.now()).toISOString(),
+          mode: this.mode,
+          ...msg,
+        });
       }
     );
 
@@ -444,28 +477,45 @@ export default class BlockhainListener {
               "PerpetualLimitOrderCreatedEvent",
               JSON.stringify(msg)
             );
+            console.log({
+              event: "PerpetualLimitOrderCreated",
+              time: new Date(Date.now()).toISOString(),
+              mode: this.mode,
+              ...msg,
+            });
           }
         );
 
         ob.on(
-          "PerpetualLimitOrderCancelled",
+          "ExecutionFailed",
           (
             perpetualId: number,
+            trader: string,
             digest: string,
-            event: PerpetualLimitOrderCancelledEvent
+            reason: string,
+            event: ExecutionFailedEvent
           ) => {
-            const msg: PerpetualLimitOrderCancelledMsg = {
-              symbol: symbols[i],
+            const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
+            const msg: ExecutionFailedMsg = {
               perpetualId: perpetualId,
+              symbol: symbol,
+              trader: trader,
               digest: digest,
+              reason: reason,
               block: event.blockNumber,
               hash: event.transactionHash,
               id: `${event.transactionHash}:${event.logIndex}`,
             };
             this.redisPubClient.publish(
-              "PerpetualLimitOrderCancelledEvent",
+              "ExecutionFailedEvent",
               JSON.stringify(msg)
             );
+            console.log({
+              event: "ExecutionFailed",
+              time: new Date(Date.now()).toISOString(),
+              mode: this.mode,
+              ...msg,
+            });
           }
         );
       });

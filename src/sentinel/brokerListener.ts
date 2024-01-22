@@ -4,14 +4,17 @@ import { Redis } from "ioredis";
 import SturdyWebSocket from "sturdy-websocket";
 import Websocket from "ws";
 import {
-  BrokerListenerConfig,
+  BrokerOrderMsg,
   BrokerWSMessage,
   BrokerWSUpdateData,
+  ExecutorConfig,
+  PerpetualLimitOrderCreatedMsg,
 } from "../types";
-import { chooseRPC, constructRedis, executeWithTimeout } from "../utils";
+import { constructRedis, executeWithTimeout } from "../utils";
+import { PerpetualCreatedEvent } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
 
 export default class BackendListener {
-  private config: BrokerListenerConfig;
+  private config: ExecutorConfig;
   private wsIndex: number;
 
   // objects
@@ -23,8 +26,9 @@ export default class BackendListener {
   // state
   private perpIds: number[] = [];
   private chainId: number | undefined = undefined;
+  private lastRpcIndex = { http: -1, ws: -1 };
 
-  constructor(config: BrokerListenerConfig, wsIndex: number) {
+  constructor(config: ExecutorConfig, wsIndex: number) {
     this.config = config;
     this.wsIndex = wsIndex;
     this.md = new MarketData(
@@ -32,11 +36,17 @@ export default class BackendListener {
     );
     this.redisPubClient = constructRedis("BlockchainListener");
     this.httpProvider = new ethers.providers.StaticJsonRpcProvider(
-      chooseRPC(this.config.httpRPC)
+      this.chooseHttpRpc()
     );
     this.ws = new SturdyWebSocket(this.config.brokerWS[wsIndex], {
       wsConstructor: Websocket,
     });
+  }
+
+  private chooseHttpRpc() {
+    const idx = (this.lastRpcIndex.http + 1) % this.config.rpcListenHttp.length;
+    this.lastRpcIndex.http = idx;
+    return this.config.rpcListenHttp[idx];
   }
 
   public unsubscribe() {
@@ -79,7 +89,7 @@ export default class BackendListener {
         });
         this.addListeners();
       }
-    }, this.config.brokerReconnectIntervalMS);
+    }, this.config.brokerReconnectIntervalMaxSeconds * 1_000);
   }
 
   private addListeners() {
@@ -141,28 +151,21 @@ export default class BackendListener {
             executionTimestamp,
             orderId,
           } = msg.data as BrokerWSUpdateData;
+          const eventMsg: BrokerOrderMsg = {
+            symbol: this.md!.getSymbolFromPerpId(+perpId)!,
+            perpetualId: +perpId,
+            traderAddr: traderAddr,
+            digest: `0x${orderId}`,
+          };
           this.redisPubClient.publish(
-            "PerpetualLimitOrderCreated",
-            JSON.stringify({
-              perpetualId: perpId,
-              trader: traderAddr,
-              order: {
-                iDeadline,
-                flags,
-                fAmount,
-                fLimitPrice,
-                fTriggerPrice,
-                executionTimestamp,
-                fromEvent: false,
-              },
-              digest: `0x${orderId}`,
-            })
+            "BrokerOrderCreatedEvent",
+            JSON.stringify(eventMsg)
           );
-          console.log(
-            `${new Date(
-              Date.now()
-            ).toISOString()} Perpetual Order ${perpId}:${orderId} received via broker WS`
-          );
+          console.log({
+            event: "BrokerOrderCreated",
+            time: new Date(Date.now()).toISOString(),
+            ...eventMsg,
+          });
         default:
           break;
       }
