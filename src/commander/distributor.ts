@@ -26,6 +26,7 @@ import {
   PerpetualLimitOrderCancelledMsg,
   PerpetualLimitOrderCreatedMsg,
   Position,
+  TradeMsg,
   UpdateMarginAccountMsg,
   UpdateMarkPriceMsg,
   UpdateUnitAccumulatedFundingMsg,
@@ -47,6 +48,7 @@ export default class Distributor {
   private lastRefreshTime: Map<string, number> = new Map();
   private openPositions: Map<string, Map<string, Position>> = new Map();
   private openOrders: Map<string, Map<string, OrderBundle>> = new Map(); // symbol => (digest => order bundle)
+  private brokerOrders: Map<string, Map<string, number>> = new Map(); // symbol => (digest => received ts)
   private pxSubmission: Map<
     string,
     { submission: PriceFeedSubmission; pxS2S3: [number, number] }
@@ -155,6 +157,7 @@ export default class Distributor {
       // "preallocate" trader set
       this.openPositions.set(symbol, new Map());
       this.openOrders.set(symbol, new Map());
+      this.brokerOrders.set(symbol, new Map());
       // dummy values
       this.lastRefreshTime.set(symbol, 0);
     }
@@ -274,6 +277,11 @@ export default class Distributor {
             this.openOrders.get(symbol)?.delete(digest);
           }
 
+          case "Trade": {
+            const { symbol, digest }: TradeMsg = JSON.parse(msg);
+            this.openOrders.get(symbol)?.delete(digest);
+          }
+
           case "ExecutionFailedEvent": {
             const { symbol, digest, reason }: ExecutionFailedMsg =
               JSON.parse(msg);
@@ -286,6 +294,7 @@ export default class Distributor {
             const { symbol, traderAddr, digest }: BrokerOrderMsg =
               JSON.parse(msg);
             this.updateOrder(symbol, traderAddr, digest, undefined);
+            this.brokerOrders.get(symbol)!.set(digest, Date.now());
           }
         }
       });
@@ -534,9 +543,8 @@ export default class Distributor {
 
     const curPx = this.pxSubmission.get(symbol)!;
     const ordersSent: Set<string> = new Set();
-
-    for (const digest of orders.keys()) {
-      const orderBundle = orders.get(digest)!;
+    const removeOrders: string[] = [];
+    for (const [digest, orderBundle] of orders) {
       if (this.isExecutable(orderBundle, curPx.pxS2S3)) {
         const msg = JSON.stringify({
           symbol: symbol,
@@ -544,6 +552,14 @@ export default class Distributor {
           trader: orderBundle.trader,
           onChain: orderBundle.order !== undefined,
         });
+        console.log(msg);
+        if (
+          orderBundle.order == undefined &&
+          Date.now() - (this.brokerOrders.get(symbol)?.get(digest) ?? 0) >
+            60_000
+        ) {
+          removeOrders.push(digest);
+        }
         if (
           Date.now() - (this.messageSentAt.get(msg) ?? 0) >
           this.config.executeIntervalSecondsMin * 1_000
@@ -553,6 +569,9 @@ export default class Distributor {
         }
         ordersSent.add(msg);
       }
+    }
+    for (const digest of removeOrders) {
+      orders.delete(digest);
     }
     return ordersSent.size > 0;
   }

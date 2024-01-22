@@ -436,11 +436,14 @@ export default class BlockhainListener {
     const info = await this.md.exchangeInfo();
 
     const symbols = info.pools
+      .filter(({ isRunning }) => isRunning)
       .map((pool) =>
-        pool.perpetuals.map(
-          (perpetual) =>
-            `${perpetual.baseCurrency}-${perpetual.quoteCurrency}-${pool.poolSymbol}`
-        )
+        pool.perpetuals
+          .filter(({ state }) => state == "NORMAL")
+          .map(
+            (perpetual) =>
+              `${perpetual.baseCurrency}-${perpetual.quoteCurrency}-${pool.poolSymbol}`
+          )
       )
       .flat();
 
