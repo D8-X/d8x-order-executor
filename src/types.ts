@@ -142,6 +142,7 @@ export interface ExecutionFailedMsg extends RedisMsg {
 export interface TradeMsg extends RedisMsg, Order {
   perpetualId: number;
   trader: string;
+  executor: string;
   digest: string;
 }
 

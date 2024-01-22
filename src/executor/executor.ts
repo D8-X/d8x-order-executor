@@ -18,7 +18,7 @@ export default class Executor {
 
   // state
   private q: Set<string> = new Set();
-  private lastLiquidateCall: number = 0;
+  private lastCall: number = 0;
 
   constructor(
     pkTreasury: string,
@@ -57,7 +57,7 @@ export default class Executor {
       i < this.providers.length &&
       tried <= this.providers.length
     ) {
-      console.log(`trying provider ${i} ... `);
+      // console.log(`trying provider ${i} ... `);
       const results = await Promise.allSettled(
         // createProxyInstance attaches the given provider to the object instance
         this.bots.map((bot) => bot.api.createProxyInstance(this.providers[i]))
@@ -101,7 +101,7 @@ export default class Executor {
     return new Promise<void>((resolve, reject) => {
       setInterval(async () => {
         if (
-          Date.now() - this.lastLiquidateCall >
+          Date.now() - this.lastCall >
           this.config.executeIntervalSecondsMax
         ) {
           await this.execute();
@@ -119,7 +119,6 @@ export default class Executor {
           //   break;
           // }
           case "ExecuteOrder": {
-            console.log(msg);
             const prevCount = this.q.size;
             this.q.add(msg);
             msgs += this.q.size > prevCount ? 1 : 0;
@@ -146,13 +145,13 @@ export default class Executor {
    */
   public async execute() {
     if (
-      Date.now() - this.lastLiquidateCall <
+      Date.now() - this.lastCall <
       this.config.executeIntervalSecondsMin * 1_000
     ) {
       return BotStatus.Busy;
     }
 
-    this.lastLiquidateCall = Date.now();
+    this.lastCall = Date.now();
     let attempts = 0;
     let successes = 0;
     const q = [...this.q];
@@ -180,15 +179,15 @@ export default class Executor {
           assignedTx = true;
           const { symbol, digest, trader, onChain }: ExecuteOrderMsg =
             JSON.parse(msg);
-          console.log(msg);
           const executeProm = executeWithTimeout(
-            bot.api.executeOrder(
+            bot.api.executeOrders(
               symbol,
-              digest,
+              [digest],
               this.config.rewardsAddress,
               undefined,
               {
-                gasLimit: 1_000_000,
+                gasLimit: 2_000_000,
+                splitTx: false,
               }
             ),
             30_000,
@@ -215,25 +214,38 @@ export default class Executor {
       }
     }
     // send txns
-    const results = await Promise.allSettled(txns.map(({ tx }) => tx));
+    const results =
+      (await Promise.allSettled(txns.map(({ tx }) => tx)).catch((e) =>
+        console.log("should not be here")
+      )) || [];
 
     const confirmations: Promise<void>[] = [];
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
       if (result.status === "fulfilled") {
         successes++;
-        console.log({
-          symbol: txns[i].symbol,
-          orderBook: result.value.to,
-          executor: result.value.from,
-          trader: txns[i].trader,
-          digest: txns[i].digest,
-          txn: result.value.hash,
-        });
+        // console.log({
+        //   symbol: txns[i].symbol,
+        //   orderBook: result.value.to,
+        //   executor: result.value.from,
+        //   trader: txns[i].trader,
+        //   digest: txns[i].digest,
+        //   txn: result.value.hash,
+        // });
         confirmations.push(
           executeWithTimeout(
             result.value.wait().then(() => {
               this.bots[txns[i].botIdx].busy = false;
+              console.log({
+                info: "txn confirmed",
+                symbol: txns[i].symbol,
+                orderBook: result.value.to,
+                executor: result.value.from,
+                trader: txns[i].trader,
+                digest: txns[i].digest,
+                block: result.value.blockNumber,
+                hash: result.value.hash,
+              });
             }),
             30_000,
             "timeout"

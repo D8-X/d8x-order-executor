@@ -14,6 +14,7 @@ import {
   ORDER_TYPE_STOP_MARKET,
   BUY_SIDE,
   ORDER_TYPE_LIMIT,
+  ZERO_ORDER_ID,
 } from "@d8x/perpetuals-sdk";
 import { providers } from "ethers";
 import { Redis } from "ioredis";
@@ -277,21 +278,21 @@ export default class Distributor {
           case "PerpetualLimitOrderCancelledEvent": {
             const { symbol, digest }: PerpetualLimitOrderCancelledMsg =
               JSON.parse(msg);
-            this.removeOrder(symbol, digest);
+            this.removeOrder(symbol, digest, "removing cancelled order");
             break;
           }
 
           case "TradeEvent": {
             const { symbol, digest, trader }: TradeMsg = JSON.parse(msg);
-            this.removeOrder(symbol, digest, trader);
+            this.removeOrder(symbol, digest, "removing executed order", trader);
             break;
           }
 
           case "ExecutionFailedEvent": {
-            const { symbol, digest, reason }: ExecutionFailedMsg =
+            const { symbol, digest, trader, reason }: ExecutionFailedMsg =
               JSON.parse(msg);
             if (reason != "cancel delay required") {
-              this.removeOrder(symbol, digest);
+              this.removeOrder(symbol, digest, reason, trader);
             }
             break;
           }
@@ -327,7 +328,7 @@ export default class Distributor {
         symbol: symbol,
       });
       console.log({
-        update: "order added",
+        info: "order added",
         symbol: symbol,
         trader: trader,
         digest: digest,
@@ -336,10 +337,15 @@ export default class Distributor {
     }
   }
 
-  private removeOrder(symbol: string, digest: string, trader?: string) {
+  private removeOrder(
+    symbol: string,
+    digest: string,
+    reason?: string,
+    trader?: string
+  ) {
     this.openOrders.get(symbol)?.delete(digest);
     console.log({
-      update: "order removed",
+      info: reason,
       symbol: symbol,
       trader: trader,
       digest: digest,
@@ -382,18 +388,11 @@ export default class Distributor {
     let providerIdx = Math.floor(Math.random() * rpcProviders.length);
     this.lastRefreshTime.set(symbol, Date.now());
 
-    let tsStart: number;
-    console.log(`${symbol}: fetching number of accounts ... `);
-    tsStart = Date.now();
+    let tsStart = Date.now();
 
     const numOpenOrders = (
       await this.md.getOrderBookContract(symbol)!.orderCount()
     ).toNumber();
-    console.log({
-      symbol: symbol,
-      time: new Date(Date.now()).toISOString(),
-      activeAccounts: numOpenOrders,
-    });
 
     // fetch orders
     const promises: Promise<{
@@ -416,7 +415,6 @@ export default class Distributor {
     const orderBundles: Map<string, OrderBundle> = new Map();
     for (let i = 0; i < promises.length; i += rpcProviders.length) {
       try {
-        tsStart = Date.now();
         const chunks = await Promise.allSettled(
           promises.slice(i, i + rpcProviders.length)
         );
@@ -443,6 +441,7 @@ export default class Distributor {
     }
     this.openOrders.set(symbol, orderBundles);
     console.log({
+      level: "fetch orders",
       symbol: symbol,
       time: new Date(Date.now()).toISOString(),
       orders: orderBundles.size,
@@ -496,7 +495,6 @@ export default class Distributor {
         const accountChunk = await Promise.allSettled(
           promises2.slice(i, i + rpcProviders.length)
         );
-
         accountChunk.map((results, j) => {
           if (results.status === "fulfilled") {
             const addressChunk = addressChunkBin[j];
@@ -528,6 +526,7 @@ export default class Distributor {
       }
     }
     console.log({
+      info: "fetch positions",
       symbol: symbol,
       time: new Date(Date.now()).toISOString(),
       accounts: this.openPositions.get(symbol)!.size,
@@ -554,7 +553,6 @@ export default class Distributor {
         Date.now() - (this.pricesFetchedAt.get(symbol) ?? 0) >
         this.config.fetchPricesIntervalSecondsMin * 1_000
       ) {
-        console.log("updating prices");
         const newPxSubmission =
           await this.md.fetchPriceSubmissionInfoForPerpetual(symbol);
         if (
@@ -575,23 +573,23 @@ export default class Distributor {
     const removeOrders: string[] = [];
     for (const [digest, orderBundle] of orders) {
       if (this.isExecutable(orderBundle, curPx.pxS2S3)) {
-        const msg = JSON.stringify({
+        const command = {
           symbol: symbol,
           digest: digest,
           trader: orderBundle.trader,
           onChain: orderBundle.order !== undefined,
-        });
+        };
 
         // send command
+        const msg = JSON.stringify(command);
         if (
-          orderBundle.order == undefined
-          // ||
-          // Date.now() - (this.messageSentAt.get(msg) ?? 0) >
-          //   this.config.executeIntervalSecondsMin * 500
+          Date.now() - (this.messageSentAt.get(msg) ?? 0) >
+          this.config.executeIntervalSecondsMin * 500
         ) {
-          console.log(msg);
+          // console.log({ level: "execute", ...command });
           await this.redisPubClient.publish("ExecuteOrder", msg);
           this.messageSentAt.set(msg, Date.now());
+          ordersSent.add(msg);
         }
         // remove stale broker orders
         if (
@@ -601,7 +599,6 @@ export default class Distributor {
         ) {
           removeOrders.push(digest);
         }
-        ordersSent.add(msg);
       }
     }
     for (const digest of removeOrders) {
@@ -625,12 +622,62 @@ export default class Distributor {
     const traderPos = this.openPositions
       .get(order.symbol)
       ?.get(order.trader)?.positionBC;
+    const isBuy = order.order.side == BUY_SIDE;
     if (
       order.order.reduceOnly &&
-      traderPos !== undefined &&
-      traderPos * order.order.quantity >= 0
+      (traderPos == undefined ||
+        (traderPos > 0 && isBuy) ||
+        (traderPos < 0 && !isBuy))
     ) {
       return false;
+    }
+
+    if (order.order.parentChildOrderIds) {
+      if (
+        order.order.parentChildOrderIds[0] == ZERO_ORDER_ID &&
+        this.openOrders
+          .get(order.symbol)
+          ?.has(order.order.parentChildOrderIds[0])
+      ) {
+        return false;
+      }
+    }
+
+    const markPrice = pxS2S3[0] * (1 + this.markPremium.get(order.symbol)!);
+    const midPrice = pxS2S3[0] * (1 + this.midPremium.get(order.symbol)!);
+    const limitPrice = order.order.limitPrice;
+    const triggerPrice = order.order.stopPrice;
+
+    switch (order.order.type) {
+      case ORDER_TYPE_MARKET:
+        return true;
+
+      case ORDER_TYPE_LIMIT:
+        return (
+          limitPrice != undefined &&
+          ((isBuy && midPrice < limitPrice) ||
+            (!isBuy && midPrice > limitPrice))
+        );
+
+      case ORDER_TYPE_STOP_MARKET:
+        return (
+          triggerPrice != undefined &&
+          ((isBuy && markPrice > triggerPrice) ||
+            (!isBuy && markPrice < triggerPrice))
+        );
+
+      case ORDER_TYPE_STOP_LIMIT:
+        return (
+          triggerPrice != undefined &&
+          limitPrice != undefined &&
+          ((isBuy && markPrice > triggerPrice) ||
+            (!isBuy && markPrice < triggerPrice)) &&
+          ((isBuy && midPrice < limitPrice) ||
+            (!isBuy && midPrice > limitPrice))
+        );
+
+      default:
+        break;
     }
 
     if (order.order.type == ORDER_TYPE_MARKET) {
@@ -639,13 +686,13 @@ export default class Distributor {
       if (order.order.side == BUY_SIDE) {
         return (
           order.order.limitPrice != undefined &&
-          pxS2S3[0] * (1 + this.markPremium.get(order.symbol)!) <
+          pxS2S3[0] * (1 + this.midPremium.get(order.symbol)!) <
             order.order.limitPrice
         );
       } else {
         return (
           order.order.stopPrice != undefined &&
-          pxS2S3[0] * (1 + this.markPremium.get(order.symbol)!) >
+          pxS2S3[0] * (1 + this.midPremium.get(order.symbol)!) >
             order.order.stopPrice
         );
       }

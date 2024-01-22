@@ -390,6 +390,8 @@ export default class BlockhainListener {
           trader: trader,
           digest: orderDigest,
           ...order,
+          brokerAddr: scOrder.brokerAddr,
+          executor: scOrder.executorAddr,
           block: event.blockNumber,
           hash: event.transactionHash,
           id: `${event.transactionHash}:${event.logIndex}`,
