@@ -242,6 +242,7 @@ export default class Distributor {
               lockedInQC: account.lockedInQC,
               unpaidFundingCC: 0,
             });
+            break;
           }
 
           case "UpdateMarkPriceEvent": {
@@ -268,18 +269,27 @@ export default class Distributor {
               trader,
               order,
             }: PerpetualLimitOrderCreatedMsg = JSON.parse(msg);
+            console.log("PerpetualLimitOrderCreatedEvent");
             this.updateOrder(symbol, trader, digest, order);
+            break;
           }
 
           case "PerpetualLimitOrderCancelledEvent": {
             const { symbol, digest }: PerpetualLimitOrderCancelledMsg =
               JSON.parse(msg);
+            console.log(
+              "PerpetualLimitOrderCancelledEvent: should remove order",
+              digest
+            );
             this.openOrders.get(symbol)?.delete(digest);
+            break;
           }
 
-          case "Trade": {
+          case "TradeEvent": {
             const { symbol, digest }: TradeMsg = JSON.parse(msg);
+            console.log("TradeEvent: should remove order", digest);
             this.openOrders.get(symbol)?.delete(digest);
+            break;
           }
 
           case "ExecutionFailedEvent": {
@@ -288,6 +298,7 @@ export default class Distributor {
             if (reason != "cancel delay required") {
               this.openOrders.get(symbol)?.delete(digest);
             }
+            break;
           }
 
           case "BrokerOrderCreatedEvent": {
@@ -295,6 +306,7 @@ export default class Distributor {
               JSON.parse(msg);
             this.updateOrder(symbol, traderAddr, digest, undefined);
             this.brokerOrders.get(symbol)!.set(digest, Date.now());
+            break;
           }
         }
       });
@@ -552,20 +564,23 @@ export default class Distributor {
           trader: orderBundle.trader,
           onChain: orderBundle.order !== undefined,
         });
-        console.log(msg);
+
+        // send command
+        if (
+          Date.now() - (this.messageSentAt.get(msg) ?? 0) >
+          this.config.executeIntervalSecondsMin * 1_000
+        ) {
+          console.log(msg);
+          await this.redisPubClient.publish("ExecuteOrder", msg);
+          this.messageSentAt.set(msg, Date.now());
+        }
+        // remove stale broker orders
         if (
           orderBundle.order == undefined &&
           Date.now() - (this.brokerOrders.get(symbol)?.get(digest) ?? 0) >
             60_000
         ) {
           removeOrders.push(digest);
-        }
-        if (
-          Date.now() - (this.messageSentAt.get(msg) ?? 0) >
-          this.config.executeIntervalSecondsMin * 1_000
-        ) {
-          await this.redisPubClient.publish("ExecuteOrder", msg);
-          this.messageSentAt.set(msg, Date.now());
         }
         ordersSent.add(msg);
       }

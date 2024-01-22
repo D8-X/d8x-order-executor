@@ -74,7 +74,7 @@ export default class Executor {
     // console.log(`${new Date(Date.now()).toISOString()}: subscribing to account streamer...`);
     await this.redisSubClient.subscribe(
       "block",
-      "ExecuteTrader",
+      "ExecuteOrder",
       (err, count) => {
         if (err) {
           console.log(
@@ -240,7 +240,7 @@ export default class Executor {
       } else {
         const bot = this.bots[txns[i].botIdx].api.getAddress();
         let prom: Promise<void>;
-        const error = result.reason.toString();
+        const error = result.reason?.toString() ?? "";
         if (
           error.includes("insufficient funds for intrinsic transaction cost")
         ) {
