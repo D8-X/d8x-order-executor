@@ -199,7 +199,9 @@ export default class Executor {
               ? executeProm
               : bot.api
                   .getOrderById(symbol, digest)
-                  .then((ordr) => (ordr ? executeProm : Promise.reject())),
+                  .then((ordr) =>
+                    ordr ? executeProm : Promise.reject("order not found")
+                  ),
             botIdx: i,
             symbol: symbol,
             digest: digest,

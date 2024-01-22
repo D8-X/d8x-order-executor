@@ -169,6 +169,7 @@ export default class Distributor {
       "UpdateMarkPriceEvent",
       "UpdateMarginAccountEvent",
       "UpdateUnitAccumulatedFundingEvent",
+      "TradeEvent",
       "ExecutionFailedEvent",
       "PerpetualLimitOrderCreatedEvent",
       "PerpetualLimitOrderCancelledEvent",
@@ -223,12 +224,11 @@ export default class Distributor {
               this.checkOrders(symbol);
             }
             if (
-              Date.now() - Math.min(...this.lastRefreshTime.values()) <
+              Date.now() - Math.min(...this.lastRefreshTime.values()) >
               this.config.refreshOrdersIntervalSecondsMax * 1_000
             ) {
-              return;
+              this.refreshAllOpenOrders();
             }
-            await this.refreshAllOpenOrders();
             break;
           }
 
@@ -269,26 +269,21 @@ export default class Distributor {
               trader,
               order,
             }: PerpetualLimitOrderCreatedMsg = JSON.parse(msg);
-            console.log("PerpetualLimitOrderCreatedEvent");
-            this.updateOrder(symbol, trader, digest, order);
+            this.addOrder(symbol, trader, digest, order);
+            await this.checkOrders(symbol);
             break;
           }
 
           case "PerpetualLimitOrderCancelledEvent": {
             const { symbol, digest }: PerpetualLimitOrderCancelledMsg =
               JSON.parse(msg);
-            console.log(
-              "PerpetualLimitOrderCancelledEvent: should remove order",
-              digest
-            );
-            this.openOrders.get(symbol)?.delete(digest);
+            this.removeOrder(symbol, digest);
             break;
           }
 
           case "TradeEvent": {
-            const { symbol, digest }: TradeMsg = JSON.parse(msg);
-            console.log("TradeEvent: should remove order", digest);
-            this.openOrders.get(symbol)?.delete(digest);
+            const { symbol, digest, trader }: TradeMsg = JSON.parse(msg);
+            this.removeOrder(symbol, digest, trader);
             break;
           }
 
@@ -296,7 +291,7 @@ export default class Distributor {
             const { symbol, digest, reason }: ExecutionFailedMsg =
               JSON.parse(msg);
             if (reason != "cancel delay required") {
-              this.openOrders.get(symbol)?.delete(digest);
+              this.removeOrder(symbol, digest);
             }
             break;
           }
@@ -304,8 +299,9 @@ export default class Distributor {
           case "BrokerOrderCreatedEvent": {
             const { symbol, traderAddr, digest }: BrokerOrderMsg =
               JSON.parse(msg);
-            this.updateOrder(symbol, traderAddr, digest, undefined);
+            this.addOrder(symbol, traderAddr, digest, undefined);
             this.brokerOrders.get(symbol)!.set(digest, Date.now());
+            await this.checkOrders(symbol);
             break;
           }
         }
@@ -314,7 +310,7 @@ export default class Distributor {
     });
   }
 
-  private updateOrder(
+  private addOrder(
     symbol: string,
     trader: string,
     digest: string,
@@ -330,7 +326,24 @@ export default class Distributor {
         order: order,
         symbol: symbol,
       });
+      console.log({
+        update: "order added",
+        symbol: symbol,
+        trader: trader,
+        digest: digest,
+        onChain: order !== undefined,
+      });
     }
+  }
+
+  private removeOrder(symbol: string, digest: string, trader?: string) {
+    this.openOrders.get(symbol)?.delete(digest);
+    console.log({
+      update: "order removed",
+      symbol: symbol,
+      trader: trader,
+      digest: digest,
+    });
   }
 
   private updatePosition(position: Position) {
@@ -530,23 +543,27 @@ export default class Distributor {
    */
   private async checkOrders(symbol: string) {
     this.requireReady();
-    if (
-      Date.now() - (this.pricesFetchedAt.get(symbol) ?? 0) <
-      this.config.fetchPricesIntervalSecondsMin * 1_000
-    ) {
-      return undefined;
-    }
+
     const orders = this.openOrders.get(symbol)!;
     if (orders.size == 0) {
       return;
     }
+
     try {
-      const newPxSubmission =
-        await this.md.fetchPriceSubmissionInfoForPerpetual(symbol);
-      if (!this.checkSubmissionsInSync(newPxSubmission.submission.timestamps)) {
-        return false;
+      if (
+        Date.now() - (this.pricesFetchedAt.get(symbol) ?? 0) >
+        this.config.fetchPricesIntervalSecondsMin * 1_000
+      ) {
+        console.log("updating prices");
+        const newPxSubmission =
+          await this.md.fetchPriceSubmissionInfoForPerpetual(symbol);
+        if (
+          !this.checkSubmissionsInSync(newPxSubmission.submission.timestamps)
+        ) {
+          return false;
+        }
+        this.pxSubmission.set(symbol, newPxSubmission);
       }
-      this.pxSubmission.set(symbol, newPxSubmission);
     } catch (e) {
       console.log("error fetching from price service:");
       console.log(e);
@@ -567,8 +584,10 @@ export default class Distributor {
 
         // send command
         if (
-          Date.now() - (this.messageSentAt.get(msg) ?? 0) >
-          this.config.executeIntervalSecondsMin * 1_000
+          orderBundle.order == undefined
+          // ||
+          // Date.now() - (this.messageSentAt.get(msg) ?? 0) >
+          //   this.config.executeIntervalSecondsMin * 500
         ) {
           console.log(msg);
           await this.redisPubClient.publish("ExecuteOrder", msg);
@@ -586,7 +605,8 @@ export default class Distributor {
       }
     }
     for (const digest of removeOrders) {
-      orders.delete(digest);
+      this.openOrders.get(symbol)?.delete(digest);
+      this.brokerOrders.get(symbol)?.delete(digest);
     }
     return ordersSent.size > 0;
   }
@@ -619,13 +639,13 @@ export default class Distributor {
       if (order.order.side == BUY_SIDE) {
         return (
           order.order.limitPrice != undefined &&
-          pxS2S3[0] * (1 + this.markPremium.get(order.symbol)!) <=
+          pxS2S3[0] * (1 + this.markPremium.get(order.symbol)!) <
             order.order.limitPrice
         );
       } else {
         return (
           order.order.stopPrice != undefined &&
-          pxS2S3[0] * (1 + this.markPremium.get(order.symbol)!) >=
+          pxS2S3[0] * (1 + this.markPremium.get(order.symbol)!) >
             order.order.stopPrice
         );
       }
