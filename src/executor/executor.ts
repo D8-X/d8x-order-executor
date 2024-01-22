@@ -200,7 +200,8 @@ export default class Executor {
                   .getOrderById(symbol, digest)
                   .then((ordr) =>
                     ordr ? executeProm : Promise.reject("order not found")
-                  ),
+                  )
+                  .catch((e) => Promise.reject("order status unknown")),
             botIdx: i,
             symbol: symbol,
             digest: digest,
@@ -234,17 +235,18 @@ export default class Executor {
         // });
         confirmations.push(
           executeWithTimeout(
-            result.value.wait().then(() => {
+            result.value.wait().then((res) => {
               this.bots[txns[i].botIdx].busy = false;
               console.log({
                 info: "txn confirmed",
                 symbol: txns[i].symbol,
-                orderBook: result.value.to,
-                executor: result.value.from,
+                orderBook: res.to,
+                executor: res.from,
                 trader: txns[i].trader,
                 digest: txns[i].digest,
-                block: result.value.blockNumber,
-                hash: result.value.hash,
+                block: res.blockNumber,
+                gas: utils.formatEther(res.cumulativeGasUsed),
+                hash: res.transactionHash,
               });
             }),
             30_000,

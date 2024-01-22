@@ -428,6 +428,7 @@ export default class Distributor {
                 digest: orderHashes[j],
                 order: this.md!.smartContractOrderToOrder({
                   ...orders[j],
+                  iPerpetualId: this.md!.getPerpIdFromSymbol(symbol),
                   executorAddr: this.config.rewardsAddress,
                   submittedTimestamp: submittedTs[j],
                 } as IPerpetualOrder.OrderStruct),
@@ -436,7 +437,10 @@ export default class Distributor {
           }
         }
       } catch (e) {
-        console.log(`${symbol} ${new Date(Date.now()).toISOString()}: error`);
+        console.log(
+          `${symbol} ${new Date(Date.now()).toISOString()}: error`,
+          e
+        );
       }
     }
     this.openOrders.set(symbol, orderBundles);
