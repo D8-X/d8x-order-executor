@@ -1,89 +1,134 @@
-import { Order } from "@d8x/perpetuals-sdk";
+import { Order, floatToABK64x64 } from "@d8x/perpetuals-sdk";
+import { IPerpetualOrder } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
+
+export const ZERO_POSITION = floatToABK64x64(0);
+
+export interface Position {
+  address: string;
+  perpetualId: number;
+  positionBC: number;
+  cashCC: number;
+  lockedInQC: number;
+  unpaidFundingCC: number;
+}
 
 export interface OrderBundle {
-  id: string;
+  symbol: string;
+  trader: string;
+  digest: string;
   order: Order;
-  isLocked: boolean;
-  ts: number;
-  onChain: boolean;
-  traderAddr: string;
 }
 
-export interface ExecutorConfig {
-  chainId: number;
-  executeRPC: string[];
-  recountRPC: string[];
-  executeIntervalSeconds: number;
-  refreshOrdersSeconds: number;
-  maxGasPriceGWei: number;
-  maxExecutionBatchSize: number;
-  executeDelaySeconds: number;
-  recountIntervalSeconds: 10;
-  priceFeedEndpoints: Array<{ type: string; endpoints: string[] }>;
-}
-
-export interface BrokerListenerConfig {
-  brokerWS: string[];
-  brokerReconnectIntervalMS: number;
-  sdkConfig: string;
-  httpRPC: string[];
-}
-
-export interface BlockchainListenerConfig {
-  chainId: number;
-  sdkConfig: string;
-  httpRPC: string[];
-  wsRPC: string[];
-  waitForBlockseconds: number;
-  healthCheckSeconds: number;
-}
-
-export interface ListenerConfig
-  extends BlockchainListenerConfig,
-    BrokerListenerConfig {}
-
-export interface BrokerWSErrorData {
-  error: string;
-}
-
-export interface BrokerWSUpdateData {
-  orderId: string;
-  traderAddr: string;
-  iDeadline: number;
-  flags: number;
-  fAmount: string;
-  fLimitPrice: string;
-  fTriggerPrice: string;
-  executionTimestamp: number;
-}
-
-export interface BrokerWSMessage {
-  type: string;
-  topic: string;
-  data: "ack" | BrokerWSErrorData | BrokerWSUpdateData;
-}
 export interface RedisConfig {
   host: string;
   port: number;
-  password: string;
+  password?: string;
 }
 
-export interface watchDogAlarm {
-  isCoolOff: boolean;
-  timestampSec: number;
+export interface ExecutorConfig {
+  sdkConfig: string;
+  bots: number;
+  rewardsAddress: string;
+  rpcExec: string[];
+  rpcWatch: string[];
+  rpcListenHttp: string[];
+  rpcListenWs: string[];
+  waitForBlockSeconds: number;
+  healthCheckSeconds: number;
+  refreshOrdersIntervalSecondsMax: number;
+  refreshOrdersIntervalSecondsMin: number;
+  executeIntervalSecondsMax: number;
+  executeIntervalSecondsMin: number;
+  refreshOrdersSecondsMax: number;
+  fetchPricesIntervalSecondsMin: number;
+  maxGasPriceGWei: 1;
+  priceFeedEndpoints: [{ type: "pyth" | "odin"; endpoints: string[] }];
 }
 
-export interface GasPriceV2 {
-  maxPriorityFee: number;
-  maxfee: number;
+export interface RedisMsg {
+  block: number;
+  hash: string;
+  id: string;
+}
+export interface TradeMsg extends RedisMsg {
+  perpetualId: number;
+  symbol: string;
+  orderId: string;
+  traderAddr: string;
+  tradeAmount: number;
+  pnl: number;
+  fee: number;
+  newPositionSizeBC: number;
+  broker: string;
 }
 
-export interface GasInfo {
-  safeLow: number | GasPriceV2;
-  standard: number | GasPriceV2;
-  fast: number | GasPriceV2;
-  fastest?: number;
-  estimatedBaseFee?: number;
-  blockTime: number;
-  blockNumber: number;
+export interface LiquidateMsg extends RedisMsg {
+  perpetualId: number;
+  symbol: string;
+  traderAddr: string;
+  tradeAmount: number;
+  pnl: number;
+  fee: number;
+  newPositionSizeBC: number;
+  liquidator: string;
+}
+
+export interface UpdateMarginAccountMsg extends RedisMsg {
+  perpetualId: number;
+  symbol: string;
+  traderAddr: string;
+  positionBC: number;
+  cashCC: number;
+  lockedInQC: number;
+  fundingPaymentCC: number;
+}
+
+export interface UpdateMarkPriceMsg extends RedisMsg {
+  perpetualId: number;
+  symbol: string;
+  midPremium: number;
+  markPremium: number;
+  spotIndexPrice: number;
+}
+
+export interface UpdateUnitAccumulatedFundingMsg extends RedisMsg {
+  perpetualId: number;
+  symbol: string;
+  unitAccumulatedFundingCC: number;
+}
+
+export interface PerpetualLimitOrderCreatedMsg extends RedisMsg {
+  symbol: string;
+  perpetualId: number;
+  trader: string;
+  brokerAddr: string;
+  order: Order;
+  digest: string;
+}
+
+export interface PerpetualLimitOrderCancelledMsg extends RedisMsg {
+  symbol: string;
+  perpetualId: number;
+  digest: string;
+}
+
+export interface ExecutionFailedMsg extends RedisMsg {
+  symbol: string;
+  perpetualId: number;
+  trader: string;
+  digest: string;
+  reason: string;
+}
+
+export interface LiquidateTraderMsg {
+  symbol: string;
+  traderAddr: string;
+  // px: PriceFeedSubmission;
+}
+
+export enum BotStatus {
+  Ready = "Ready",
+  Busy = "Busy",
+  PartialError = "PartialError",
+  Error = "Error",
 }
