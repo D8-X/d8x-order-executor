@@ -204,7 +204,6 @@ export default class Executor {
             30_000,
             "timeout"
           );
-          console.log(bot.api.getAddress(), "would try order", symbol, digest);
           this.locked.add(`${symbol}:${digest}`);
           txns.push({
             tx: onChain
@@ -241,19 +240,24 @@ export default class Executor {
       const result = results[i];
       if (result.status === "fulfilled") {
         successes++;
-        // console.log({
-        //   symbol: txns[i].symbol,
-        //   orderBook: result.value.to,
-        //   executor: result.value.from,
-        //   trader: txns[i].trader,
-        //   digest: txns[i].digest,
-        //   txn: result.value.hash,
-        // });
+        console.log({
+          info: "txn submitted",
+          symbol: txns[i].symbol,
+          orderBook: result.value.to,
+          executor: result.value.from,
+          trader: txns[i].trader,
+          digest: txns[i].digest,
+          block: result.value.blockNumber,
+          gas: utils.formatEther(result.value.gasLimit),
+          hash: result.value.hash,
+        });
         confirmations.push(
           executeWithTimeout(
             result.value
               .wait()
               .then((res) => {
+                // mined -> unlock bot and order
+                this.locked.delete(`${txns[i].symbol}:${txns[i].digest}`);
                 this.bots[txns[i].botIdx].busy = false;
                 console.log({
                   info: "txn confirmed",
@@ -267,31 +271,66 @@ export default class Executor {
                   hash: res.transactionHash,
                 });
               })
-              .catch(() => sleep(5_000).then()),
+              .catch(() => {
+                // status unknown - wait and then unlock
+                console.log("txn confirmation failed");
+                sleep(5_000).then();
+              })
+              .finally(() => {
+                console.log({
+                  info: "unlocked",
+                  digest: txns[i].digest,
+                  bot: this.bots[txns[i].botIdx].api.getAddress(),
+                });
+                this.locked.delete(`${txns[i].symbol}:${txns[i].digest}`);
+                this.bots[txns[i].botIdx].busy = false;
+              }),
             30_000,
             "timeout"
           )
         );
       } else {
+        console.log({
+          info: "txn rejected",
+          symbol: txns[i].symbol,
+          executor: this.bots[txns[i].botIdx].api.getAddress(),
+          trader: txns[i].trader,
+          digest: txns[i].digest,
+        });
+        // txn was not picked up or timed-out
         const bot = this.bots[txns[i].botIdx].api.getAddress();
         let prom: Promise<void>;
         const error = result.reason?.toString() ?? "";
         if (
           error.includes("insufficient funds for intrinsic transaction cost")
         ) {
-          prom = this.fundWallets([bot]);
+          // not enough gas for txn cost -> unlock order immediately, fund, then unlock bot
+          console.log({ info: "insufficient funds", bot: bot });
+          this.locked.delete(`${txns[i].symbol}:${txns[i].digest}`);
+          prom = this.fundWallets([bot]).then(() => {
+            this.bots[txns[i].botIdx].busy = false;
+          });
+        } else if (error.includes("timeout")) {
+          // timeout -> wait 5 more seconds then unlock order and bot
+          prom = sleep(5_000).then(() => {
+            this.locked.delete(`${txns[i].symbol}:${txns[i].digest}`);
+            this.bots[txns[i].botIdx].busy = false;
+          });
         } else {
+          // other errors, usually rpc -> resume immediately
           if (!error.includes("gas price too low")) {
-            console.log(`${bot} failed with reason ${result.reason}`);
+            console.log(
+              `txn to execute ${txns[i].symbol} order ${txns[i].digest} was rejected with reason:`,
+              result.reason
+            );
+          } else {
+            console.log("gas price too low");
           }
+          this.locked.delete(`${txns[i].symbol}:${txns[i].digest}`);
+          this.bots[txns[i].botIdx].busy = false;
           prom = Promise.resolve();
         }
-        confirmations.push(
-          // prom.then(() => {
-          //   this.bots[txns[i].botIdx].busy = false;
-          // })
-          prom
-        );
+        confirmations.push(prom);
       }
     }
 
@@ -317,6 +356,7 @@ export default class Executor {
     }
 
     (await Promise.allSettled(confirmations)).map((_result, i) => {
+      // just in case, unlock all used bots and orders
       this.locked.delete(`${txns[i].symbol}:${txns[i].digest}`);
       this.bots[txns[i].botIdx].busy = false;
     });

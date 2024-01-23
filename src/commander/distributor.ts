@@ -47,13 +47,13 @@ export default class Distributor {
 
   // state
   private lastRefreshTime: Map<string, number> = new Map();
-  private openPositions: Map<string, Map<string, Position>> = new Map();
+  private openPositions: Map<string, Map<string, Position>> = new Map(); // symbol => (trader => Position)
   private openOrders: Map<string, Map<string, OrderBundle>> = new Map(); // symbol => (digest => order bundle)
   private brokerOrders: Map<string, Map<string, number>> = new Map(); // symbol => (digest => received ts)
   private pxSubmission: Map<
     string,
     { submission: PriceFeedSubmission; pxS2S3: [number, number] }
-  > = new Map();
+  > = new Map(); // symbol => px submission
   private markPremium: Map<string, number> = new Map();
   private midPremium: Map<string, number> = new Map();
   private unitAccumulatedFunding: Map<string, number> = new Map();
@@ -113,6 +113,7 @@ export default class Distributor {
     const info = await this.md.exchangeInfo();
 
     this.symbols = info.pools
+      .filter(({ isRunning }) => isRunning)
       .map((pool) =>
         pool.perpetuals.map(
           (perpetual) =>
@@ -464,11 +465,26 @@ export default class Distributor {
       }
     }
     this.openOrders.set(symbol, orderBundles);
+    const orderArray = [...orderBundles.values()];
+    const numOrders = {
+      market: orderArray.filter(
+        ({ order }) => order?.type === ORDER_TYPE_MARKET
+      ).length,
+      limit: orderArray.filter(({ order }) => order?.type === ORDER_TYPE_LIMIT)
+        .length,
+      stopMarket: orderArray.filter(
+        ({ order }) => order?.type === ORDER_TYPE_STOP_MARKET
+      ).length,
+      stopLimit: orderArray.filter(
+        ({ order }) => order?.type === ORDER_TYPE_STOP_LIMIT
+      ).length,
+      offChain: orderArray.filter(({ order }) => order == undefined).length,
+    };
     console.log({
-      info: "fetch orders",
+      info: "open orders",
       symbol: symbol,
       time: new Date(Date.now()).toISOString(),
-      orders: orderBundles.size,
+      ...numOrders,
       waited: `${Date.now() - tsStart} ms`,
     });
 
@@ -550,10 +566,10 @@ export default class Distributor {
       }
     }
     console.log({
-      info: "fetch positions",
+      info: "traders",
       symbol: symbol,
       time: new Date(Date.now()).toISOString(),
-      accounts: this.openPositions.get(symbol)!.size,
+      count: this.openPositions.get(symbol)!.size,
       waited: `${Date.now() - tsStart} ms`,
     });
   }
@@ -614,6 +630,10 @@ export default class Distributor {
           await this.redisPubClient.publish("ExecuteOrder", msg);
           this.messageSentAt.set(msg, Date.now());
           ordersSent.add(msg);
+          // log if market to see real time action
+          if (orderBundle.order?.type === ORDER_TYPE_MARKET) {
+            console.log({ info: "execute", ...command });
+          }
         }
         // remove stale broker orders
         if (
@@ -702,41 +722,6 @@ export default class Distributor {
 
       default:
         break;
-    }
-
-    if (order.order.type == ORDER_TYPE_MARKET) {
-      return true;
-    } else if (order.order.type == ORDER_TYPE_LIMIT) {
-      if (order.order.side == BUY_SIDE) {
-        return (
-          order.order.limitPrice != undefined &&
-          pxS2S3[0] * (1 + this.midPremium.get(order.symbol)!) <
-            order.order.limitPrice
-        );
-      } else {
-        return (
-          order.order.stopPrice != undefined &&
-          pxS2S3[0] * (1 + this.midPremium.get(order.symbol)!) >
-            order.order.stopPrice
-        );
-      }
-    } else if (
-      order.order.type == ORDER_TYPE_STOP_LIMIT ||
-      order.order.type == ORDER_TYPE_STOP_MARKET
-    ) {
-      if (order.order.side == BUY_SIDE) {
-        return (
-          order.order.stopPrice != undefined &&
-          pxS2S3[0] * (1 + this.midPremium.get(order.symbol)!) <=
-            order.order.stopPrice
-        );
-      } else {
-        return (
-          order.order.stopPrice != undefined &&
-          pxS2S3[0] * (1 + this.midPremium.get(order.symbol)!) >=
-            order.order.stopPrice
-        );
-      }
     }
     return undefined;
   }
