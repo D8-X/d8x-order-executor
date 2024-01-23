@@ -2,7 +2,7 @@ import { PerpetualDataHandler, OrderExecutorTool } from "@d8x/perpetuals-sdk";
 import { ContractTransaction, Wallet, utils } from "ethers";
 import { providers } from "ethers";
 import { Redis } from "ioredis";
-import { constructRedis, executeWithTimeout } from "../utils";
+import { constructRedis, executeWithTimeout, sleep } from "../utils";
 import { BotStatus, ExecutorConfig, ExecuteOrderMsg } from "../types";
 
 export default class Executor {
@@ -18,6 +18,7 @@ export default class Executor {
 
   // state
   private q: Set<string> = new Set();
+  private locked: Set<string> = new Set();
   private lastCall: number = 0;
 
   constructor(
@@ -75,6 +76,7 @@ export default class Executor {
     await this.redisSubClient.subscribe(
       "block",
       "ExecuteOrder",
+      "Restart",
       (err, count) => {
         if (err) {
           console.log(
@@ -135,6 +137,10 @@ export default class Executor {
             }
             break;
           }
+
+          case "Restart": {
+            process.exit(0);
+          }
         }
       });
     });
@@ -168,17 +174,22 @@ export default class Executor {
       trader: string;
     }[] = [];
     for (const msg of q) {
+      const { symbol, digest, trader, onChain }: ExecuteOrderMsg =
+        JSON.parse(msg);
+      if (this.locked.has(`${symbol}:${digest}`)) {
+        console.log("not trying order", symbol, digest, "because it's locked");
+        continue;
+      }
       let assignedTx = false;
       for (let i = 0; i < this.bots.length && !assignedTx; i++) {
         const bot = this.bots[i];
         if (!bot.busy) {
-          // msg will be attempted by this liquidator
+          // msg will be attempted by this bot
           attempts++;
           this.q.delete(msg);
           bot.busy = true;
           assignedTx = true;
-          const { symbol, digest, trader, onChain }: ExecuteOrderMsg =
-            JSON.parse(msg);
+
           const executeProm = executeWithTimeout(
             bot.api.executeOrders(
               symbol,
@@ -193,14 +204,19 @@ export default class Executor {
             30_000,
             "timeout"
           );
+          console.log(bot.api.getAddress(), "would try order", symbol, digest);
+          this.locked.add(`${symbol}:${digest}`);
           txns.push({
             tx: onChain
               ? executeProm
               : bot.api
                   .getOrderById(symbol, digest)
-                  .then((ordr) =>
-                    ordr ? executeProm : Promise.reject("order not found")
-                  )
+                  .then((ordr) => {
+                    console.log(ordr);
+                    return ordr
+                      ? executeProm
+                      : Promise.reject("order not found");
+                  })
                   .catch((e) => Promise.reject("order status unknown")),
             botIdx: i,
             symbol: symbol,
@@ -235,20 +251,23 @@ export default class Executor {
         // });
         confirmations.push(
           executeWithTimeout(
-            result.value.wait().then((res) => {
-              this.bots[txns[i].botIdx].busy = false;
-              console.log({
-                info: "txn confirmed",
-                symbol: txns[i].symbol,
-                orderBook: res.to,
-                executor: res.from,
-                trader: txns[i].trader,
-                digest: txns[i].digest,
-                block: res.blockNumber,
-                gas: utils.formatEther(res.cumulativeGasUsed),
-                hash: res.transactionHash,
-              });
-            }),
+            result.value
+              .wait()
+              .then((res) => {
+                this.bots[txns[i].botIdx].busy = false;
+                console.log({
+                  info: "txn confirmed",
+                  symbol: txns[i].symbol,
+                  orderBook: res.to,
+                  executor: res.from,
+                  trader: txns[i].trader,
+                  digest: txns[i].digest,
+                  block: res.blockNumber,
+                  gas: utils.formatEther(res.cumulativeGasUsed),
+                  hash: res.transactionHash,
+                });
+              })
+              .catch(() => sleep(5_000).then()),
             30_000,
             "timeout"
           )
@@ -268,9 +287,10 @@ export default class Executor {
           prom = Promise.resolve();
         }
         confirmations.push(
-          prom.then(() => {
-            this.bots[txns[i].botIdx].busy = false;
-          })
+          // prom.then(() => {
+          //   this.bots[txns[i].botIdx].busy = false;
+          // })
+          prom
         );
       }
     }
@@ -297,6 +317,7 @@ export default class Executor {
     }
 
     (await Promise.allSettled(confirmations)).map((_result, i) => {
+      this.locked.delete(`${txns[i].symbol}:${txns[i].digest}`);
       this.bots[txns[i].botIdx].busy = false;
     });
 

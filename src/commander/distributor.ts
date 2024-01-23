@@ -175,6 +175,7 @@ export default class Distributor {
       "PerpetualLimitOrderCreatedEvent",
       "PerpetualLimitOrderCancelledEvent",
       "BrokerOrderCreatedEvent",
+      "Restart",
       (err, count) => {
         if (err) {
           console.log(
@@ -191,6 +192,14 @@ export default class Distributor {
     );
 
     this.ready = true;
+  }
+
+  private log(obj: Object | string) {
+    if (typeof obj == "string") {
+      console.log(obj);
+    } else {
+      console.log(JSON.stringify(obj));
+    }
   }
 
   private requireReady() {
@@ -304,6 +313,10 @@ export default class Distributor {
             this.brokerOrders.get(symbol)!.set(digest, Date.now());
             await this.checkOrders(symbol);
             break;
+          }
+
+          case "Restart": {
+            process.exit(0);
           }
         }
       });
@@ -422,7 +435,7 @@ export default class Distributor {
           if (result.status === "fulfilled") {
             const { orders, orderHashes, submittedTs } = result.value;
             for (let j = 0; j < orders.length; j++) {
-              orderBundles.set(orderHashes[j], {
+              const bundle = {
                 symbol: symbol,
                 trader: orders[j].traderAddr,
                 digest: orderHashes[j],
@@ -432,7 +445,14 @@ export default class Distributor {
                   executorAddr: this.config.rewardsAddress,
                   submittedTimestamp: submittedTs[j],
                 } as IPerpetualOrder.OrderStruct),
-              });
+              };
+              orderBundles.set(orderHashes[j], bundle);
+              if (
+                bundle.digest ==
+                "0x8e9828fc3eb7a0d4c136c92881c0d3eb218d4c907350ad375691f38deb0fbc02"
+              ) {
+                console.log(bundle);
+              }
             }
           }
         }
@@ -445,7 +465,7 @@ export default class Distributor {
     }
     this.openOrders.set(symbol, orderBundles);
     console.log({
-      level: "fetch orders",
+      info: "fetch orders",
       symbol: symbol,
       time: new Date(Date.now()).toISOString(),
       orders: orderBundles.size,

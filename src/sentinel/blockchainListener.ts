@@ -31,6 +31,7 @@ import {
   LiquidateEvent,
   PerpetualLimitOrderCancelledEvent,
   TradeEvent,
+  TransferAddressToEvent,
   UpdateMarginAccountEvent,
   UpdateMarkPriceEvent,
   UpdateUnitAccumulatedFundingEvent,
@@ -432,6 +433,19 @@ export default class BlockhainListener {
           mode: this.mode,
           ...msg,
         });
+      }
+    );
+
+    proxy.on(
+      "TransferAddressTo",
+      (
+        module: string,
+        oldAddress: string,
+        newAddress: string,
+        event: TransferAddressToEvent
+      ) => {
+        this.redisPubClient.publish("Restart", module);
+        process.exit(0);
       }
     );
 
