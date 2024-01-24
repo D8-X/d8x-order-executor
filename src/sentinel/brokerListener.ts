@@ -157,15 +157,15 @@ export default class BackendListener {
             traderAddr: traderAddr,
             digest: `0x${orderId}`,
           };
-          this.redisPubClient.publish(
-            "BrokerOrderCreatedEvent",
-            JSON.stringify(eventMsg)
-          );
           console.log({
             event: "BrokerOrderCreated",
             time: new Date(Date.now()).toISOString(),
             ...eventMsg,
           });
+          this.redisPubClient.publish(
+            "BrokerOrderCreatedEvent",
+            JSON.stringify(eventMsg)
+          );
         default:
           break;
       }

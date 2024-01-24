@@ -397,13 +397,13 @@ export default class BlockhainListener {
           hash: event.transactionHash,
           id: `${event.transactionHash}:${event.logIndex}`,
         };
-        this.redisPubClient.publish("TradeEvent", JSON.stringify(msg));
         console.log({
           event: "Trade",
           time: new Date(Date.now()).toISOString(),
           mode: this.mode,
           ...msg,
         });
+        this.redisPubClient.publish("TradeEvent", JSON.stringify(msg));
       }
     );
 
@@ -423,16 +423,16 @@ export default class BlockhainListener {
           hash: event.transactionHash,
           id: `${event.transactionHash}:${event.logIndex}`,
         };
-        this.redisPubClient.publish(
-          "PerpetualLimitOrderCancelledEvent",
-          JSON.stringify(msg)
-        );
         console.log({
           event: "PerpetualLimitOrderCancelled",
           time: new Date(Date.now()).toISOString(),
           mode: this.mode,
           ...msg,
         });
+        this.redisPubClient.publish(
+          "PerpetualLimitOrderCancelledEvent",
+          JSON.stringify(msg)
+        );
       }
     );
 
@@ -492,16 +492,16 @@ export default class BlockhainListener {
               hash: event.transactionHash,
               id: `${event.transactionHash}:${event.logIndex}`,
             };
-            this.redisPubClient.publish(
-              "PerpetualLimitOrderCreatedEvent",
-              JSON.stringify(msg)
-            );
             console.log({
               event: "PerpetualLimitOrderCreated",
               time: new Date(Date.now()).toISOString(),
               mode: this.mode,
               ...msg,
             });
+            this.redisPubClient.publish(
+              "PerpetualLimitOrderCreatedEvent",
+              JSON.stringify(msg)
+            );
           }
         );
 
@@ -525,16 +525,16 @@ export default class BlockhainListener {
               hash: event.transactionHash,
               id: `${event.transactionHash}:${event.logIndex}`,
             };
-            this.redisPubClient.publish(
-              "ExecutionFailedEvent",
-              JSON.stringify(msg)
-            );
             console.log({
               event: "ExecutionFailed",
               time: new Date(Date.now()).toISOString(),
               mode: this.mode,
               ...msg,
             });
+            this.redisPubClient.publish(
+              "ExecutionFailedEvent",
+              JSON.stringify(msg)
+            );
           }
         );
       });

@@ -436,6 +436,9 @@ export default class Distributor {
           if (result.status === "fulfilled") {
             const { orders, orderHashes, submittedTs } = result.value;
             for (let j = 0; j < orders.length; j++) {
+              if (orderHashes[j] == ZERO_ORDER_ID) {
+                continue;
+              }
               const bundle = {
                 symbol: symbol,
                 trader: orders[j].traderAddr,
@@ -448,12 +451,6 @@ export default class Distributor {
                 } as IPerpetualOrder.OrderStruct),
               };
               orderBundles.set(orderHashes[j], bundle);
-              if (
-                bundle.digest ==
-                "0x8e9828fc3eb7a0d4c136c92881c0d3eb218d4c907350ad375691f38deb0fbc02"
-              ) {
-                console.log(bundle);
-              }
             }
           }
         }
@@ -465,6 +462,7 @@ export default class Distributor {
       }
     }
     this.openOrders.set(symbol, orderBundles);
+
     const orderArray = [...orderBundles.values()];
     const numOrders = {
       market: orderArray.filter(
@@ -480,13 +478,16 @@ export default class Distributor {
       ).length,
       offChain: orderArray.filter(({ order }) => order == undefined).length,
     };
-    console.log({
-      info: "open orders",
-      symbol: symbol,
-      time: new Date(Date.now()).toISOString(),
-      ...numOrders,
-      waited: `${Date.now() - tsStart} ms`,
-    });
+    if (orderBundles.size > 0) {
+      // found some orders, report
+      console.log({
+        info: "open orders",
+        symbol: symbol,
+        time: new Date(Date.now()).toISOString(),
+        ...numOrders,
+        waited: `${Date.now() - tsStart} ms`,
+      });
+    }
 
     await this.refreshAccounts(symbol);
   }
@@ -565,13 +566,16 @@ export default class Distributor {
         console.log("Error fetching account chunk (RPC?)");
       }
     }
-    console.log({
-      info: "traders",
-      symbol: symbol,
-      time: new Date(Date.now()).toISOString(),
-      count: this.openPositions.get(symbol)!.size,
-      waited: `${Date.now() - tsStart} ms`,
-    });
+    if (this.openPositions.get(symbol)!.size > 0) {
+      // found something, report
+      console.log({
+        info: "traders",
+        symbol: symbol,
+        time: new Date(Date.now()).toISOString(),
+        count: this.openPositions.get(symbol)!.size,
+        waited: `${Date.now() - tsStart} ms`,
+      });
+    }
   }
 
   /**
@@ -626,14 +630,17 @@ export default class Distributor {
           Date.now() - (this.messageSentAt.get(msg) ?? 0) >
           this.config.executeIntervalSecondsMin * 500
         ) {
-          // console.log({ level: "execute", ...command });
-          await this.redisPubClient.publish("ExecuteOrder", msg);
-          this.messageSentAt.set(msg, Date.now());
-          ordersSent.add(msg);
           // log if market to see real time action
-          if (orderBundle.order?.type === ORDER_TYPE_MARKET) {
+          if (
+            orderBundle.order == undefined ||
+            orderBundle.order?.type === ORDER_TYPE_MARKET
+          ) {
             console.log({ info: "execute", ...command });
           }
+          // console.log({ level: "execute", ...command });
+          this.messageSentAt.set(msg, Date.now());
+          ordersSent.add(msg);
+          await this.redisPubClient.publish("ExecuteOrder", msg);
         }
         // remove stale broker orders
         if (
@@ -643,6 +650,12 @@ export default class Distributor {
         ) {
           removeOrders.push(digest);
         }
+      } else if (orderBundle.order?.type === ORDER_TYPE_MARKET) {
+        console.log({
+          info: "market order not executable",
+          pxS2S3: curPx.pxS2S3,
+          ...orderBundle,
+        });
       }
     }
     for (const digest of removeOrders) {
@@ -681,7 +694,7 @@ export default class Distributor {
         order.order.parentChildOrderIds[0] == ZERO_ORDER_ID &&
         this.openOrders
           .get(order.symbol)
-          ?.has(order.order.parentChildOrderIds[0])
+          ?.has(order.order.parentChildOrderIds[1])
       ) {
         return false;
       }

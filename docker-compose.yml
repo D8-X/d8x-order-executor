@@ -24,7 +24,7 @@ services:
       REDIS_PORT: ${REDIS_PORT}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       SDK_CONFIG: ${SDK_CONFIG}
-    restart: on-failure
+    restart: always
 
   # Account manager: fetches and distributes data to liquidators
   commander:
@@ -38,7 +38,7 @@ services:
       REDIS_PORT: ${REDIS_PORT}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       SDK_CONFIG: ${SDK_CONFIG}
-    restart: on-failure
+    restart: always
 
   # liquidator: submits liquidate calls to the blockchain
   executor:
@@ -54,4 +54,4 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       SDK_CONFIG: ${SDK_CONFIG}
       SEED_PHRASE: ${SEED_PHRASE}
-    restart: on-failure
+    restart: always
