@@ -109,8 +109,8 @@ export default class BackendListener {
       console.log(
         `${new Date(
           Date.now()
-        ).toISOString()} Subscribing to perpetual id ${id} via broker WS on chain ID ${
-          this.chainId
+        ).toISOString()} Subscribing to perpetual id ${id} via broker WS ${
+          this.config.brokerWS[this.wsIndex]
         }`
       );
       this.ws.send(
@@ -130,7 +130,9 @@ export default class BackendListener {
             console.log(
               `${new Date(
                 Date.now()
-              ).toISOString()} Subscribed to perpetual id ${perpId} via broker WS`
+              ).toISOString()} Subscribed to perpetual id ${perpId} via broker WS ${
+                this.config.brokerWS[this.wsIndex]
+              }`
             );
           } else {
             console.log(
