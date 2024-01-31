@@ -148,6 +148,132 @@ export default class Executor {
   }
 
   /**
+   * Executes an order using a given bot.
+   * Orders not found on chain are never tried.
+   * Orders tried that revert with not found error, are never tried again.
+   * @param botIdx Index of wallet used
+   * @param symbol Perpetual symbol
+   * @param digest Order digest/id
+   * @param onChain true if order was seen on-chain
+   * @returns true if excution txn does not revert
+   */
+  private async executeOrderByBot(
+    botIdx: number,
+    symbol: string,
+    digest: string,
+    onChain: boolean
+  ) {
+    digest = digest.toLowerCase();
+    if (this.bots[botIdx].busy || this.locked.has(digest)) {
+      return false;
+    }
+    // lock
+    this.bots[botIdx].busy = true;
+    this.locked.add(digest);
+
+    // check if order is on-chain - stop if not/unable to check
+    const isOpen =
+      onChain ||
+      (await this.bots[botIdx].api
+        .getOrderById(symbol, digest)
+        .then((ordr) => ordr != undefined && ordr.quantity > 0)
+        .catch(() => false));
+
+    if (!isOpen) {
+      console.log({
+        info: "order not found",
+        symbol: symbol,
+        executor: this.bots[botIdx].api.getAddress(),
+        digest: digest,
+      });
+      this.bots[botIdx].busy = false;
+      this.locked.delete(digest);
+      return false;
+    }
+
+    // submit txn
+    console.log({
+      info: "submitting txn...",
+      symbol: symbol,
+      executor: this.bots[botIdx].api.getAddress(),
+      digest: digest,
+    });
+    let tx: ContractTransaction;
+    try {
+      tx = await this.bots[botIdx].api.executeOrders(
+        symbol,
+        [digest],
+        this.config.rewardsAddress,
+        undefined,
+        {
+          gasLimit: 2_000_000,
+          splitTx: false,
+        }
+      );
+    } catch (e: any) {
+      console.log({
+        info: "txn rejected",
+        reason: e.toString(),
+        symbol: symbol,
+        executor: this.bots[botIdx].api.getAddress(),
+        digest: digest,
+      });
+      this.bots[botIdx].busy = false;
+      this.locked.delete(digest);
+      return false;
+    }
+    console.log({
+      info: "txn accepted",
+      symbol: symbol,
+      orderBook: tx.to,
+      executor: tx.from,
+      digest: digest,
+      gas: `${utils.formatUnits(tx.gasLimit, "gwei")} gwei`,
+      hash: tx.hash,
+    });
+
+    // confirm execution
+    try {
+      const receipt = await tx.wait();
+      console.log({
+        info: "txn confirmed",
+        symbol: symbol,
+        orderBook: receipt.to,
+        executor: receipt.from,
+        digest: digest,
+        block: receipt.blockNumber,
+        gas: utils.formatEther(receipt.cumulativeGasUsed),
+        hash: receipt.transactionHash,
+      });
+    } catch (e: any) {
+      const error = e?.toString() || "";
+      console.log({
+        info: "txn reverted",
+        reason: error,
+        symbol: symbol,
+        executor: this.bots[botIdx].api.getAddress(),
+        digest: digest,
+      });
+      // unlock order (if it exists)
+      if (!error.includes("order not found")) {
+        this.locked.delete(digest);
+      }
+      const bot = this.bots[botIdx].api.getAddress();
+
+      if (error.includes("insufficient funds for intrinsic transaction cost")) {
+        try {
+          await this.fundWallets([bot]);
+        } catch (e: any) {
+          console.log(`failed to fund bot ${bot}`);
+        }
+      }
+    }
+    // unlock bot
+    this.bots[botIdx].busy = false;
+    return true;
+  }
+
+  /**
    * Execute orders in q
    */
   public async execute() {
@@ -167,213 +293,50 @@ export default class Executor {
       return BotStatus.Ready;
     }
 
-    const txns: {
-      tx: Promise<ContractTransaction>;
-      botIdx: number;
-      symbol: string;
-      digest: string;
-      trader: string;
-    }[] = [];
+    const executed: Promise<boolean>[] = [];
     for (const msg of q) {
-      const { symbol, digest, trader, onChain }: ExecuteOrderMsg =
-        JSON.parse(msg);
-      if (this.locked.has(`${symbol}:${digest}`)) {
-        // console.log(symbol, digest, "is locked");
+      const { symbol, digest, onChain }: ExecuteOrderMsg = JSON.parse(msg);
+      if (this.locked.has(digest)) {
         continue;
       }
-      let assignedTx = false;
-      for (let i = 0; i < this.bots.length && !assignedTx; i++) {
+      for (let i = 0; i < this.bots.length; i++) {
         const bot = this.bots[i];
         if (!bot.busy) {
           // msg will be attempted by this bot
           attempts++;
           this.q.delete(msg);
-          bot.busy = true;
-          assignedTx = true;
-          // lock order
-          this.locked.add(`${symbol}:${digest}`);
-          // check status: does not revert
-          const checkStatus = bot.api
-            .getOrderById(symbol, digest)
-            .then((ordr) => ordr != undefined)
-            .catch(() => false);
-          // execute order: can revert
-          const executeProm = bot.api.executeOrders(
-            symbol,
-            [digest],
-            this.config.rewardsAddress,
-            undefined,
-            {
-              gasLimit: 2_000_000,
-              splitTx: false,
-            }
-          );
-          // tx: check status, revert if not confirmed open, then log that we are submitting
-          const tx = checkStatus.then((isOpen) => {
-            if (isOpen) {
-              console.log({
-                info: "txn submitted",
-                symbol: txns[i].symbol,
-                executor: bot.api.getAddress(),
-                trader: txns[i].trader,
-                digest: txns[i].digest,
-              });
-              return executeProm.catch((e) => Promise.reject(e?.toString()));
-            }
-            return Promise.reject("order not found");
-          });
-          txns.push({
-            tx: tx,
-            botIdx: i,
-            symbol: symbol,
-            digest: digest,
-            trader: trader,
-          });
+          executed.push(this.executeOrderByBot(i, symbol, digest, onChain));
         }
-      }
-      if (!assignedTx) {
-        // all busy
-        break;
       }
     }
     // send txns
-    const results = await Promise.allSettled(txns.map(({ tx }) => tx));
-
-    const confirmations: Promise<void>[] = [];
+    const results = await Promise.allSettled(executed);
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
       if (result.status === "fulfilled") {
-        successes++;
-        console.log({
-          info: "txn accepted",
-          symbol: txns[i].symbol,
-          orderBook: result.value.to,
-          executor: result.value.from,
-          trader: txns[i].trader,
-          digest: txns[i].digest,
-          gas: `${utils.formatUnits(result.value.gasLimit, "gwei")} gwei`,
-          hash: result.value.hash,
-        });
-        confirmations.push(
-          executeWithTimeout(
-            result.value
-              .wait()
-              .then((res) => {
-                // mined -> unlock bot and order
-                console.log({
-                  info: "txn confirmed",
-                  symbol: txns[i].symbol,
-                  orderBook: res.to,
-                  executor: res.from,
-                  trader: txns[i].trader,
-                  digest: txns[i].digest,
-                  block: res.blockNumber,
-                  gas: utils.formatEther(res.cumulativeGasUsed),
-                  hash: res.transactionHash,
-                });
-              })
-              .catch((e) => {
-                // failed to confirm: either still ok but RPC failed, or reverted
-                // const error = e?.toString() || "";
-                // if (error?.includes("reverted with reason")) {
-                //   console.log("txn reverted", e?.toString());
-                // } else {
-                //   console.log("txn confirmation failed", e?.toString());
-                // }
-                // sleep(5_000).then();
-              })
-              .then(() => {
-                console.log({
-                  info: "unlocking",
-                  bot: this.bots[txns[i].botIdx].api.getAddress(),
-                  busy: this.bots[txns[i].botIdx].busy,
-                  digest: txns[i].digest,
-                });
-                this.locked.delete(`${txns[i].symbol}:${txns[i].digest}`);
-                this.bots[txns[i].botIdx].busy = false;
-              }),
-            30_000,
-            "timeout"
-          )
-        );
+        successes += result.value ? 1 : 0;
       } else {
-        console.log({
-          info: "txn rejected",
-          reason: result.reason,
-          symbol: txns[i].symbol,
-          executor: this.bots[txns[i].botIdx].api.getAddress(),
-          trader: txns[i].trader,
-          digest: txns[i].digest,
-        });
-        // txn was not picked up or timed-out
-        const bot = this.bots[txns[i].botIdx].api.getAddress();
-        let prom: Promise<void>;
-        const error = result.reason?.toString() ?? "";
-        if (
-          error.includes("insufficient funds for intrinsic transaction cost")
-        ) {
-          // not enough gas for txn cost -> unlock order immediately, fund, then unlock bot
-          // console.log({ info: "insufficient funds", bot: bot });
-          this.locked.delete(`${txns[i].symbol}:${txns[i].digest}`);
-          prom = this.fundWallets([bot])
-            .then(() => {
-              if (!this.bots[txns[i].botIdx].busy) {
-                console.log("SHOULD HAVE BEEN BUSY!");
-              }
-              this.bots[txns[i].botIdx].busy = false;
-            })
-            .catch(() => {
-              console.log("failed to fund bot");
-              if (!this.bots[txns[i].botIdx].busy) {
-                console.log("SHOULD HAVE BEEN BUSY!");
-              }
-              this.bots[txns[i].botIdx].busy = false;
-            });
-        } else if (error.includes("timeout")) {
-          // timeout -> wait 5 more seconds then unlock order and bot
-          prom = sleep(5_000).then(() => {
-            this.locked.delete(`${txns[i].symbol}:${txns[i].digest}`);
-            if (!this.bots[txns[i].botIdx].busy) {
-              console.log("SHOULD HAVE BEEN BUSY!");
-            }
-            this.bots[txns[i].botIdx].busy = false;
-          });
-        } else {
-          if (!this.bots[txns[i].botIdx].busy) {
-            console.log("SHOULD HAVE BEEN BUSY!");
-          }
-          this.locked.delete(`${txns[i].symbol}:${txns[i].digest}`);
-          this.bots[txns[i].botIdx].busy = false;
-          prom = Promise.resolve();
-        }
-        confirmations.push(prom);
+        console.log(`uncaught error: ${result.reason.toString()}`);
       }
     }
 
     // return cases:
-    let res: BotStatus;
     if (successes == 0 && attempts == this.bots.length) {
       // all bots are down, either rpc or px service issue
-      res = BotStatus.Error;
+      return BotStatus.Error;
     } else if (attempts == 0 && q.length > 0) {
       // did not try anything
-      res = BotStatus.Busy;
+      return BotStatus.Busy;
     } else if (successes == 0 && attempts > 0) {
       // tried something but it didn't work
-      res = BotStatus.PartialError;
+      return BotStatus.PartialError;
     } else if (successes < attempts) {
       // some attempts worked, others failed
-      res = BotStatus.PartialError;
+      return BotStatus.PartialError;
     } else {
       // everything worked or nothing happend
-      if (attempts > 0) {
-      }
-      res = BotStatus.Ready;
+      return BotStatus.Ready;
     }
-
-    await Promise.allSettled(confirmations);
-
-    return res;
   }
 
   public async fundWallets(addressArray: string[]) {
