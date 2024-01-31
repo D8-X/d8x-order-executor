@@ -746,7 +746,10 @@ export default class Distributor {
    */
   private checkSubmissionsInSync(timestamps: number[]): boolean {
     let gap = Math.max(...timestamps) - Math.min(...timestamps);
-    if (gap > this.MAX_OUTOFSYNC_SECONDS) {
+    if (
+      gap > this.MAX_OUTOFSYNC_SECONDS &&
+      Math.min(...timestamps) >= Math.floor(Date.now() / 1_000 - 5)
+    ) {
       return false;
     }
     return true;

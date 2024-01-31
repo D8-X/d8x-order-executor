@@ -1,4 +1,8 @@
-import { PerpetualDataHandler, OrderExecutorTool } from "@d8x/perpetuals-sdk";
+import {
+  PerpetualDataHandler,
+  OrderExecutorTool,
+  ORDER_TYPE_MARKET,
+} from "@d8x/perpetuals-sdk";
 import { ContractTransaction, Wallet, utils } from "ethers";
 import { providers } from "ethers";
 import { Redis } from "ioredis";
@@ -171,12 +175,19 @@ export default class Executor {
     this.bots[botIdx].busy = true;
     this.locked.add(digest);
 
-    // check if order is on-chain - stop if not/unable to check
+    // check if order is on-chain:
+    // - stop if not/unable to check
+    // - broker orders (onChain=false) only go through if market type
     const isOpen =
       onChain ||
       (await this.bots[botIdx].api
         .getOrderById(symbol, digest)
-        .then((ordr) => ordr != undefined && ordr.quantity > 0)
+        .then(
+          (ordr) =>
+            ordr != undefined &&
+            ordr.quantity > 0 &&
+            ordr.type == ORDER_TYPE_MARKET
+        )
         .catch(() => false));
 
     if (!isOpen) {
