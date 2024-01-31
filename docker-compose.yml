@@ -40,7 +40,7 @@ services:
       SDK_CONFIG: ${SDK_CONFIG}
     restart: always
 
-  # liquidator: submits liquidate calls to the blockchain
+  # Executor: submits transactions to the blockchain
   executor:
     depends_on:
       - cache

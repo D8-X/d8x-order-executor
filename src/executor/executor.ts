@@ -245,33 +245,61 @@ export default class Executor {
 
     // confirm execution
     try {
-      const receipt = await tx.wait();
-      console.log({
-        info: "txn confirmed",
-        symbol: symbol,
-        orderBook: receipt.to,
-        executor: receipt.from,
-        digest: digest,
-        block: receipt.blockNumber,
-        gasUsed: `${utils.formatUnits(receipt.cumulativeGasUsed, "wei")} wei`,
-        hash: receipt.transactionHash,
-      });
+      // try twice
+      let success = false;
+      let tried = 0;
+      while (!success) {
+        try {
+          tried++;
+          const receipt = await tx.wait();
+          success = true;
+          console.log({
+            info: "txn confirmed",
+            symbol: symbol,
+            orderBook: receipt.to,
+            executor: receipt.from,
+            digest: digest,
+            block: receipt.blockNumber,
+            gasUsed: `${utils.formatUnits(
+              receipt.cumulativeGasUsed,
+              "wei"
+            )} wei`,
+            hash: receipt.transactionHash,
+          });
+        } catch (e) {
+          console.log(`confirmation fail ${tried}`);
+          if (tried > 2) {
+            // on third error give up
+            throw e;
+          }
+        }
+      }
     } catch (e: any) {
       let error = e?.toString() || "";
       // order stays locked if it's no longer found on chain
       await this.bots[botIdx].api
         .getOrderById(symbol, digest)
-        .then((ordr) => {
+        .then(async (ordr) => {
           if (ordr != undefined && ordr.quantity > 0) {
-            // still on chain, unlock order
-            this.locked.delete(digest);
+            // still on chain -> unlock order but only after waiting
+            await sleep(10_000).then(() => {
+              // console.log(`unlock ${digest} after seeing it on-chain`);
+              this.locked.delete(digest);
+            });
           } else {
+            // order is executed, possibly by someone else, leave locked
+            // console.log(
+            //   `leaving lock on ${digest} after not seeing it on-chain`
+            // );
             error = "order not found";
           }
         })
-        .catch(() => {
-          // don't know, unlock order
-          this.locked.delete(digest);
+        .catch(async () => {
+          // don't know, unlock order after waiting
+          await sleep(10_000).then(() => {
+            // console.log(`unlock ${digest} after failing to fetch on-chain`);
+            this.locked.delete(digest);
+          });
         });
 
       console.log({

@@ -655,7 +655,17 @@ export default class Distributor {
           info: "market order not executable",
           pxS2S3: curPx.pxS2S3,
           ...orderBundle,
+          ...this.openPositions
+            .get(orderBundle.symbol)!
+            .get(orderBundle.trader),
         });
+        if (
+          !this.openPositions.get(orderBundle.symbol)?.has(orderBundle.trader)
+        ) {
+          // we're missing a trader, likely why order couldn't be executed
+          // -> trigger an async refresh
+          this.refreshAccounts(orderBundle.symbol);
+        }
       }
     }
     for (const digest of removeOrders) {
