@@ -228,7 +228,7 @@ export default class Executor {
       orderBook: tx.to,
       executor: tx.from,
       digest: digest,
-      gas: `${utils.formatUnits(tx.gasLimit, "gwei")} gwei`,
+      gasLimit: `${utils.formatUnits(tx.gasLimit, "wei")} wei`,
       hash: tx.hash,
     });
 
@@ -242,7 +242,7 @@ export default class Executor {
         executor: receipt.from,
         digest: digest,
         block: receipt.blockNumber,
-        gas: utils.formatEther(receipt.cumulativeGasUsed),
+        gasUsed: `${utils.formatUnits(receipt.cumulativeGasUsed, "wei")} wei`,
         hash: receipt.transactionHash,
       });
     } catch (e: any) {
