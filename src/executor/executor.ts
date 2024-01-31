@@ -246,7 +246,23 @@ export default class Executor {
         hash: receipt.transactionHash,
       });
     } catch (e: any) {
-      const error = e?.toString() || "";
+      let error = e?.toString() || "";
+      // order stays locked if it's no longer found on chain
+      await this.bots[botIdx].api
+        .getOrderById(symbol, digest)
+        .then((ordr) => {
+          if (ordr != undefined && ordr.quantity > 0) {
+            // still on chain, unlock order
+            this.locked.delete(digest);
+          } else {
+            error = "order not found";
+          }
+        })
+        .catch(() => {
+          // don't know, unlock order
+          this.locked.delete(digest);
+        });
+
       console.log({
         info: "txn reverted",
         reason: error,
@@ -254,12 +270,8 @@ export default class Executor {
         executor: this.bots[botIdx].api.getAddress(),
         digest: digest,
       });
-      // unlock order (if it exists)
-      if (!error.includes("order not found")) {
-        this.locked.delete(digest);
-      }
-      const bot = this.bots[botIdx].api.getAddress();
 
+      const bot = this.bots[botIdx].api.getAddress();
       if (error.includes("insufficient funds for intrinsic transaction cost")) {
         try {
           await this.fundWallets([bot]);
