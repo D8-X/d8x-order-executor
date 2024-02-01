@@ -1,4 +1,7 @@
-import { JsonRpcProvider } from "@ethersproject/providers";
+import {
+  JsonRpcProvider,
+  StaticJsonRpcProvider,
+} from "@ethersproject/providers";
 import { executeWithTimeout } from "../utils";
 
 export default class RPCManager {
@@ -24,7 +27,7 @@ export default class RPCManager {
     let numTries = 0;
     while (numTries < this.rpcURLs.length) {
       numTries++;
-      const rpc = await this.cycleRPCs();
+      const rpc = await this.cycleRPCs(healthy);
       if (!healthy || this.healthy.get(rpc)) {
         return rpc;
       }
@@ -42,18 +45,25 @@ export default class RPCManager {
 
   /**
    * Cycles the list of RPC URLs and returns the next in line,
-   * updaing its health status if necessary
+   * updating its health status if necessary
    * @returns The next RPC URL
    */
-  private async cycleRPCs() {
+  private async cycleRPCs(healthy?: boolean) {
     const rpc = this.rpcURLs.pop();
     if (rpc === undefined) {
       throw new Error("No RPCs in queue");
     }
-    if (this.healthy.get(rpc) === undefined || (this.lastCheck.get(rpc) ?? 0) + this.CHECK_INTERVAL_MS < Date.now()) {
-      const provider = new JsonRpcProvider(rpc);
+    if (
+      healthy &&
+      (this.healthy.get(rpc) === undefined ||
+        (this.lastCheck.get(rpc) ?? 0) + this.CHECK_INTERVAL_MS < Date.now())
+    ) {
+      const provider = new StaticJsonRpcProvider(rpc);
       try {
-        await executeWithTimeout(provider.detectNetwork(), this.NETWORK_READY_MS);
+        await executeWithTimeout(
+          provider.detectNetwork(),
+          this.NETWORK_READY_MS
+        );
         this.healthy.set(rpc, true);
       } catch (_e) {
         this.healthy.set(rpc, false);
