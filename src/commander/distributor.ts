@@ -605,6 +605,7 @@ export default class Distributor {
         Date.now() - (this.pricesFetchedAt.get(symbol) ?? 0) >
         this.config.fetchPricesIntervalSecondsMin * 1_000
       ) {
+        let tsStart = Date.now();
         const newPxSubmission =
           await this.md.fetchPriceSubmissionInfoForPerpetual(symbol);
         if (
@@ -613,10 +614,16 @@ export default class Distributor {
           return false;
         }
         this.pxSubmission.set(symbol, newPxSubmission);
+        console.log({
+          info: "fetched prices",
+          symbol: symbol,
+          time: new Date(Date.now()).toISOString(),
+          publishTime: Math.min(...newPxSubmission.submission.timestamps),
+          waited: `${Date.now() - tsStart} ms`,
+        });
       }
     } catch (e) {
-      console.log("error fetching from price service:");
-      console.log(e);
+      console.log("error fetching from price service");
       return false;
     }
 
@@ -638,18 +645,11 @@ export default class Distributor {
           Date.now() - (this.messageSentAt.get(msg) ?? 0) >
           this.config.executeIntervalSecondsMin * 500
         ) {
-          // log if market to see real time action
-          if (
-            orderBundle.order == undefined ||
-            orderBundle.order?.type === ORDER_TYPE_MARKET
-          ) {
-            console.log({
-              info: "execute",
-              ...command,
-              time: new Date(Date.now()).toISOString(),
-            });
-          }
-          // console.log({ level: "execute", ...command });
+          console.log({
+            info: "execute",
+            ...command,
+            time: new Date(Date.now()).toISOString(),
+          });
           this.messageSentAt.set(msg, Date.now());
           ordersSent.add(msg);
           await this.redisPubClient.publish("ExecuteOrder", msg);
