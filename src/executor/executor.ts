@@ -196,6 +196,7 @@ export default class Executor {
         symbol: symbol,
         executor: this.bots[botIdx].api.getAddress(),
         digest: digest,
+        time: new Date(Date.now()).toISOString(),
       });
       this.bots[botIdx].busy = false;
       this.locked.delete(digest);
@@ -208,6 +209,7 @@ export default class Executor {
       symbol: symbol,
       executor: this.bots[botIdx].api.getAddress(),
       digest: digest,
+      time: new Date(Date.now()).toISOString(),
     });
     let tx: ContractTransaction;
     try {
@@ -228,6 +230,7 @@ export default class Executor {
         symbol: symbol,
         executor: this.bots[botIdx].api.getAddress(),
         digest: digest,
+        time: new Date(Date.now()).toISOString(),
       });
       this.bots[botIdx].busy = false;
       this.locked.delete(digest);
@@ -241,6 +244,7 @@ export default class Executor {
       digest: digest,
       gasLimit: `${utils.formatUnits(tx.gasLimit, "wei")} wei`,
       hash: tx.hash,
+      time: new Date(Date.now()).toISOString(),
     });
 
     // confirm execution
@@ -265,6 +269,7 @@ export default class Executor {
               "wei"
             )} wei`,
             hash: receipt.transactionHash,
+            time: new Date(Date.now()).toISOString(),
           });
         } catch (e) {
           console.log(`confirmation fail ${tried}`);
@@ -308,6 +313,7 @@ export default class Executor {
         symbol: symbol,
         executor: this.bots[botIdx].api.getAddress(),
         digest: digest,
+        time: new Date(Date.now()).toISOString(),
       });
 
       const bot = this.bots[botIdx].api.getAddress();

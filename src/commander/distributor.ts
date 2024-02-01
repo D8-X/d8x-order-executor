@@ -635,7 +635,11 @@ export default class Distributor {
             orderBundle.order == undefined ||
             orderBundle.order?.type === ORDER_TYPE_MARKET
           ) {
-            console.log({ info: "execute", ...command });
+            console.log({
+              info: "execute",
+              ...command,
+              time: new Date(Date.now()).toISOString(),
+            });
           }
           // console.log({ level: "execute", ...command });
           this.messageSentAt.set(msg, Date.now());
@@ -658,6 +662,7 @@ export default class Distributor {
           ...this.openPositions
             .get(orderBundle.symbol)!
             .get(orderBundle.trader),
+          time: new Date(Date.now()).toISOString(),
         });
         if (
           !this.openPositions.get(orderBundle.symbol)?.has(orderBundle.trader)
