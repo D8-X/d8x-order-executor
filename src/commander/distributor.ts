@@ -165,7 +165,6 @@ export default class Distributor {
     }
 
     // Subscribe to blockchain events
-    // console.log(`${new Date(Date.now()).toISOString()}: subscribing to blockchain event streamer...`);
     await this.redisSubClient.subscribe(
       "block",
       "UpdateMarkPriceEvent",
@@ -186,9 +185,6 @@ export default class Distributor {
           );
           process.exit(1);
         }
-        // else {
-        //   console.log(`${new Date(Date.now()).toISOString()}: redis subscription success - ${count} active channels`);
-        // }
       }
     );
 
@@ -289,7 +285,7 @@ export default class Distributor {
               order,
             }: PerpetualLimitOrderCreatedMsg = JSON.parse(msg);
             this.addOrder(symbol, trader, digest, order);
-            await this.checkOrders(symbol);
+            this.checkOrders(symbol);
             break;
           }
 
@@ -320,7 +316,7 @@ export default class Distributor {
               JSON.parse(msg);
             this.addOrder(symbol, traderAddr, digest, undefined);
             this.brokerOrders.get(symbol)!.set(digest, Date.now());
-            await this.checkOrders(symbol);
+            this.checkOrders(symbol);
             break;
           }
 
@@ -355,6 +351,7 @@ export default class Distributor {
         trader: trader,
         digest: digest,
         onChain: order !== undefined,
+        time: new Date(Date.now()).toISOString(),
       });
     }
   }
@@ -367,10 +364,12 @@ export default class Distributor {
   ) {
     this.openOrders.get(symbol)?.delete(digest);
     console.log({
-      info: reason,
+      info: "order removed",
+      reason: reason,
       symbol: symbol,
       trader: trader,
       digest: digest,
+      time: new Date(Date.now()).toISOString(),
     });
   }
 
@@ -606,6 +605,7 @@ export default class Distributor {
         this.config.fetchPricesIntervalSecondsMin * 1_000
       ) {
         let tsStart = Date.now();
+        this.pricesFetchedAt.set(symbol, tsStart);
         const newPxSubmission =
           await this.md.fetchPriceSubmissionInfoForPerpetual(symbol);
         if (
@@ -613,6 +613,7 @@ export default class Distributor {
         ) {
           return false;
         }
+
         this.pxSubmission.set(symbol, newPxSubmission);
         console.log({
           info: "fetched prices",
