@@ -615,13 +615,13 @@ export default class Distributor {
         }
 
         this.pxSubmission.set(symbol, newPxSubmission);
-        console.log({
-          info: "fetched prices",
-          symbol: symbol,
-          time: new Date(Date.now()).toISOString(),
-          publishTime: Math.min(...newPxSubmission.submission.timestamps),
-          waited: `${Date.now() - tsStart} ms`,
-        });
+        // console.log({
+        //   info: "fetched prices",
+        //   symbol: symbol,
+        //   time: new Date(Date.now()).toISOString(),
+        //   publishTime: Math.min(...newPxSubmission.submission.timestamps),
+        //   waited: `${Date.now() - tsStart} ms`,
+        // });
       }
     } catch (e) {
       console.log("error fetching from price service");
