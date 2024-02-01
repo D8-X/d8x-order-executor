@@ -735,8 +735,8 @@ export default class Distributor {
       case ORDER_TYPE_LIMIT:
         return (
           limitPrice != undefined &&
-          ((isBuy && midPrice < limitPrice) ||
-            (!isBuy && midPrice > limitPrice))
+          ((isBuy && midPrice * 1.0005 < limitPrice) ||
+            (!isBuy && midPrice * 0.9995 > limitPrice))
         );
 
       case ORDER_TYPE_STOP_MARKET:
@@ -752,8 +752,8 @@ export default class Distributor {
           limitPrice != undefined &&
           ((isBuy && markPrice > triggerPrice) ||
             (!isBuy && markPrice < triggerPrice)) &&
-          ((isBuy && midPrice < limitPrice) ||
-            (!isBuy && midPrice > limitPrice))
+          ((isBuy && midPrice * 1.0005 < limitPrice) ||
+            (!isBuy && midPrice * 0.9995 > limitPrice))
         );
 
       default:
