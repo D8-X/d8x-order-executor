@@ -228,6 +228,14 @@ export default class Distributor {
         await this.refreshAllOpenOrders();
       }, 10_000);
 
+      setInterval(() => {
+        for (const symbol of this.symbols) {
+          if (this.openOrders.get(symbol)?.size ?? 0 > 0) {
+            this.checkOrders(symbol);
+          }
+        }
+      }, 500);
+
       this.redisSubClient.on("message", async (channel, msg) => {
         switch (channel) {
           case "block": {
