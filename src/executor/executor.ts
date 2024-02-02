@@ -177,23 +177,23 @@ export default class Executor {
     // check if order is on-chain:
     // - stop if not/unable to check
     // - broker orders (onChain=false) only go through if market type
-    const isOpen = await this.bots[botIdx].api
-      .getOrderById(symbol, digest)
-      .then((ordr) => ordr != undefined && ordr.quantity > 0)
-      .catch(() => false);
+    // const isOpen = await this.bots[botIdx].api
+    //   .getOrderById(symbol, digest)
+    //   .then((ordr) => ordr != undefined && ordr.quantity > 0)
+    //   .catch(() => false);
 
-    if (!isOpen) {
-      console.log({
-        info: "order not found",
-        symbol: symbol,
-        executor: this.bots[botIdx].api.getAddress(),
-        digest: digest,
-        time: new Date(Date.now()).toISOString(),
-      });
-      this.bots[botIdx].busy = false;
-      this.locked.delete(digest);
-      return false;
-    }
+    // if (!isOpen) {
+    //   console.log({
+    //     info: "order not found",
+    //     symbol: symbol,
+    //     executor: this.bots[botIdx].api.getAddress(),
+    //     digest: digest,
+    //     time: new Date(Date.now()).toISOString(),
+    //   });
+    //   this.bots[botIdx].busy = false;
+    //   this.locked.delete(digest);
+    //   return false;
+    // }
 
     // submit txn
     console.log({
@@ -284,7 +284,8 @@ export default class Executor {
               this.locked.delete(digest);
             });
           } else {
-            // order is executed, possibly by someone else, leave locked
+            // order is executed, possibly by someone else
+            // --> leave locked so it's not tried again
             // console.log(
             //   `leaving lock on ${digest} after not seeing it on-chain`
             // );

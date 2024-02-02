@@ -720,6 +720,7 @@ export default class Distributor {
     pxS2S3: [number, number | undefined]
   ) {
     if (!order.order) {
+      // broker order: if it's market and on chain, it's executable, nothing to check
       const orderStatus = await this.md.getOrderStatus(
         order.symbol,
         order.digest
@@ -746,7 +747,7 @@ export default class Distributor {
     ) {
       return false;
     }
-
+    // dependencies
     if (order.order.parentChildOrderIds) {
       if (
         order.order.parentChildOrderIds[0] == ZERO_ORDER_ID &&
@@ -754,8 +755,18 @@ export default class Distributor {
           .get(order.symbol)
           ?.has(order.order.parentChildOrderIds[1])
       ) {
+        // dependency hasn't been cleared
         return false;
       }
+    }
+
+    // so far all returns were false - now we may return true so we should check if the order still exists first
+    const orderStatus = await this.md.getOrderStatus(
+      order.symbol,
+      order.digest
+    );
+    if (orderStatus !== OrderStatus.OPEN) {
+      return false;
     }
 
     const markPrice = pxS2S3[0] * (1 + this.markPremium.get(order.symbol)!);
