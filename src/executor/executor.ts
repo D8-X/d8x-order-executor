@@ -393,11 +393,9 @@ export default class Executor {
     const provider =
       this.providers[Math.floor(Math.random() * this.providers.length)];
     const treasury = new Wallet(this.treasury, provider);
+    const gasPriceWei = await provider.getGasPrice();
     // min balance should cover 1e7 gas
-    const minBalance = utils.parseUnits(
-      `${this.config.maxGasPriceGWei * 1e7}`,
-      "gwei"
-    );
+    const minBalance = gasPriceWei.mul(1e7); // 10 x 1 million gas x 1 gas in wei = min balance in wei
     for (let addr of addressArray) {
       const botBalance = await provider.getBalance(addr);
       const treasuryBalance = await provider.getBalance(treasury.address);
