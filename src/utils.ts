@@ -1,6 +1,16 @@
 import { Redis } from "ioredis";
-import { RedisConfig, ExecutorConfig } from "./types";
-import { ethers } from "ethers";
+import { RedisConfig, ExecutorConfig, OrderType } from "./types";
+import { BigNumber, ethers } from "ethers";
+import {
+  MASK_LIMIT_ORDER,
+  MASK_STOP_ORDER,
+  MAX_64x64,
+  ORDER_TYPE_LIMIT,
+  ORDER_TYPE_MARKET,
+  ORDER_TYPE_STOP_LIMIT,
+  ORDER_TYPE_STOP_MARKET,
+  containsFlag,
+} from "@d8x/perpetuals-sdk";
 
 require("dotenv").config();
 
@@ -86,4 +96,26 @@ export function executeWithTimeout<T>(
 
 export function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function flagToOrderType(
+  orderFlags: BigNumber,
+  orderLimitPrice: BigNumber
+): OrderType {
+  let flag = BigNumber.from(orderFlags);
+  let isLimit = containsFlag(flag, MASK_LIMIT_ORDER);
+  let hasLimit =
+    !BigNumber.from(orderLimitPrice).eq(0) ||
+    !BigNumber.from(orderLimitPrice).eq(MAX_64x64);
+  let isStop = containsFlag(flag, MASK_STOP_ORDER);
+
+  if (isStop && hasLimit) {
+    return ORDER_TYPE_STOP_LIMIT;
+  } else if (isStop && !hasLimit) {
+    return ORDER_TYPE_STOP_MARKET;
+  } else if (isLimit && !isStop) {
+    return ORDER_TYPE_LIMIT;
+  } else {
+    return ORDER_TYPE_MARKET;
+  }
 }

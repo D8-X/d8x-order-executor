@@ -15,6 +15,7 @@ import {
   BUY_SIDE,
   ORDER_TYPE_LIMIT,
   ZERO_ORDER_ID,
+  OrderStatus,
 } from "@d8x/perpetuals-sdk";
 import { providers } from "ethers";
 import { Redis } from "ioredis";
@@ -312,7 +313,7 @@ export default class Distributor {
           }
 
           case "BrokerOrderCreatedEvent": {
-            const { symbol, traderAddr, digest }: BrokerOrderMsg =
+            const { symbol, traderAddr, digest, type }: BrokerOrderMsg =
               JSON.parse(msg);
             this.addOrder(symbol, traderAddr, digest, undefined);
             this.brokerOrders.get(symbol)!.set(digest, Date.now());
@@ -611,7 +612,7 @@ export default class Distributor {
         if (
           !this.checkSubmissionsInSync(newPxSubmission.submission.timestamps)
         ) {
-          return false;
+          return;
         }
 
         this.pxSubmission.set(symbol, newPxSubmission);
@@ -625,36 +626,15 @@ export default class Distributor {
       }
     } catch (e) {
       console.log("error fetching from price service");
-      return false;
+      return;
     }
 
     const curPx = this.pxSubmission.get(symbol)!;
-    const ordersSent: Set<string> = new Set();
+    // const ordersSent: Set<string> = new Set();
     const removeOrders: string[] = [];
     for (const [digest, orderBundle] of orders) {
       if (this.isExecutable(orderBundle, curPx.pxS2S3)) {
-        const command = {
-          symbol: symbol,
-          digest: digest,
-          trader: orderBundle.trader,
-          onChain: orderBundle.order !== undefined,
-        };
-
-        // send command
-        const msg = JSON.stringify(command);
-        if (
-          Date.now() - (this.messageSentAt.get(msg) ?? 0) >
-          this.config.executeIntervalSecondsMin * 500
-        ) {
-          console.log({
-            info: "execute",
-            ...command,
-            time: new Date(Date.now()).toISOString(),
-          });
-          this.messageSentAt.set(msg, Date.now());
-          ordersSent.add(msg);
-          await this.redisPubClient.publish("ExecuteOrder", msg);
-        }
+        await this.sendCommand(orderBundle);
         // remove stale broker orders
         if (
           orderBundle.order == undefined &&
@@ -686,7 +666,42 @@ export default class Distributor {
       this.openOrders.get(symbol)?.delete(digest);
       this.brokerOrders.get(symbol)?.delete(digest);
     }
-    return ordersSent.size > 0;
+    return;
+  }
+
+  private async sendCommand(orderBundle: OrderBundle) {
+    let verifiedOnChain = false;
+    if (orderBundle.order == undefined) {
+      const orderStatus = await this.md.getOrderStatus(
+        orderBundle.symbol,
+        orderBundle.digest
+      );
+      if (orderStatus == OrderStatus.OPEN) {
+        verifiedOnChain = true;
+      } else {
+        return;
+      }
+    }
+    const command = {
+      symbol: orderBundle.symbol,
+      digest: orderBundle.digest,
+      trader: orderBundle.trader,
+      onChain: verifiedOnChain,
+    };
+    // send command
+    const msg = JSON.stringify(command);
+    if (
+      Date.now() - (this.messageSentAt.get(msg) ?? 0) >
+      this.config.executeIntervalSecondsMin * 500
+    ) {
+      console.log({
+        info: "execute",
+        ...command,
+        time: new Date(Date.now()).toISOString(),
+      });
+      this.messageSentAt.set(msg, Date.now());
+      await this.redisPubClient.publish("ExecuteOrder", msg);
+    }
   }
 
   private isExecutable(

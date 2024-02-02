@@ -1,5 +1,5 @@
 import { MarketData, PerpetualDataHandler } from "@d8x/perpetuals-sdk";
-import { ethers } from "ethers";
+import { BigNumber, ethers } from "ethers";
 import { Redis } from "ioredis";
 import SturdyWebSocket from "sturdy-websocket";
 import Websocket from "ws";
@@ -10,7 +10,7 @@ import {
   ExecutorConfig,
   PerpetualLimitOrderCreatedMsg,
 } from "../types";
-import { constructRedis, executeWithTimeout } from "../utils";
+import { constructRedis, executeWithTimeout, flagToOrderType } from "../utils";
 import { PerpetualCreatedEvent } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
 
 export default class BackendListener {
@@ -158,6 +158,10 @@ export default class BackendListener {
             perpetualId: +perpId,
             traderAddr: traderAddr,
             digest: `0x${orderId}`,
+            type: flagToOrderType(
+              BigNumber.from(flags),
+              BigNumber.from(fLimitPrice)
+            ),
           };
           console.log({
             event: "BrokerOrderCreated",

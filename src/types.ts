@@ -1,4 +1,11 @@
-import { Order, floatToABK64x64 } from "@d8x/perpetuals-sdk";
+import {
+  ORDER_TYPE_LIMIT,
+  ORDER_TYPE_MARKET,
+  ORDER_TYPE_STOP_LIMIT,
+  ORDER_TYPE_STOP_MARKET,
+  Order,
+  floatToABK64x64,
+} from "@d8x/perpetuals-sdk";
 import { IPerpetualOrder } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
 
 export const ZERO_POSITION = floatToABK64x64(0);
@@ -74,11 +81,18 @@ export interface RedisMsg {
   id: string;
 }
 
+export type OrderType =
+  | typeof ORDER_TYPE_MARKET
+  | typeof ORDER_TYPE_LIMIT
+  | typeof ORDER_TYPE_STOP_LIMIT
+  | typeof ORDER_TYPE_STOP_MARKET;
+
 export interface BrokerOrderMsg {
   symbol: string;
   perpetualId: number;
   traderAddr: string;
   digest: string;
+  type: OrderType;
 }
 
 export interface LiquidateMsg extends RedisMsg {
