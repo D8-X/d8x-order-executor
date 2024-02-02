@@ -24,6 +24,7 @@ export interface OrderBundle {
   trader: string;
   digest: string;
   order?: Order;
+  type: OrderType;
 }
 
 export interface RedisConfig {

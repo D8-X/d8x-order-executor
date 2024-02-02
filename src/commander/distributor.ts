@@ -25,6 +25,7 @@ import {
   ExecutionFailedMsg,
   ExecutorConfig,
   OrderBundle,
+  OrderType,
   PerpetualLimitOrderCancelledMsg,
   PerpetualLimitOrderCreatedMsg,
   Position,
@@ -285,7 +286,13 @@ export default class Distributor {
               trader,
               order,
             }: PerpetualLimitOrderCreatedMsg = JSON.parse(msg);
-            this.addOrder(symbol, trader, digest, order);
+            this.addOrder(
+              symbol,
+              trader,
+              digest,
+              order.type as OrderType,
+              order
+            );
             this.checkOrders(symbol);
             break;
           }
@@ -315,7 +322,7 @@ export default class Distributor {
           case "BrokerOrderCreatedEvent": {
             const { symbol, traderAddr, digest, type }: BrokerOrderMsg =
               JSON.parse(msg);
-            this.addOrder(symbol, traderAddr, digest, undefined);
+            this.addOrder(symbol, traderAddr, digest, type, undefined);
             this.brokerOrders.get(symbol)!.set(digest, Date.now());
             this.checkOrders(symbol);
             break;
@@ -334,6 +341,7 @@ export default class Distributor {
     symbol: string,
     trader: string,
     digest: string,
+    type: OrderType,
     order?: Order
   ) {
     if (!this.openOrders.has(symbol)) {
@@ -345,6 +353,7 @@ export default class Distributor {
         digest: digest,
         order: order,
         symbol: symbol,
+        type: type,
       });
       console.log({
         info: "order added",
@@ -457,7 +466,9 @@ export default class Distributor {
                   executorAddr: this.config.rewardsAddress,
                   submittedTimestamp: submittedTs[j],
                 } as IPerpetualOrder.OrderStruct),
+                type: ORDER_TYPE_MARKET as OrderType,
               };
+              bundle.type = bundle.order.type as OrderType;
               orderBundles.set(orderHashes[j], bundle);
             }
           }
@@ -633,7 +644,7 @@ export default class Distributor {
     // const ordersSent: Set<string> = new Set();
     const removeOrders: string[] = [];
     for (const [digest, orderBundle] of orders) {
-      if (this.isExecutable(orderBundle, curPx.pxS2S3)) {
+      if (await this.isExecutable(orderBundle, curPx.pxS2S3)) {
         await this.sendCommand(orderBundle);
         // remove stale broker orders
         if (
@@ -670,23 +681,23 @@ export default class Distributor {
   }
 
   private async sendCommand(orderBundle: OrderBundle) {
-    let verifiedOnChain = false;
-    if (orderBundle.order == undefined) {
-      const orderStatus = await this.md.getOrderStatus(
-        orderBundle.symbol,
-        orderBundle.digest
-      );
-      if (orderStatus == OrderStatus.OPEN) {
-        verifiedOnChain = true;
-      } else {
-        return;
-      }
-    }
+    // let verifiedOnChain = false;
+    // if (orderBundle.order == undefined) {
+    //   const orderStatus = await this.md.getOrderStatus(
+    //     orderBundle.symbol,
+    //     orderBundle.digest
+    //   );
+    //   if (orderStatus == OrderStatus.OPEN) {
+    //     verifiedOnChain = true;
+    //   } else {
+    //     return;
+    //   }
+    // }
     const command = {
       symbol: orderBundle.symbol,
       digest: orderBundle.digest,
       trader: orderBundle.trader,
-      onChain: verifiedOnChain,
+      // onChain: verifiedOnChain,
     };
     // send command
     const msg = JSON.stringify(command);
@@ -704,12 +715,20 @@ export default class Distributor {
     }
   }
 
-  private isExecutable(
+  private async isExecutable(
     order: OrderBundle,
     pxS2S3: [number, number | undefined]
   ) {
     if (!order.order) {
-      return true;
+      const orderStatus = await this.md.getOrderStatus(
+        order.symbol,
+        order.digest
+      );
+      if (orderStatus != OrderStatus.OPEN) {
+        return false;
+      } else {
+        return order.type == ORDER_TYPE_MARKET;
+      }
     }
     if (order.order.executionTimestamp > Date.now() / 1_000) {
       return false;

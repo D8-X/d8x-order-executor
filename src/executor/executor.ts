@@ -164,8 +164,7 @@ export default class Executor {
   private async executeOrderByBot(
     botIdx: number,
     symbol: string,
-    digest: string,
-    onChain: boolean
+    digest: string
   ) {
     digest = digest.toLowerCase();
     if (this.bots[botIdx].busy || this.locked.has(digest)) {
@@ -178,17 +177,10 @@ export default class Executor {
     // check if order is on-chain:
     // - stop if not/unable to check
     // - broker orders (onChain=false) only go through if market type
-    const isOpen =
-      onChain ||
-      (await this.bots[botIdx].api
-        .getOrderById(symbol, digest)
-        .then(
-          (ordr) =>
-            ordr != undefined &&
-            ordr.quantity > 0 &&
-            ordr.type == ORDER_TYPE_MARKET
-        )
-        .catch(() => false));
+    const isOpen = await this.bots[botIdx].api
+      .getOrderById(symbol, digest)
+      .then((ordr) => ordr != undefined && ordr.quantity > 0)
+      .catch(() => false);
 
     if (!isOpen) {
       console.log({
@@ -352,7 +344,7 @@ export default class Executor {
 
     const executed: Promise<boolean>[] = [];
     for (const msg of q) {
-      const { symbol, digest, onChain }: ExecuteOrderMsg = JSON.parse(msg);
+      const { symbol, digest }: ExecuteOrderMsg = JSON.parse(msg);
       if (this.locked.has(digest)) {
         continue;
       }
@@ -362,7 +354,7 @@ export default class Executor {
           // msg will be attempted by this bot
           attempts++;
           this.q.delete(msg);
-          executed.push(this.executeOrderByBot(i, symbol, digest, onChain));
+          executed.push(this.executeOrderByBot(i, symbol, digest));
         }
       }
     }
