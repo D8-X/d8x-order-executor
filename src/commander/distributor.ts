@@ -641,6 +641,9 @@ export default class Distributor {
     }
 
     const curPx = this.pxSubmission.get(symbol)!;
+    if (curPx.submission.isMarketClosed.some((x) => x)) {
+      return;
+    }
     // const ordersSent: Set<string> = new Set();
     const removeOrders: string[] = [];
     for (const [digest, orderBundle] of orders) {
@@ -667,9 +670,22 @@ export default class Distributor {
         if (
           !this.openPositions.get(orderBundle.symbol)?.has(orderBundle.trader)
         ) {
-          // we're missing a trader, likely why order couldn't be executed
+          // maybe we're missing a trader, likely why order couldn't be executed
           // -> trigger an async refresh
           this.refreshAccounts(orderBundle.symbol);
+        } else if (
+          (await this.md.getOrderStatus(
+            orderBundle.symbol,
+            orderBundle.digest
+          )) !== OrderStatus.OPEN
+        ) {
+          // the order has been seen on-chain (order is not undefined)
+          // --> safe to remove if no longer on chain
+          this.removeOrder(
+            orderBundle.symbol,
+            orderBundle.digest,
+            "left order book"
+          );
         }
       }
     }
