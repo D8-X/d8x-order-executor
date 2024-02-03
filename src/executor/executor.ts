@@ -128,14 +128,14 @@ export default class Executor {
             const prevCount = this.q.size;
             this.q.add(msg);
             msgs += this.q.size > prevCount ? 1 : 0;
-            const res = await this.execute().catch(() => {});
+            const res = await this.execute();
             if (res == BotStatus.Busy) {
               busy++;
             } else if (res == BotStatus.PartialError) {
               errors++;
             } else if (res == BotStatus.Error) {
-              // throw new Error(`error`);
-              console.log("error");
+              throw new Error(`error`);
+              // console.log("error");
             } else {
               // res == BotStatus.Ready
               success++;
@@ -310,11 +310,11 @@ export default class Executor {
       });
 
       const bot = this.bots[botIdx].api.getAddress();
-      if (error.includes("insufficient funds for intrinsic transaction cost")) {
+      if (error.includes("insufficient funds")) {
         try {
           await this.fundWallets([bot]);
         } catch (e: any) {
-          console.log(`failed to fund bot ${bot}`);
+          throw new Error(`failed to fund bot ${bot}`);
         }
       }
     }
