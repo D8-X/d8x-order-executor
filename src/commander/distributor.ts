@@ -372,6 +372,10 @@ export default class Distributor {
     reason?: string,
     trader?: string
   ) {
+    if (!this.openOrders.get(symbol)?.has(digest)) {
+      // nothing to remove
+      return;
+    }
     this.openOrders.get(symbol)?.delete(digest);
     console.log({
       info: "order removed",
