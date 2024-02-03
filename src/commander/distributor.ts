@@ -658,21 +658,21 @@ export default class Distributor {
           removeOrders.push(digest);
         }
       } else if (orderBundle.order?.type === ORDER_TYPE_MARKET) {
-        console.log({
-          info: "market order not executable",
-          pxS2S3: curPx.pxS2S3,
-          ...orderBundle,
-          ...this.openPositions
-            .get(orderBundle.symbol)!
-            .get(orderBundle.trader),
-          time: new Date(Date.now()).toISOString(),
-        });
+        // console.log({
+        //   info: "market order not executable",
+        //   pxS2S3: curPx.pxS2S3,
+        //   ...orderBundle,
+        //   ...this.openPositions
+        //     .get(orderBundle.symbol)!
+        //     .get(orderBundle.trader),
+        //   time: new Date(Date.now()).toISOString(),
+        // });
         if (
           !this.openPositions.get(orderBundle.symbol)?.has(orderBundle.trader)
         ) {
           // maybe we're missing a trader, likely why order couldn't be executed
           // -> trigger an async refresh
-          this.refreshAccounts(orderBundle.symbol);
+          // this.refreshAccounts(orderBundle.symbol);
         } else if (
           (await this.md.getOrderStatus(
             orderBundle.symbol,
