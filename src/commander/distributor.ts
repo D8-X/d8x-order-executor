@@ -721,11 +721,13 @@ export default class Distributor {
       Date.now() - (this.messageSentAt.get(msg) ?? 0) >
       this.config.executeIntervalSecondsMin * 500
     ) {
-      console.log({
-        info: "execute",
-        ...command,
-        time: new Date(Date.now()).toISOString(),
-      });
+      if (!this.messageSentAt.has(msg)) {
+        console.log({
+          info: "execute",
+          ...command,
+          time: new Date(Date.now()).toISOString(),
+        });
+      }
       this.messageSentAt.set(msg, Date.now());
       await this.redisPubClient.publish("ExecuteOrder", msg);
     }
