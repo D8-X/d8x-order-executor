@@ -651,8 +651,20 @@ export default class Distributor {
     // const ordersSent: Set<string> = new Set();
     const removeOrders: string[] = [];
     for (const [digest, orderBundle] of orders) {
-      if (await this.isExecutable(orderBundle, curPx.pxS2S3)) {
-        await this.sendCommand(orderBundle);
+      const command = {
+        symbol: orderBundle.symbol,
+        digest: orderBundle.digest,
+        trader: orderBundle.trader,
+        // onChain: verifiedOnChain,
+      };
+      // send command
+      const msg = JSON.stringify(command);
+      if (
+        Date.now() - (this.messageSentAt.get(msg) ?? 0) >
+          this.config.executeIntervalSecondsMin * 500 &&
+        (await this.isExecutable(orderBundle, curPx.pxS2S3))
+      ) {
+        await this.sendCommand(command);
         // remove stale broker orders
         if (
           orderBundle.order == undefined &&
@@ -700,25 +712,11 @@ export default class Distributor {
     return;
   }
 
-  private async sendCommand(orderBundle: OrderBundle) {
-    // let verifiedOnChain = false;
-    // if (orderBundle.order == undefined) {
-    //   const orderStatus = await this.md.getOrderStatus(
-    //     orderBundle.symbol,
-    //     orderBundle.digest
-    //   );
-    //   if (orderStatus == OrderStatus.OPEN) {
-    //     verifiedOnChain = true;
-    //   } else {
-    //     return;
-    //   }
-    // }
-    const command = {
-      symbol: orderBundle.symbol,
-      digest: orderBundle.digest,
-      trader: orderBundle.trader,
-      // onChain: verifiedOnChain,
-    };
+  private async sendCommand(command: {
+    symbol: string;
+    digest: string;
+    trader: string;
+  }) {
     // send command
     const msg = JSON.stringify(command);
     if (
