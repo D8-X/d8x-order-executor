@@ -360,13 +360,16 @@ export default class Executor {
       }
     }
     // send txns
-    const results = await Promise.allSettled(executed);
+    const results = await executeWithTimeout(
+      Promise.allSettled(executed),
+      30_000
+    );
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
       if (result.status === "fulfilled") {
         successes += result.value ? 1 : 0;
       } else {
-        console.log(`uncaught error: ${result.reason.toString()}`);
+        throw new Error(`uncaught error: ${result.reason.toString()}`);
       }
     }
 
