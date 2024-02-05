@@ -24,6 +24,7 @@ export default class Executor {
   private q: Set<string> = new Set();
   private locked: Set<string> = new Set();
   private lastCall: number = 0;
+  private timesTried: Map<string, number> = new Map();
 
   constructor(
     pkTreasury: string,
@@ -152,6 +153,97 @@ export default class Executor {
   }
 
   /**
+   * Handle errors thrown while submitting a transaction.
+   * 1) funds: ccaught and bot is funded
+   * 2) order not found: order stays locked and bot resumes trading
+   * 3) otherwise re-throw error
+   * @param symbol Perpetual symbol
+   * @param digest Order Id
+   * @param botIdx Internal wallet index
+   * @param e Error
+   */
+  private async handleTxnError(
+    symbol: string,
+    digest: string,
+    botIdx: number,
+    e: any
+  ) {
+    const error = e?.toString();
+    const addr = this.bots[botIdx].api.getAddress();
+    console.log({
+      reason: error,
+      symbol: symbol,
+      executor: addr,
+      digest: digest,
+      time: new Date(Date.now()).toISOString(),
+    });
+    if (error.includes("insufficient funds")) {
+      this.locked.delete(digest);
+      await this.fundWallets([addr]);
+      this.bots[botIdx].busy = false;
+    } else if (error.includes("order not found")) {
+      this.bots[botIdx].busy = false;
+    } else {
+      throw e;
+    }
+  }
+
+  /**
+   * Handle error thrown while confirming a successfuly submitted transaction
+   * 1) Same actions as when submitting transaction (order not found)
+   * 2)
+   * @param symbol Perpetual symbol
+   * @param digest Order Id
+   * @param botIdx Internal wallet index
+   * @param e Error
+   */
+  private async handleConfirmationError(
+    symbol: string,
+    digest: string,
+    botIdx: number,
+    e: any
+  ) {
+    this.timesTried.set(digest, 1 + (this.timesTried.get(digest) ?? 0));
+    try {
+      await this.handleTxnError(symbol, digest, botIdx, e);
+    } catch (err: any) {
+      // same order failed n times: something's wrong
+      if ((this.timesTried.get(digest) ?? 0) > 3) {
+        throw err;
+      }
+    }
+    // check if order should stay locked
+    await this.bots[botIdx].api
+      .getOrderById(symbol, digest)
+      .then(async (ordr) => {
+        if (ordr != undefined && ordr.quantity > 0) {
+          // order is still on chain -> unlock, immediately if it's market, else wait n seconds
+          if (ordr.type != ORDER_TYPE_MARKET) {
+            await sleep(5_000);
+          }
+          this.locked.delete(digest);
+        }
+        // else order is gone, possibly by cancelled or executed by someone else
+        // --> leave locked so it's not tried again
+      })
+      .catch(async () => {
+        // don't know, unlock order, but only after waiting
+        await sleep(10_000).then(() => {
+          this.locked.delete(digest);
+        });
+      });
+
+    console.log({
+      info: "txn reverted",
+      reason: e?.toString(),
+      symbol: symbol,
+      executor: this.bots[botIdx].api.getAddress(),
+      digest: digest,
+      time: new Date(Date.now()).toISOString(),
+    });
+  }
+
+  /**
    * Executes an order using a given bot.
    * Orders not found on chain are never tried.
    * Orders tried that revert with not found error, are never tried again.
@@ -174,27 +266,6 @@ export default class Executor {
     this.bots[botIdx].busy = true;
     this.locked.add(digest);
 
-    // check if order is on-chain:
-    // - stop if not/unable to check
-    // - broker orders (onChain=false) only go through if market type
-    // const isOpen = await this.bots[botIdx].api
-    //   .getOrderById(symbol, digest)
-    //   .then((ordr) => ordr != undefined && ordr.quantity > 0)
-    //   .catch(() => false);
-
-    // if (!isOpen) {
-    //   console.log({
-    //     info: "order not found",
-    //     symbol: symbol,
-    //     executor: this.bots[botIdx].api.getAddress(),
-    //     digest: digest,
-    //     time: new Date(Date.now()).toISOString(),
-    //   });
-    //   this.bots[botIdx].busy = false;
-    //   this.locked.delete(digest);
-    //   return false;
-    // }
-
     // submit txn
     console.log({
       info: "submitting txn...",
@@ -215,33 +286,25 @@ export default class Executor {
           splitTx: false,
         }
       );
-    } catch (e: any) {
       console.log({
-        info: "txn rejected",
-        reason: e.toString(),
+        info: "txn accepted",
         symbol: symbol,
-        executor: this.bots[botIdx].api.getAddress(),
+        orderBook: tx.to,
+        executor: tx.from,
         digest: digest,
+        gasLimit: `${utils.formatUnits(tx.gasLimit, "wei")} wei`,
+        hash: tx.hash,
         time: new Date(Date.now()).toISOString(),
       });
-      this.bots[botIdx].busy = false;
-      this.locked.delete(digest);
+    } catch (e: any) {
+      // didn't make it on-chain - handle it (possibly re-throw error)
+      await this.handleTxnError(symbol, digest, botIdx, e);
       return false;
     }
-    console.log({
-      info: "txn accepted",
-      symbol: symbol,
-      orderBook: tx.to,
-      executor: tx.from,
-      digest: digest,
-      gasLimit: `${utils.formatUnits(tx.gasLimit, "wei")} wei`,
-      hash: tx.hash,
-      time: new Date(Date.now()).toISOString(),
-    });
 
     // confirm execution
     try {
-      // try twice
+      // try n times, then re-throw
       let success = false;
       let tried = 0;
       while (!success) {
@@ -264,59 +327,16 @@ export default class Executor {
             time: new Date(Date.now()).toISOString(),
           });
         } catch (e) {
-          console.log(`confirmation fail ${tried}`);
           if (tried > 2) {
             // on third error give up
+            console.log(`confirmation failed ${tried} times`);
             throw e;
           }
         }
       }
     } catch (e: any) {
-      let error = e?.toString() || "";
-      // order stays locked if it's no longer found on chain
-      await this.bots[botIdx].api
-        .getOrderById(symbol, digest)
-        .then(async (ordr) => {
-          if (ordr != undefined && ordr.quantity > 0) {
-            // still on chain -> unlock order but only after waiting
-            await sleep(10_000).then(() => {
-              // console.log(`unlock ${digest} after seeing it on-chain`);
-              this.locked.delete(digest);
-            });
-          } else {
-            // order is executed, possibly by someone else
-            // --> leave locked so it's not tried again
-            // console.log(
-            //   `leaving lock on ${digest} after not seeing it on-chain`
-            // );
-            error = "order not found";
-          }
-        })
-        .catch(async () => {
-          // don't know, unlock order after waiting
-          await sleep(10_000).then(() => {
-            // console.log(`unlock ${digest} after failing to fetch on-chain`);
-            this.locked.delete(digest);
-          });
-        });
-
-      console.log({
-        info: "txn reverted",
-        reason: error,
-        symbol: symbol,
-        executor: this.bots[botIdx].api.getAddress(),
-        digest: digest,
-        time: new Date(Date.now()).toISOString(),
-      });
-
-      const bot = this.bots[botIdx].api.getAddress();
-      if (error.includes("insufficient funds")) {
-        try {
-          await this.fundWallets([bot]);
-        } catch (e: any) {
-          throw new Error(`failed to fund bot ${bot}`);
-        }
-      }
+      // could not confirm - check status and maybe re-throw
+      await this.handleConfirmationError(symbol, digest, botIdx, e);
     }
     // unlock bot
     this.bots[botIdx].busy = false;
