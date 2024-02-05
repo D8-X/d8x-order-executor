@@ -516,7 +516,7 @@ export default class Distributor {
   }
 
   private async refreshAccounts(symbol: string) {
-    const chunkSize2 = 2 ** 8; // for margin accounts
+    const chunkSize2 = 2 ** 6; // for margin accounts
     const perpId = this.md.getPerpIdFromSymbol(symbol)!;
     const proxy = this.md.getReadOnlyProxyInstance();
     const rpcProviders = this.config.rpcWatch.map(
