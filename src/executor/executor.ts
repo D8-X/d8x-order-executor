@@ -207,7 +207,7 @@ export default class Executor {
     try {
       await this.handleTxnError(symbol, digest, botIdx, e);
     } catch (err: any) {
-      // same order failed n times: something's wrong
+      // we've been here n times: something's wrong
       if ((this.timesTried.get(digest) ?? 0) > 3) {
         throw err;
       }
@@ -337,6 +337,7 @@ export default class Executor {
     } catch (e: any) {
       // could not confirm - check status and maybe re-throw
       await this.handleConfirmationError(symbol, digest, botIdx, e);
+      return false;
     }
     // unlock bot
     this.bots[botIdx].busy = false;
