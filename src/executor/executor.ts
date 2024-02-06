@@ -96,6 +96,10 @@ export default class Executor {
         // }
       }
     );
+    console.log({
+      info: "initialized",
+      time: new Date(Date.now()).toISOString(),
+    });
   }
 
   /**
@@ -104,14 +108,17 @@ export default class Executor {
   public async run(): Promise<void> {
     // consecutive responses
     let [busy, errors, success, msgs] = [0, 0, 0, 0];
-
+    console.log({
+      info: "running",
+      time: new Date(Date.now()).toISOString(),
+    });
     return new Promise<void>((resolve, reject) => {
       setInterval(async () => {
         if (
           Date.now() - this.lastCall >
-          this.config.executeIntervalSecondsMax
+          this.config.executeIntervalSecondsMax * 1_000
         ) {
-          await this.execute().catch(() => {});
+          await this.execute();
         }
       });
 
@@ -136,9 +143,7 @@ export default class Executor {
               errors++;
             } else if (res == BotStatus.Error) {
               throw new Error(`error`);
-              // console.log("error");
             } else {
-              // res == BotStatus.Ready
               success++;
             }
             break;
@@ -265,6 +270,27 @@ export default class Executor {
     // lock
     this.bots[botIdx].busy = true;
     this.locked.add(digest);
+
+    const isOnChain = await this.bots[botIdx].api
+      .getOrderById(symbol, digest)
+      .then((ordr) => {
+        if (ordr != undefined && ordr.quantity > 0) {
+          return true;
+        }
+        return false;
+      });
+
+    if (!isOnChain) {
+      console.log({
+        reason: "order not found",
+        symbol: symbol,
+        digest: digest,
+        time: new Date(Date.now()).toISOString(),
+      });
+      this.bots[botIdx].busy = false;
+      this.locked.delete(digest);
+      return false;
+    }
 
     // submit txn
     console.log({
