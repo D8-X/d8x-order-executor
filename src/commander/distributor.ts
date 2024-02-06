@@ -488,8 +488,11 @@ export default class Distributor {
 
     const orderArray = [...orderBundles.values()];
     const numOrders = {
-      market: orderArray.filter(
-        ({ order }) => order?.type === ORDER_TYPE_MARKET
+      marketOpen: orderArray.filter(
+        ({ order }) => order?.type === ORDER_TYPE_MARKET && !order?.reduceOnly
+      ).length,
+      marketClose: orderArray.filter(
+        ({ order }) => order?.type === ORDER_TYPE_MARKET && order?.reduceOnly
       ).length,
       limit: orderArray.filter(({ order }) => order?.type === ORDER_TYPE_LIMIT)
         .length,
@@ -601,6 +604,22 @@ export default class Distributor {
     }
   }
 
+  private async refreshPrices(symbol: string) {
+    if (
+      Date.now() - (this.pricesFetchedAt.get(symbol) ?? 0) >
+      this.config.fetchPricesIntervalSecondsMin * 1_000
+    ) {
+      let tsStart = Date.now();
+      this.pricesFetchedAt.set(symbol, tsStart);
+      const newPxSubmission =
+        await this.md.fetchPriceSubmissionInfoForPerpetual(symbol);
+      if (!this.checkSubmissionsInSync(newPxSubmission.submission.timestamps)) {
+        return;
+      }
+      this.pxSubmission.set(symbol, newPxSubmission);
+    }
+  }
+
   /**
    * Checks if any accounts can be liquidated and publishes them via redis.
    * No RPC calls are made here, only price service
@@ -616,87 +635,47 @@ export default class Distributor {
     }
 
     try {
-      if (
-        Date.now() - (this.pricesFetchedAt.get(symbol) ?? 0) >
-        this.config.fetchPricesIntervalSecondsMin * 1_000
-      ) {
-        let tsStart = Date.now();
-        this.pricesFetchedAt.set(symbol, tsStart);
-        const newPxSubmission =
-          await this.md.fetchPriceSubmissionInfoForPerpetual(symbol);
-        if (
-          !this.checkSubmissionsInSync(newPxSubmission.submission.timestamps)
-        ) {
-          return;
-        }
-
-        this.pxSubmission.set(symbol, newPxSubmission);
-        // console.log({
-        //   info: "fetched prices",
-        //   symbol: symbol,
-        //   time: new Date(Date.now()).toISOString(),
-        //   publishTime: Math.min(...newPxSubmission.submission.timestamps),
-        //   waited: `${Date.now() - tsStart} ms`,
-        // });
-      }
+      await this.refreshPrices(symbol);
     } catch (e) {
       console.log("error fetching from price service");
-      return;
+      throw e;
     }
 
     const curPx = this.pxSubmission.get(symbol)!;
     if (curPx.submission.isMarketClosed.some((x) => x)) {
       return;
     }
-    // const ordersSent: Set<string> = new Set();
+
     const removeOrders: string[] = [];
     for (const [digest, orderBundle] of orders) {
       const command = {
         symbol: orderBundle.symbol,
         digest: orderBundle.digest,
         trader: orderBundle.trader,
-        // onChain: verifiedOnChain,
       };
-      // send command
+      // check if it's too soon to process
       const msg = JSON.stringify(command);
       if (
-        Date.now() - (this.messageSentAt.get(msg) ?? 0) >
-          this.config.executeIntervalSecondsMin * 500 &&
-        (await this.isExecutable(orderBundle, curPx.pxS2S3))
+        Date.now() - (this.messageSentAt.get(msg) ?? 0) <
+        this.config.executeIntervalSecondsMin * 500
       ) {
-        await this.sendCommand(command);
-        // remove stale broker orders
+        continue;
+      }
+      const isExecOnChain = this.isExecutableIfOnChain(
+        orderBundle,
+        curPx.pxS2S3
+      );
+      if (isExecOnChain) {
         if (
-          orderBundle.order == undefined &&
-          Date.now() - (this.brokerOrders.get(symbol)?.get(digest) ?? 0) >
-            60_000
-        ) {
-          removeOrders.push(digest);
-        }
-      } else if (orderBundle.order?.type === ORDER_TYPE_MARKET) {
-        // console.log({
-        //   info: "market order not executable",
-        //   pxS2S3: curPx.pxS2S3,
-        //   ...orderBundle,
-        //   ...this.openPositions
-        //     .get(orderBundle.symbol)!
-        //     .get(orderBundle.trader),
-        //   time: new Date(Date.now()).toISOString(),
-        // });
-        if (
-          !this.openPositions.get(orderBundle.symbol)?.has(orderBundle.trader)
-        ) {
-          // maybe we're missing a trader, likely why order couldn't be executed
-          // -> trigger an async refresh
-          // this.refreshAccounts(orderBundle.symbol);
-        } else if (
           (await this.md.getOrderStatus(
             orderBundle.symbol,
             orderBundle.digest
-          )) !== OrderStatus.OPEN
+          )) == OrderStatus.OPEN
         ) {
-          // the order has been seen on-chain (order is not undefined)
-          // --> safe to remove if no longer on chain
+          await this.sendCommand(command);
+        } else if (orderBundle.order != undefined) {
+          // an order that has been seen on chain and is now off-chain
+          removeOrders.push(orderBundle.digest);
           this.removeOrder(
             orderBundle.symbol,
             orderBundle.digest,
@@ -704,7 +683,19 @@ export default class Distributor {
           );
         }
       }
+      if (
+        orderBundle.order == undefined &&
+        Date.now() - (this.brokerOrders.get(symbol)?.get(digest) ?? 0) > 60_000
+      ) {
+        removeOrders.push(orderBundle.digest);
+        this.removeOrder(
+          orderBundle.symbol,
+          orderBundle.digest,
+          "broker order expired"
+        );
+      }
     }
+    // cleanup
     for (const digest of removeOrders) {
       this.openOrders.get(symbol)?.delete(digest);
       this.brokerOrders.get(symbol)?.delete(digest);
@@ -735,26 +726,19 @@ export default class Distributor {
     }
   }
 
-  private async isExecutable(
+  private isExecutableIfOnChain(
     order: OrderBundle,
     pxS2S3: [number, number | undefined]
   ) {
     if (!order.order) {
       // broker order: if it's market and on chain, it's executable, nothing to check
-      const orderStatus = await this.md.getOrderStatus(
-        order.symbol,
-        order.digest
-      );
-      if (orderStatus != OrderStatus.OPEN) {
-        return false;
-      } else {
-        return order.type == ORDER_TYPE_MARKET;
-      }
+      return order.type == ORDER_TYPE_MARKET;
     }
+    // exec ts
     if (order.order.executionTimestamp > Date.now() / 1_000) {
       return false;
     }
-
+    // reduce only
     const traderPos = this.openPositions
       .get(order.symbol)
       ?.get(order.trader)?.positionBC;
@@ -778,15 +762,6 @@ export default class Distributor {
         // dependency hasn't been cleared
         return false;
       }
-    }
-
-    // so far all returns were false - now we may return true so we should check if the order still exists first
-    const orderStatus = await this.md.getOrderStatus(
-      order.symbol,
-      order.digest
-    );
-    if (orderStatus !== OrderStatus.OPEN) {
-      return false;
     }
 
     const markPrice = pxS2S3[0] * (1 + this.markPremium.get(order.symbol)!);
