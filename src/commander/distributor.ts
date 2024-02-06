@@ -416,7 +416,7 @@ export default class Distributor {
     ) {
       return;
     }
-    const chunkSize1 = 2 ** 8; // for orders
+    const chunkSize1 = 2 ** 4; // for orders
     const rpcProviders = this.config.rpcWatch.map(
       (url) => new providers.StaticJsonRpcProvider(url)
     );
@@ -519,7 +519,7 @@ export default class Distributor {
   }
 
   private async refreshAccounts(symbol: string) {
-    const chunkSize2 = 2 ** 6; // for margin accounts
+    const chunkSize2 = 2 ** 4; // for margin accounts
     const perpId = this.md.getPerpIdFromSymbol(symbol)!;
     const proxy = this.md.getReadOnlyProxyInstance();
     const rpcProviders = this.config.rpcWatch.map(
@@ -666,14 +666,9 @@ export default class Distributor {
         curPx.pxS2S3
       );
       if (isExecOnChain) {
-        if (
-          (await this.md.getOrderStatus(
-            orderBundle.symbol,
-            orderBundle.digest
-          )) == OrderStatus.OPEN
-        ) {
-          await this.sendCommand(command);
-        } else if (orderBundle.order != undefined) {
+        await this.sendCommand(command);
+        // broker order - clear after a while
+        if (orderBundle.order != undefined) {
           // an order that has been seen on chain and is now off-chain
           removeOrders.push(orderBundle.digest);
           this.removeOrder(
