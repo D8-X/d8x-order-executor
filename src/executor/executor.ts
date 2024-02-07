@@ -1,8 +1,4 @@
-import {
-  PerpetualDataHandler,
-  OrderExecutorTool,
-  ORDER_TYPE_MARKET,
-} from "@d8x/perpetuals-sdk";
+import { PerpetualDataHandler, OrderExecutorTool } from "@d8x/perpetuals-sdk";
 import { ContractTransaction, Wallet, utils } from "ethers";
 import { providers } from "ethers";
 import { Redis } from "ioredis";
@@ -124,14 +120,18 @@ export default class Executor {
 
       this.redisSubClient.on("message", async (channel, msg) => {
         switch (channel) {
-          // case "block": {
-          //   if (+msg % 1000 == 0) {
-          //     console.log(
-          //       JSON.stringify({ busy: busy, errors: errors, success: success, msgs: msgs }, undefined, "  ")
-          //     );
-          //   }
-          //   break;
-          // }
+          case "block": {
+            if (+msg % 1000 == 0) {
+              console.log(
+                JSON.stringify(
+                  { busy: busy, errors: errors, success: success, msgs: msgs },
+                  undefined,
+                  "  "
+                )
+              );
+            }
+            break;
+          }
           case "ExecuteOrder": {
             const prevCount = this.q.size;
             this.q.add(msg);
@@ -142,7 +142,7 @@ export default class Executor {
             } else if (res == BotStatus.PartialError) {
               errors++;
             } else if (res == BotStatus.Error) {
-              throw new Error(`error`);
+              errors++;
             } else {
               success++;
             }

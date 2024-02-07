@@ -667,16 +667,6 @@ export default class Distributor {
       );
       if (isExecOnChain) {
         await this.sendCommand(command);
-        // broker order - clear after a while
-        if (orderBundle.order != undefined) {
-          // an order that has been seen on chain and is now off-chain
-          removeOrders.push(orderBundle.digest);
-          this.removeOrder(
-            orderBundle.symbol,
-            orderBundle.digest,
-            "left order book"
-          );
-        }
       }
       if (
         orderBundle.order == undefined &&
