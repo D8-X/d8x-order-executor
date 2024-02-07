@@ -222,13 +222,11 @@ export default class Executor {
       .getOrderById(symbol, digest)
       .then(async (ordr) => {
         if (ordr != undefined && ordr.quantity > 0) {
-          // order is still on chain -> unlock, immediately if it's market, else wait n seconds
-          if (ordr.type != ORDER_TYPE_MARKET) {
-            await sleep(5_000);
-          }
+          // order is still on chain -> unlock
+          this.bots[botIdx].busy = false;
           this.locked.delete(digest);
         }
-        // else order is gone, possibly by cancelled or executed by someone else
+        // else order is gone, either cancelled or executed
         // --> leave locked so it's not tried again
       })
       .catch(async () => {
@@ -354,7 +352,7 @@ export default class Executor {
           });
         } catch (e) {
           if (tried > 2) {
-            // on third error give up
+            // on n errors give up
             console.log(`confirmation failed ${tried} times`);
             throw e;
           }
@@ -363,9 +361,10 @@ export default class Executor {
     } catch (e: any) {
       // could not confirm - check status and maybe re-throw
       await this.handleConfirmationError(symbol, digest, botIdx, e);
+      this.bots[botIdx].busy = false;
       return false;
     }
-    // unlock bot
+    // order was executed
     this.bots[botIdx].busy = false;
     return true;
   }
