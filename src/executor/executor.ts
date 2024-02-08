@@ -3,7 +3,7 @@ import { ContractTransaction, Wallet, utils } from "ethers";
 import { providers } from "ethers";
 import { Redis } from "ioredis";
 import { constructRedis, executeWithTimeout, sleep } from "../utils";
-import { BotStatus, ExecutorConfig, ExecuteOrderMsg } from "../types";
+import { BotStatus, ExecutorConfig, ExecuteOrderMsg, TradeMsg } from "../types";
 
 export default class Executor {
   // objects
@@ -21,6 +21,7 @@ export default class Executor {
   private locked: Set<string> = new Set();
   private lastCall: number = 0;
   private timesTried: Map<string, number> = new Map();
+  private trash: Set<string> = new Set();
 
   constructor(
     pkTreasury: string,
@@ -59,7 +60,6 @@ export default class Executor {
       i < this.providers.length &&
       tried <= this.providers.length
     ) {
-      // console.log(`trying provider ${i} ... `);
       const results = await Promise.allSettled(
         // createProxyInstance attaches the given provider to the object instance
         this.bots.map((bot) => bot.api.createProxyInstance(this.providers[i]))
@@ -73,10 +73,10 @@ export default class Executor {
     }
 
     // Subscribe to relayed events
-    // console.log(`${new Date(Date.now()).toISOString()}: subscribing to account streamer...`);
     await this.redisSubClient.subscribe(
       "block",
       "ExecuteOrder",
+      "TradeEvent",
       "Restart",
       (err, count) => {
         if (err) {
@@ -87,9 +87,6 @@ export default class Executor {
           );
           process.exit(1);
         }
-        //  else {
-        //   console.log(`${new Date(Date.now()).toISOString()}: redis subscription success - ${count} active channels`);
-        // }
       }
     );
     console.log({
@@ -110,13 +107,17 @@ export default class Executor {
     });
     return new Promise<void>((resolve, reject) => {
       setInterval(async () => {
-        if (
-          Date.now() - this.lastCall >
-          this.config.executeIntervalSecondsMax * 1_000
-        ) {
-          await this.execute();
+        await this.execute();
+      }, this.config.executeIntervalSecondsMax * 1_000);
+
+      setInterval(async () => {
+        const trash = [...this.trash];
+        this.trash = new Set();
+        for (const digest of trash) {
+          this.q.delete(digest);
+          this.locked.delete(digest);
         }
-      });
+      }, 60 * 60 * 8 * 1_000);
 
       this.redisSubClient.on("message", async (channel, msg) => {
         switch (channel) {
@@ -124,7 +125,13 @@ export default class Executor {
             if (+msg % 1000 == 0) {
               console.log(
                 JSON.stringify(
-                  { busy: busy, errors: errors, success: success, msgs: msgs },
+                  {
+                    busy: busy,
+                    errors: errors,
+                    success: success,
+                    msgs: msgs,
+                    time: new Date(Date.now()).toISOString(),
+                  },
                   undefined,
                   "  "
                 )
@@ -137,15 +144,16 @@ export default class Executor {
             this.q.add(msg);
             msgs += this.q.size > prevCount ? 1 : 0;
             const res = await this.execute();
-            if (res == BotStatus.Busy) {
-              busy++;
-            } else if (res == BotStatus.PartialError) {
-              errors++;
-            } else if (res == BotStatus.Error) {
-              errors++;
-            } else {
-              success++;
-            }
+            busy += res.busy;
+            errors += res.error;
+            success += res.ok;
+            break;
+          }
+
+          case "TradeEvent": {
+            const { digest }: TradeMsg = JSON.parse(msg);
+            this.locked.add(digest.toLowerCase());
+            this.trash.add(digest.toLowerCase());
             break;
           }
 
@@ -158,103 +166,12 @@ export default class Executor {
   }
 
   /**
-   * Handle errors thrown while submitting a transaction.
-   * 1) funds: ccaught and bot is funded
-   * 2) order not found: order stays locked and bot resumes trading
-   * 3) otherwise re-throw error
-   * @param symbol Perpetual symbol
-   * @param digest Order Id
-   * @param botIdx Internal wallet index
-   * @param e Error
-   */
-  private async handleTxnError(
-    symbol: string,
-    digest: string,
-    botIdx: number,
-    e: any
-  ) {
-    const error = e?.toString();
-    const addr = this.bots[botIdx].api.getAddress();
-    console.log({
-      reason: error,
-      symbol: symbol,
-      executor: addr,
-      digest: digest,
-      time: new Date(Date.now()).toISOString(),
-    });
-    if (error.includes("insufficient funds")) {
-      this.locked.delete(digest);
-      await this.fundWallets([addr]);
-      this.bots[botIdx].busy = false;
-    } else if (error.includes("order not found")) {
-      this.bots[botIdx].busy = false;
-    } else {
-      throw e;
-    }
-  }
-
-  /**
-   * Handle error thrown while confirming a successfuly submitted transaction
-   * 1) Same actions as when submitting transaction (order not found)
-   * 2)
-   * @param symbol Perpetual symbol
-   * @param digest Order Id
-   * @param botIdx Internal wallet index
-   * @param e Error
-   */
-  private async handleConfirmationError(
-    symbol: string,
-    digest: string,
-    botIdx: number,
-    e: any
-  ) {
-    this.timesTried.set(digest, 1 + (this.timesTried.get(digest) ?? 0));
-    try {
-      await this.handleTxnError(symbol, digest, botIdx, e);
-    } catch (err: any) {
-      // we've been here n times: something's wrong
-      if ((this.timesTried.get(digest) ?? 0) > 3) {
-        throw err;
-      }
-    }
-    // check if order should stay locked
-    await this.bots[botIdx].api
-      .getOrderById(symbol, digest)
-      .then(async (ordr) => {
-        if (ordr != undefined && ordr.quantity > 0) {
-          // order is still on chain -> unlock
-          this.bots[botIdx].busy = false;
-          this.locked.delete(digest);
-        }
-        // else order is gone, either cancelled or executed
-        // --> leave locked so it's not tried again
-      })
-      .catch(async () => {
-        // don't know, unlock order, but only after waiting
-        await sleep(10_000).then(() => {
-          this.locked.delete(digest);
-        });
-      });
-
-    console.log({
-      info: "txn reverted",
-      reason: e?.toString(),
-      symbol: symbol,
-      executor: this.bots[botIdx].api.getAddress(),
-      digest: digest,
-      time: new Date(Date.now()).toISOString(),
-    });
-  }
-
-  /**
    * Executes an order using a given bot.
-   * Orders not found on chain are never tried.
-   * Orders tried that revert with not found error, are never tried again.
    * @param botIdx Index of wallet used
    * @param symbol Perpetual symbol
    * @param digest Order digest/id
    * @param onChain true if order was seen on-chain
-   * @returns true if excution txn does not revert
+   * @returns true if execution does not revert
    */
   private async executeOrderByBot(
     botIdx: number,
@@ -263,7 +180,7 @@ export default class Executor {
   ) {
     digest = digest.toLowerCase();
     if (this.bots[botIdx].busy || this.locked.has(digest)) {
-      return false;
+      return this.trash.has(digest) ? BotStatus.Ready : BotStatus.Busy;
     }
     // lock
     this.bots[botIdx].busy = true;
@@ -286,8 +203,10 @@ export default class Executor {
         time: new Date(Date.now()).toISOString(),
       });
       this.bots[botIdx].busy = false;
-      this.locked.delete(digest);
-      return false;
+      if (!this.trash.has(digest)) {
+        this.locked.delete(digest);
+      }
+      return BotStatus.PartialError;
     }
 
     // submit txn
@@ -322,77 +241,108 @@ export default class Executor {
       });
     } catch (e: any) {
       // didn't make it on-chain - handle it (possibly re-throw error)
-      await this.handleTxnError(symbol, digest, botIdx, e);
-      return false;
+      const error = e?.toString();
+      const addr = this.bots[botIdx].api.getAddress();
+      console.log({
+        info: "txn rejected",
+        reason: error,
+        symbol: symbol,
+        executor: addr,
+        digest: digest,
+        time: new Date(Date.now()).toISOString(),
+      });
+      if (error.includes("insufficient funds")) {
+        this.locked.delete(digest);
+        await this.fundWallets([addr]);
+        this.bots[botIdx].busy = false;
+        return BotStatus.PartialError;
+      } else if (error.includes("order not found")) {
+        // the order stays locked:
+        // if we're here it was on chain at some point, so now it's gone
+        this.trash.add(digest);
+        this.bots[botIdx].busy = false;
+        return BotStatus.PartialError;
+      } else {
+        // something else, prob rpc
+        throw e;
+      }
     }
 
     // confirm execution
     try {
-      // try n times, then re-throw
-      let success = false;
-      let tried = 0;
-      while (!success) {
-        try {
-          tried++;
-          const receipt = await tx.wait();
-          success = true;
-          console.log({
-            info: "txn confirmed",
-            symbol: symbol,
-            orderBook: receipt.to,
-            executor: receipt.from,
-            digest: digest,
-            block: receipt.blockNumber,
-            gasUsed: `${utils.formatUnits(
-              receipt.cumulativeGasUsed,
-              "wei"
-            )} wei`,
-            hash: receipt.transactionHash,
-            time: new Date(Date.now()).toISOString(),
-          });
-        } catch (e) {
-          if (tried > 2) {
-            // on n errors give up
-            console.log(`confirmation failed ${tried} times`);
-            throw e;
-          }
-        }
-      }
-    } catch (e: any) {
-      // could not confirm - check status and maybe re-throw
-      await this.handleConfirmationError(symbol, digest, botIdx, e);
+      const receipt = await executeWithTimeout(tx.wait(), 10_000, "timeout");
+      console.log({
+        info: "txn confirmed",
+        symbol: symbol,
+        orderBook: receipt.to,
+        executor: receipt.from,
+        digest: digest,
+        block: receipt.blockNumber,
+        gasUsed: `${utils.formatUnits(receipt.cumulativeGasUsed, "wei")} wei`,
+        hash: receipt.transactionHash,
+        time: new Date(Date.now()).toISOString(),
+      });
+      // order was executed
       this.bots[botIdx].busy = false;
-      return false;
+      this.locked.add(digest);
+      this.trash.add(digest);
+      return BotStatus.Ready;
+    } catch (e: any) {
+      // could not confirm
+      const error = e?.toString();
+      const addr = this.bots[botIdx].api.getAddress();
+      console.log({
+        info: "txn not confirmed",
+        reason: error,
+        symbol: symbol,
+        executor: addr,
+        digest: digest,
+        time: new Date(Date.now()).toISOString(),
+      });
+      // check if order is gone
+      const ordr = await this.bots[botIdx].api.getOrderById(symbol, digest);
+      if (ordr != undefined && ordr.quantity > 0) {
+        // order is still on chain - maybe still processing, so wait, then unlock if it hasn't been trashed
+        await sleep(10_000);
+        this.bots[botIdx].busy = false;
+        if (!this.trash.has(digest)) {
+          this.locked.delete(digest);
+        }
+        return BotStatus.Error;
+      } else {
+        this.bots[botIdx].busy = false;
+        // order is gone, relock to be safe
+        this.locked.add(digest);
+        this.trash.add(digest);
+        return BotStatus.Ready;
+      }
     }
-    // order was executed
-    this.bots[botIdx].busy = false;
-    return true;
   }
 
   /**
    * Execute orders in q
    */
   public async execute() {
+    if (this.q.size < 1) {
+      return { busy: 0, partial: 0, error: 0, ok: 0 };
+    }
+
     if (
       Date.now() - this.lastCall <
       this.config.executeIntervalSecondsMin * 1_000
     ) {
-      return BotStatus.Busy;
+      return { busy: this.bots.length, partial: 0, error: 0, ok: 0 };
     }
 
     this.lastCall = Date.now();
     let attempts = 0;
-    let successes = 0;
     const q = [...this.q];
-
-    if (q.length == 0) {
-      return BotStatus.Ready;
-    }
-
-    const executed: Promise<boolean>[] = [];
+    const responses = { busy: 0, partial: 0, error: 0, ok: 0 };
+    const executed: Promise<BotStatus>[] = [];
     for (const msg of q) {
-      const { symbol, digest }: ExecuteOrderMsg = JSON.parse(msg);
-      if (this.locked.has(digest)) {
+      let { symbol, digest }: ExecuteOrderMsg = JSON.parse(msg);
+      digest = digest.toLowerCase();
+      if (this.locked.has(digest) || this.trash.has(digest)) {
         continue;
       }
       for (let i = 0; i < this.bots.length; i++) {
@@ -413,29 +363,23 @@ export default class Executor {
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
       if (result.status === "fulfilled") {
-        successes += result.value ? 1 : 0;
+        // successes += result.value ? 1 : 0;
+        if (result.value == BotStatus.Ready) {
+          responses.ok++;
+        } else if (result.value == BotStatus.Error) {
+          responses.error++;
+        } else if (result.value == BotStatus.PartialError) {
+          responses.partial++;
+        } else {
+          // }if(result.value == BotStatus.Busy) {
+          responses.busy++;
+        }
       } else {
         throw new Error(`uncaught error: ${result.reason.toString()}`);
       }
     }
 
-    // return cases:
-    if (successes == 0 && attempts == this.bots.length) {
-      // all bots are down, either rpc or px service issue
-      return BotStatus.Error;
-    } else if (attempts == 0 && q.length > 0) {
-      // did not try anything
-      return BotStatus.Busy;
-    } else if (successes == 0 && attempts > 0) {
-      // tried something but it didn't work
-      return BotStatus.PartialError;
-    } else if (successes < attempts) {
-      // some attempts worked, others failed
-      return BotStatus.PartialError;
-    } else {
-      // everything worked or nothing happend
-      return BotStatus.Ready;
-    }
+    return responses;
   }
 
   public async fundWallets(addressArray: string[]) {
