@@ -730,6 +730,7 @@ export default class Distributor {
     const isBuy = order.order.side == BUY_SIDE;
     if (
       order.order.reduceOnly &&
+      order.order.type != ORDER_TYPE_MARKET &&
       (traderPos == undefined ||
         (traderPos > 0 && isBuy) ||
         (traderPos < 0 && !isBuy))
