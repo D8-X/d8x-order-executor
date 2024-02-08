@@ -697,7 +697,7 @@ export default class Distributor {
     const msg = JSON.stringify(command);
     if (
       Date.now() - (this.messageSentAt.get(msg) ?? 0) >
-      this.config.executeIntervalSecondsMin * 500
+      this.config.executeIntervalSecondsMin * 2000
     ) {
       if (!this.messageSentAt.has(msg)) {
         console.log({
