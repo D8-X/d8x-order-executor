@@ -60,13 +60,13 @@ export default class Executor {
       i < this.providers.length &&
       tried <= this.providers.length
     ) {
+      i = (i + 1) % this.providers.length;
+      tried++;
       const results = await Promise.allSettled(
         // createProxyInstance attaches the given provider to the object instance
         this.bots.map((bot) => bot.api.createProxyInstance(this.providers[i]))
       );
       success = results.every((r) => r.status === "fulfilled");
-      i = (i + 1) % this.providers.length;
-      tried++;
     }
     if (!success) {
       throw new Error("critical: all RPCs are down");
@@ -91,6 +91,7 @@ export default class Executor {
     );
     console.log({
       info: "initialized",
+      rpcUrl: this.config.rpcExec[i],
       time: new Date(Date.now()).toISOString(),
     });
   }
@@ -260,6 +261,12 @@ export default class Executor {
         // the order stays locked:
         // if we're here it was on chain at some point, so now it's gone
         this.trash.add(digest);
+        this.bots[botIdx].busy = false;
+        return BotStatus.PartialError;
+      } else if (error.includes("gas price too low")) {
+        // it happens sometimes
+        await sleep(1_000);
+        this.locked.delete(digest);
         this.bots[botIdx].busy = false;
         return BotStatus.PartialError;
       } else {
