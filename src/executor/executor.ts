@@ -226,7 +226,7 @@ export default class Executor {
         this.config.rewardsAddress,
         undefined,
         {
-          gasLimit: 2_000_000,
+          gasLimit: 4_000_000,
           splitTx: false,
         }
       );
