@@ -226,8 +226,7 @@ export default class Executor {
         this.config.rewardsAddress,
         undefined,
         {
-          gasLimit: 4_000_000,
-          splitTx: false,
+          gasLimit: 20_000_000,
         }
       );
       console.log({
@@ -395,7 +394,7 @@ export default class Executor {
     const treasury = new Wallet(this.treasury, provider);
     const gasPriceWei = await provider.getGasPrice();
     // min balance should cover 1e7 gas
-    const minBalance = gasPriceWei.mul(1e7); // 10 x 1 million gas x 1 gas in wei = min balance in wei
+    const minBalance = gasPriceWei.mul(1e9); // 10 x 10 million gas x 1 gas in wei = min balance in wei
     for (let addr of addressArray) {
       const botBalance = await provider.getBalance(addr);
       const treasuryBalance = await provider.getBalance(treasury.address);
