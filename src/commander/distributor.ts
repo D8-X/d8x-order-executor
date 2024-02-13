@@ -661,6 +661,14 @@ export default class Distributor {
       ) {
         continue;
       }
+      // check oracle time
+      if (
+        orderBundle.order?.submittedTimestamp &&
+        orderBundle.order?.submittedTimestamp >
+          Math.min(...curPx.submission.timestamps)
+      ) {
+        continue;
+      }
       const isExecOnChain = this.isExecutableIfOnChain(
         orderBundle,
         curPx.pxS2S3
