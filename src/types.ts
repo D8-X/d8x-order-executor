@@ -51,7 +51,8 @@ export interface ExecutorConfig {
   refreshOrdersSecondsMax: number;
   fetchPricesIntervalSecondsMin: number;
   brokerReconnectIntervalMaxSeconds: number;
-  maxGasPriceGWei: 1;
+  maxGasPriceGWei: number;
+  gasLimit: number;
   priceFeedEndpoints: [{ type: "pyth" | "odin"; endpoints: string[] }];
 }
 
@@ -111,9 +112,9 @@ export interface UpdateMarginAccountMsg extends RedisMsg {
   perpetualId: number;
   symbol: string;
   traderAddr: string;
-  positionBC: number;
-  cashCC: number;
-  lockedInQC: number;
+  // positionBC: number;
+  // cashCC: number;
+  // lockedInQC: number;
   fundingPaymentCC: number;
 }
 

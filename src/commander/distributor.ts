@@ -171,7 +171,6 @@ export default class Distributor {
       "block",
       "UpdateMarkPriceEvent",
       "UpdateMarginAccountEvent",
-      "UpdateUnitAccumulatedFundingEvent",
       "TradeEvent",
       "ExecutionFailedEvent",
       "PerpetualLimitOrderCreatedEvent",
@@ -250,13 +249,17 @@ export default class Distributor {
           }
 
           case "UpdateMarginAccountEvent": {
-            const account: UpdateMarginAccountMsg = JSON.parse(msg);
+            const { traderAddr, perpetualId }: UpdateMarginAccountMsg =
+              JSON.parse(msg);
+            const { fPositionBC, fCashCC, fLockedInValueQC } = await this.md
+              .getReadOnlyProxyInstance()
+              .getMarginAccount(perpetualId, traderAddr);
             this.updatePosition({
-              address: account.traderAddr,
-              perpetualId: account.perpetualId,
-              positionBC: account.positionBC,
-              cashCC: account.cashCC,
-              lockedInQC: account.lockedInQC,
+              address: traderAddr,
+              perpetualId: perpetualId,
+              positionBC: ABK64x64ToFloat(fPositionBC),
+              cashCC: ABK64x64ToFloat(fCashCC),
+              lockedInQC: ABK64x64ToFloat(fLockedInValueQC),
               unpaidFundingCC: 0,
             });
             break;
@@ -267,15 +270,6 @@ export default class Distributor {
               JSON.parse(msg);
             this.markPremium.set(symbol, markPremium);
             this.midPremium.set(symbol, midPremium);
-            break;
-          }
-
-          case "UpdateUnitAccumulatedFundingEvent": {
-            const {
-              symbol,
-              unitAccumulatedFundingCC,
-            }: UpdateUnitAccumulatedFundingMsg = JSON.parse(msg);
-            this.unitAccumulatedFunding.set(symbol, unitAccumulatedFundingCC);
             break;
           }
 
@@ -305,8 +299,17 @@ export default class Distributor {
           }
 
           case "TradeEvent": {
-            const { symbol, digest, trader }: TradeMsg = JSON.parse(msg);
+            const { perpetualId, symbol, digest, trader }: TradeMsg =
+              JSON.parse(msg);
             this.removeOrder(symbol, digest, "removing executed order", trader);
+            const unitAccumulatedFundingCC = ABK64x64ToFloat(
+              (
+                await this.md
+                  .getReadOnlyProxyInstance()
+                  .getPerpetual(perpetualId)
+              ).fUnitAccumulatedFunding
+            );
+            this.unitAccumulatedFunding.set(symbol, unitAccumulatedFundingCC);
             break;
           }
 

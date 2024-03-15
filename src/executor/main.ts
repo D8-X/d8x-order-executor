@@ -28,17 +28,18 @@ async function run() {
     `\nStarting ${addr.length} bots with addresses ${addr.join("\n")}`
   );
 
-  const liquidator = new Executor(treasuryPK, pk, cfg);
+  const bot = new Executor(treasuryPK, pk, cfg);
 
   try {
-    await liquidator.fundWallets(addr);
+    await bot.fundWallets(addr);
   } catch (e) {
+    console.log(e);
     await sleep(60_000);
     process.exit(1);
   }
-  await liquidator.initialize();
+  await bot.initialize();
 
-  liquidator.run();
+  bot.run();
 }
 
 run();

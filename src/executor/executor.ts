@@ -226,7 +226,7 @@ export default class Executor {
         this.config.rewardsAddress,
         undefined,
         {
-          gasLimit: 20_000_000,
+          gasLimit: this.config.gasLimit,
         }
       );
       console.log({
@@ -306,22 +306,39 @@ export default class Executor {
         time: new Date(Date.now()).toISOString(),
       });
       // check if order is gone
-      const ordr = await this.bots[botIdx].api.getOrderById(symbol, digest);
+      let ordr = await this.bots[botIdx].api.getOrderById(symbol, digest);
       if (ordr != undefined && ordr.quantity > 0) {
-        // order is still on chain - maybe still processing, so wait, then unlock if it hasn't been trashed
+        // order is still on chain - maybe still processing, so wait and check again,
+        // then unlock if it hasn't been trashed
+        console.log({
+          info: "order is still on-chain",
+          symbol: symbol,
+          executor: addr,
+          digest: digest,
+          time: new Date(Date.now()).toISOString(),
+        });
         await sleep(10_000);
         this.bots[botIdx].busy = false;
-        if (!this.trash.has(digest)) {
-          this.locked.delete(digest);
+        ordr = await this.bots[botIdx].api.getOrderById(symbol, digest);
+        if (ordr != undefined && ordr.quantity > 0) {
+          if (!this.trash.has(digest)) {
+            this.locked.delete(digest);
+          }
+          return BotStatus.Error;
         }
-        return BotStatus.Error;
-      } else {
-        this.bots[botIdx].busy = false;
-        // order is gone, relock to be safe
-        this.locked.add(digest);
-        this.trash.add(digest);
-        return BotStatus.Ready;
       }
+      this.bots[botIdx].busy = false;
+      // order is gone, relock to be safe
+      this.locked.add(digest);
+      this.trash.add(digest);
+      console.log({
+        info: "order is gone",
+        symbol: symbol,
+        executor: addr,
+        digest: digest,
+        time: new Date(Date.now()).toISOString(),
+      });
+      return BotStatus.Ready;
     }
   }
 
@@ -394,7 +411,7 @@ export default class Executor {
     const treasury = new Wallet(this.treasury, provider);
     const gasPriceWei = await provider.getGasPrice();
     // min balance should cover 1e7 gas
-    const minBalance = gasPriceWei.mul(1e9); // 10 x 10 million gas x 1 gas in wei = min balance in wei
+    const minBalance = gasPriceWei.mul(this.config.gasLimit * 5);
     for (let addr of addressArray) {
       const botBalance = await provider.getBalance(addr);
       const treasuryBalance = await provider.getBalance(treasury.address);
@@ -404,11 +421,17 @@ export default class Executor {
         botAddress: addr,
         botBalance: utils.formatUnits(botBalance),
         minBalance: utils.formatUnits(minBalance),
+        needsFunding: botBalance.lt(minBalance),
       });
       if (botBalance.lt(minBalance)) {
         // transfer twice the min so it doesn't transfer every time
         const transferAmount = minBalance.mul(2).sub(botBalance);
         if (transferAmount.lt(treasuryBalance)) {
+          console.log({
+            info: "transferring funds...",
+            to: addr,
+            transferAmount: utils.formatUnits(transferAmount),
+          });
           const tx = await treasury.sendTransaction({
             to: addr,
             value: transferAmount,
@@ -420,9 +443,11 @@ export default class Executor {
           });
         } else {
           throw new Error(
-            `insufficient balance in treasury ${utils.formatUnits(
+            `insufficient balance in treasury (${utils.formatUnits(
               treasuryBalance
-            )}; send funds to ${treasury.address}`
+            )}); send at least ${utils.formatUnits(transferAmount)} to ${
+              treasury.address
+            }`
           );
         }
       }

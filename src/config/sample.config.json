@@ -18,6 +18,7 @@
     "fetchPricesIntervalSecondsMin": 10,
     "brokerReconnectIntervalMaxSeconds": 28800,
     "maxGasPriceGWei": 1,
+    "gasLimit": 2000000,
     "priceFeedEndpoints": [
       { "type": "pyth", "endpoints": ["https://hermes-beta.pyth.network/api"] }
     ]
@@ -41,6 +42,7 @@
     "fetchPricesIntervalSecondsMin": 10,
     "brokerReconnectIntervalMaxSeconds": 28800,
     "maxGasPriceGWei": 1000,
+    "gasLimit": 1000000,
     "priceFeedEndpoints": [
       { "type": "odin", "endpoints": ["https://odin.quantena.tech/api"] }
     ]

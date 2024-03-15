@@ -34,7 +34,6 @@ import {
   TransferAddressToEvent,
   UpdateMarginAccountEvent,
   UpdateMarkPriceEvent,
-  UpdateUnitAccumulatedFundingEvent,
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
 import {
   ExecutionFailedEvent,
@@ -292,12 +291,7 @@ export default class BlockhainListener {
       (
         perpetualId: number,
         trader: string,
-        positionId: string,
-        fPositionBC: BigNumber,
-        fCashCC: BigNumber,
-        fLockedInValueQC: BigNumber,
         fFundingPaymentCC: BigNumber,
-        fOpenInterestBC: BigNumber,
         event: UpdateMarginAccountEvent
       ) => {
         const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
@@ -305,9 +299,9 @@ export default class BlockhainListener {
           perpetualId: perpetualId,
           symbol: symbol,
           traderAddr: trader,
-          positionBC: ABK64x64ToFloat(fPositionBC),
-          cashCC: ABK64x64ToFloat(fCashCC),
-          lockedInQC: ABK64x64ToFloat(fLockedInValueQC),
+          // positionBC: ABK64x64ToFloat(fPositionBC),
+          // cashCC: ABK64x64ToFloat(fCashCC),
+          // lockedInQC: ABK64x64ToFloat(fLockedInValueQC),
           fundingPaymentCC: ABK64x64ToFloat(fFundingPaymentCC),
           block: event.blockNumber,
           hash: event.transactionHash,
@@ -348,34 +342,10 @@ export default class BlockhainListener {
     );
 
     proxy.on(
-      "UpdateUnitAccumulatedFunding",
-      (
-        perpetualId: number,
-        fUnitAccumulativeFundingCC: BigNumber,
-        event: UpdateUnitAccumulatedFundingEvent
-      ) => {
-        const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
-        const msg: UpdateUnitAccumulatedFundingMsg = {
-          perpetualId: perpetualId,
-          symbol: symbol,
-          unitAccumulatedFundingCC: ABK64x64ToFloat(fUnitAccumulativeFundingCC),
-          block: event.blockNumber,
-          hash: event.transactionHash,
-          id: `${event.transactionHash}:${event.logIndex}`,
-        };
-        this.redisPubClient.publish(
-          "UpdateUnitAccumulatedFundingEvent",
-          JSON.stringify(msg)
-        );
-      }
-    );
-
-    proxy.on(
       "Trade",
       (
         perpetualId: number,
         trader: string,
-        positionId: string,
         scOrder: IPerpetualOrder.OrderStructOutput,
         orderDigest: string,
         newPositionSizeBC: BigNumber,
