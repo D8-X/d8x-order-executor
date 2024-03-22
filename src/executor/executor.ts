@@ -227,6 +227,9 @@ export default class Executor {
         undefined,
         {
           gasLimit: this.config.gasLimit,
+          gasPrice: await this.providers[
+            Math.floor(Math.random() * this.providers.length)
+          ].getGasPrice(),
         }
       );
       console.log({
@@ -284,7 +287,7 @@ export default class Executor {
         executor: receipt.from,
         digest: digest,
         block: receipt.blockNumber,
-        gasUsed: `${utils.formatUnits(receipt.cumulativeGasUsed, "wei")} wei`,
+        gasUsed: `${utils.formatUnits(receipt.gasUsed, "wei")} wei`,
         hash: receipt.transactionHash,
         time: new Date(Date.now()).toISOString(),
       });

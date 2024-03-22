@@ -260,7 +260,6 @@ export default class BlockhainListener {
         perpetualId: number,
         liquidator: string,
         trader: string,
-        positionId: string,
         amountLiquidatedBC: BigNumber,
         liquidationPrice: BigNumber,
         newPositionSizeBC: BigNumber,
