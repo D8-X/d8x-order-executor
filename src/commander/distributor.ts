@@ -54,7 +54,7 @@ export default class Distributor {
   private brokerOrders: Map<string, Map<string, number>> = new Map(); // symbol => (digest => received ts)
   private pxSubmission: Map<
     string,
-    { submission: PriceFeedSubmission; pxS2S3: [number, number] }
+    { idxPrices: number[]; mktClosed: boolean[] }
   > = new Map(); // symbol => px submission
   private markPremium: Map<string, number> = new Map();
   private midPremium: Map<string, number> = new Map();
@@ -113,6 +113,7 @@ export default class Distributor {
     }
 
     const info = await this.md.exchangeInfo();
+    console.log(JSON.stringify(info, undefined, "  "));
 
     this.symbols = info.pools
       .filter(({ isRunning }) => isRunning)
@@ -123,6 +124,7 @@ export default class Distributor {
         )
       )
       .flat();
+    console.log({ symbols: this.symbols });
 
     for (const symbol of this.symbols) {
       // static info
@@ -138,7 +140,7 @@ export default class Distributor {
       // price info
       this.pxSubmission.set(
         symbol,
-        await this.md.fetchPriceSubmissionInfoForPerpetual(symbol)
+        await this.md.fetchPricesForPerpetual(symbol)
       );
       // mark premium, accumulated funding per BC unit
       const perpState = await this.md
@@ -507,16 +509,17 @@ export default class Distributor {
       ).length,
       offChain: orderArray.filter(({ order }) => order == undefined).length,
     };
-    if (orderBundles.size > 0) {
-      // found some orders, report
-      console.log({
-        info: "open orders",
-        symbol: symbol,
-        time: new Date(Date.now()).toISOString(),
-        ...numOrders,
-        waited: `${Date.now() - tsStart} ms`,
-      });
-    }
+    // if (orderBundles.size > 0) {
+    // found some orders, report
+    console.log({
+      info: "open orders",
+      symbol: symbol,
+      orderBook: this.md!.getOrderBookContract(symbol)!.address,
+      time: new Date(Date.now()).toISOString(),
+      ...numOrders,
+      waited: `${Date.now() - tsStart} ms`,
+    });
+    // }
 
     await this.refreshAccounts(symbol);
   }
@@ -614,11 +617,7 @@ export default class Distributor {
     ) {
       let tsStart = Date.now();
       this.pricesFetchedAt.set(symbol, tsStart);
-      const newPxSubmission =
-        await this.md.fetchPriceSubmissionInfoForPerpetual(symbol);
-      if (!this.checkSubmissionsInSync(newPxSubmission.submission.timestamps)) {
-        return;
-      }
+      const newPxSubmission = await this.md.fetchPricesForPerpetual(symbol);
       this.pxSubmission.set(symbol, newPxSubmission);
     }
   }
@@ -645,7 +644,7 @@ export default class Distributor {
     }
 
     const curPx = this.pxSubmission.get(symbol)!;
-    if (curPx.submission.isMarketClosed.some((x) => x)) {
+    if (curPx.mktClosed.some((x) => x)) {
       return;
     }
 
@@ -664,17 +663,17 @@ export default class Distributor {
       ) {
         continue;
       }
-      // check oracle time
-      if (
-        orderBundle.order?.submittedTimestamp &&
-        orderBundle.order?.submittedTimestamp >
-          Math.min(...curPx.submission.timestamps)
-      ) {
-        continue;
-      }
+      // // check oracle time
+      // if (
+      //   orderBundle.order?.submittedTimestamp &&
+      //   orderBundle.order?.submittedTimestamp >
+      //     Math.min(...curPx.submission.timestamps)
+      // ) {
+      //   continue;
+      // }
       const isExecOnChain = this.isExecutableIfOnChain(
         orderBundle,
-        curPx.pxS2S3
+        curPx.idxPrices as [number, number | undefined]
       );
       if (isExecOnChain) {
         await this.sendCommand(command);
