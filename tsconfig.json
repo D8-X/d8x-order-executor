@@ -7,6 +7,7 @@
     "outDir": "./dist/src",
     "strict": true,
     "resolveJsonModule": true,
+    "sourceMap": true,
     "forceConsistentCasingInFileNames": true /* Ensure that casing is correct in imports. */,
     "skipLibCheck": true /* Skip type checking all .d.ts files. */
   },
