@@ -16,6 +16,11 @@ export default class Executor {
   private privateKey: string[];
   private config: ExecutorConfig;
 
+  // gas limit tuning
+  private originalGasLimit: number;
+  private gasLimitIncreaseFactor = 1.25;
+  protected gasLimitIncreaseCounter: number = 0;
+
   // state
   private q: Set<string> = new Set();
   private locked: Set<string> = new Set();
@@ -31,15 +36,30 @@ export default class Executor {
     this.treasury = pkTreasury;
     this.privateKey = pkLiquidators;
     this.config = config;
+    this.originalGasLimit = this.config.gasLimit;
     this.redisSubClient = constructRedis("executorSubClient");
     this.providers = this.config.rpcExec.map(
       (url) => new providers.StaticJsonRpcProvider(url)
     );
+
+    const sdkConfig = PerpetualDataHandler.readSDKConfig(this.config.sdkConfig);
+
+    // Use price feed endpoints from user specified config
+    if (this.config.priceFeedEndpoints.length > 0) {
+      sdkConfig.priceFeedEndpoints = this.config.priceFeedEndpoints;
+      console.log(
+        "Using user specified price feed endpoints",
+        sdkConfig.priceFeedEndpoints
+      );
+    } else {
+      console.warn(
+        "No price feed endpoints specified in config. Using default endpoints from SDK.",
+        sdkConfig.priceFeedEndpoints
+      );
+    }
+
     this.bots = this.privateKey.map((pk) => ({
-      api: new OrderExecutorTool(
-        PerpetualDataHandler.readSDKConfig(this.config.sdkConfig),
-        pk
-      ),
+      api: new OrderExecutorTool(sdkConfig, pk),
       busy: false,
     }));
   }
@@ -254,26 +274,40 @@ export default class Executor {
         digest: digest,
         time: new Date(Date.now()).toISOString(),
       });
-      if (error.includes("insufficient funds")) {
-        this.locked.delete(digest);
-        await this.fundWallets([addr]);
-        this.bots[botIdx].busy = false;
-        return BotStatus.PartialError;
-      } else if (error.includes("order not found")) {
-        // the order stays locked:
-        // if we're here it was on chain at some point, so now it's gone
-        this.trash.add(digest);
-        this.bots[botIdx].busy = false;
-        return BotStatus.PartialError;
-      } else if (error.includes("gas price too low")) {
-        // it happens sometimes
-        await sleep(1_000);
-        this.locked.delete(digest);
-        this.bots[botIdx].busy = false;
-        return BotStatus.PartialError;
-      } else {
-        // something else, prob rpc
-        throw e;
+
+      switch (true) {
+        case error.includes("insufficient funds"):
+          this.locked.delete(digest);
+          await this.fundWallets([addr]);
+          this.bots[botIdx].busy = false;
+          return BotStatus.PartialError;
+        case error.includes("order not found"):
+          // the order stays locked: if we're here it was on chain at some
+          // point, so now it's gone
+          this.trash.add(digest);
+          this.bots[botIdx].busy = false;
+          return BotStatus.PartialError;
+        case error.includes("gas price too low"):
+          // it happens sometimes
+          await sleep(1_000);
+          this.locked.delete(digest);
+          this.bots[botIdx].busy = false;
+          return BotStatus.PartialError;
+        case error.includes("intrinsic gas too low"):
+          // this can happen on arbitrum, attempt to rerun the tx with increased
+          // gas limit
+          this.config.gasLimit *= this.gasLimitIncreaseFactor;
+          this.gasLimitIncreaseCounter++;
+          console.log("intrinsic gas too low, increasing gas limit", {
+            new_gas_limit: this.config.gasLimit,
+          });
+          this.locked.delete(digest);
+          this.bots[botIdx].busy = false;
+          return BotStatus.PartialError;
+
+        default:
+          // something else, prob rpc
+          throw e;
       }
     }
 
@@ -291,6 +325,12 @@ export default class Executor {
         hash: receipt.transactionHash,
         time: new Date(Date.now()).toISOString(),
       });
+
+      if (this.gasLimitIncreaseCounter > 0) {
+        this.config.gasLimit = this.originalGasLimit;
+        this.gasLimitIncreaseCounter = 0;
+      }
+
       // order was executed
       this.bots[botIdx].busy = false;
       this.locked.add(digest);
