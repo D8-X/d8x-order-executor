@@ -233,17 +233,8 @@ export default class Executor {
       .fetchPriceSubmissionInfoForPerpetual(symbol)
       .then((px) => Math.min(...px.submission.timestamps));
     if (oracleTS < onChainTS) {
-      console.log({
-        reason: "outdated oracles",
-        symbol: symbol,
-        digest: digest,
-        time: new Date(Date.now()).toISOString(),
-      });
-      this.bots[botIdx].busy = false;
-      if (!this.trash.has(digest)) {
-        this.locked.delete(digest);
-      }
-      return BotStatus.PartialError;
+      // let oracle cache expire before trying
+      await sleep(1_000);
     }
 
     // submit txn
