@@ -248,6 +248,9 @@ export default class Executor {
     });
     let tx: ContractTransaction;
     try {
+      const feeData = await this.providers[
+        Math.floor(Math.random() * this.providers.length)
+      ].getFeeData();
       tx = await this.bots[botIdx].api.executeOrders(
         symbol,
         [digest],
@@ -255,9 +258,8 @@ export default class Executor {
         undefined,
         {
           gasLimit: this.config.gasLimit,
-          gasPrice: await this.providers[
-            Math.floor(Math.random() * this.providers.length)
-          ].getGasPrice(),
+          gasPrice: feeData.gasPrice ?? undefined,
+          maxFeePerGas: feeData.gasPrice ?? undefined,
         }
       );
       console.log({
