@@ -207,18 +207,34 @@ export default class Executor {
     this.bots[botIdx].busy = true;
     this.locked.add(digest);
 
-    const isOnChain = await this.bots[botIdx].api
+    const onChainTS = await this.bots[botIdx].api
       .getOrderById(symbol, digest)
       .then((ordr) => {
         if (ordr != undefined && ordr.quantity > 0) {
-          return true;
+          return ordr.submittedTimestamp;
         }
-        return false;
       });
 
-    if (!isOnChain) {
+    if (!onChainTS) {
       console.log({
         reason: "order not found",
+        symbol: symbol,
+        digest: digest,
+        time: new Date(Date.now()).toISOString(),
+      });
+      this.bots[botIdx].busy = false;
+      if (!this.trash.has(digest)) {
+        this.locked.delete(digest);
+      }
+      return BotStatus.PartialError;
+    }
+    // check oracles
+    const oracleTS = await this.bots[botIdx].api
+      .fetchPriceSubmissionInfoForPerpetual(symbol)
+      .then((px) => Math.min(...px.submission.timestamps));
+    if (oracleTS < onChainTS) {
+      console.log({
+        reason: "outdated oracles",
         symbol: symbol,
         digest: digest,
         time: new Date(Date.now()).toISOString(),
@@ -236,6 +252,7 @@ export default class Executor {
       symbol: symbol,
       executor: this.bots[botIdx].api.getAddress(),
       digest: digest,
+      oracleTimestamp: oracleTS,
       time: new Date(Date.now()).toISOString(),
     });
     let tx: ContractTransaction;
