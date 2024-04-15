@@ -8,7 +8,6 @@ services:
       context: .
       dockerfile: ./src/executor/Dockerfile
     environment:
-      EARNINGS_WALLET: ${EARNINGS_WALLET}
       CHAIN_ID: ${CHAIN_ID}
       REDIS_URL: "redis://:${REDIS_PASSWORD}@redis:6379/0"
       PEER_COUNT: ${PEER_COUNT}
