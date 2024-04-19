@@ -1,0 +1,12 @@
+groups:
+- name: executor_alerts
+  rules:
+  - alert: TooManyExecuteOrderErrors
+    expr: sum(increase(execute_order_errors{type="too_low_gas_price"}[1m])) > 5
+    for: 1m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Too many execute order errors with too low gas price"
+      description: "The number of execute order errors with too low gas price has exceeded 5 in the last 5 minutes."
+
