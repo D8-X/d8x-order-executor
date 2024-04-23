@@ -40,12 +40,6 @@ export default class Executor {
     this.metrics = new ExecutorMetrics();
     this.metrics.start();
 
-    (async () => {
-      setInterval(() => {
-        this.metrics.incrementGasPriceTooLow();
-      }, 100);
-    })();
-
     this.treasury = pkTreasury;
     this.privateKey = pkLiquidators;
     this.config = config;
