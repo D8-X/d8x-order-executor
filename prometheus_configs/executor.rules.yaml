@@ -2,7 +2,7 @@ groups:
 - name: executor_alerts
   rules:
   - alert: TooManyExecuteOrderErrors
-    expr: sum(increase(execute_order_errors{type="too_low_gas_price"}[1m])) > 5
+    expr: sum(increase(execute_order_errors{type="too_low_gas_price"}[1m])) > 2
     for: 1m
     labels:
       severity: warning
