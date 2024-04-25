@@ -9,10 +9,10 @@
   dependencies:
     "@jridgewell/trace-mapping" "0.3.9"
 
-"@d8x/perpetuals-sdk@1.1.19":
-  version "1.1.19"
-  resolved "https://registry.yarnpkg.com/@d8x/perpetuals-sdk/-/perpetuals-sdk-1.1.19.tgz#b39c3d152923954b74b962ffd989bfb23ea2b94a"
-  integrity sha512-q0iUVVKkClg2o7fpRny/U8r2THKCEobBv7EfA4ZKRivo9OQ5yUuVuW2LTackD9HoeSj7D7tiqMuSKLPDCU3/DA==
+"@d8x/perpetuals-sdk@1.1.20":
+  version "1.1.20"
+  resolved "https://registry.yarnpkg.com/@d8x/perpetuals-sdk/-/perpetuals-sdk-1.1.20.tgz#497e8bc7f51a5e8b37760dc3828efa3b6f5f84d0"
+  integrity sha512-J1h21uBjmpyk0dHMpEXl/1SFZSnWbEYUtv/stSYGPAdP8m9qpbRoBjXMS7z0ZJ9otY98m2siADKOtcvN1ih20Q==
   dependencies:
     "@ethersproject/abi" "^5.7.0"
     "@ethersproject/abstract-signer" "^5.7.0"
