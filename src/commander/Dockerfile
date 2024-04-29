@@ -12,6 +12,8 @@ RUN yarn install
 
 COPY . .
 
+# RUN echo -e "SDK_CONFIG=${SDK_CONFIG}\n""REDIS_URL=${REDIS_URL}\n" > .env
+
 RUN yarn build
 
-CMD yarn start-executor
+CMD yarn start-commander
