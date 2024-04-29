@@ -44,7 +44,7 @@
     "maxGasPriceGWei": 1000,
     "gasLimit": 1000000,
     "priceFeedEndpoints": [
-      { "type": "odin", "endpoints": ["https://odin.quantena.tech/api"] }
+      { "type": "odin", "endpoints": ["https://odin.d8x.xyz/api"] }
     ]
   },
   {
