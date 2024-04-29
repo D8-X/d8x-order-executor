@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@d8x/perpetuals-sdk": "1.1.16",
+    "@d8x/perpetuals-sdk": "1.1.23",
     "@pythnetwork/pyth-sdk-solidity": "^2.2.1",
     "@types/ws": "^8.5.5",
     "dotenv": "^16.0.3",
