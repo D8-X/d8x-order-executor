@@ -61,6 +61,14 @@ services:
   # Prometheus with alertmanager
   prometheus:
     image: prom/prometheus:latest
+    command: [
+        "--config.file=/etc/prometheus/prometheus.yml",
+        "--storage.tsdb.path=/prometheus",
+        "--web.console.libraries=/usr/share/prometheus/console_libraries",
+        "--web.console.templates=/usr/share/prometheus/consoles",
+        # Enable external label expansion
+        "--enable-feature=expand-external-labels",
+      ]
     ports:
       - 127.0.0.1:9090:9090
     volumes:
@@ -71,6 +79,9 @@ services:
       - source: rules_1
         target: /etc/prometheus/rules/executor.rules.yaml
     restart: always
+    environment:
+      PROMETHEUS_DEPLOYMENT_NAME: ${PROMETHEUS_DEPLOYMENT_NAME}
+      PROMETHEUS_SERVER_IP: ${PROMETHEUS_SERVER_IP}
   alertmanager:
     image: prom/alertmanager:latest
     ports:

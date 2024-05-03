@@ -5,7 +5,7 @@ route:
   group_by: ['alertname', 'severity']
   group_wait: 10s
   group_interval: 5m
-  repeat_interval: 3h
+  repeat_interval: 30m
   receiver: 'slack'
 
 receivers:
@@ -13,11 +13,11 @@ receivers:
   slack_configs:
   - send_resolved: true
     username: 'Prometheus'
-    channel: '#prometheus-alerts'
+    channel: '#mantas-testing'
     # Slack ur file should be mounted at this specified path
     api_url_file: /etc/alertmanager/slack_api_url.txt
-    title: '{{ .CommonLabels.alertname }}'
-    text: '{{ .CommonAnnotations.summary }}'
+    title: '{{ .CommonAnnotations.title }}'
+    text: '{{ .CommonAnnotations.server_info }}'
 
 inhibit_rules:
 - source_match:
