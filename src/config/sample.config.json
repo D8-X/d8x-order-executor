@@ -48,6 +48,30 @@
     ]
   },
   {
+    "sdkConfig": "xlayer",
+    "bots": 1,
+    "rewardsAddress": "",
+    "brokerWS": [],
+    "rpcExec": ["https://x1testrpc.okx.com", "https://testrpc.x1.tech"],
+    "rpcWatch": ["https://x1testrpc.okx.com", "https://testrpc.x1.tech"],
+    "rpcListenHttp": ["https://x1testrpc.okx.com", "https://testrpc.x1.tech"],
+    "rpcListenWs": ["wss://x1testws.okx.com", "wss://testws.x1.tech"],
+    "waitForBlockSeconds": 30,
+    "healthCheckSeconds": 2000,
+    "refreshOrdersIntervalSecondsMax": 2000,
+    "refreshOrdersIntervalSecondsMin": 10,
+    "executeIntervalSecondsMax": 60,
+    "executeIntervalSecondsMin": 5,
+    "refreshOrdersSecondsMax": 28800,
+    "fetchPricesIntervalSecondsMin": 10,
+    "brokerReconnectIntervalMaxSeconds": 28800,
+    "maxGasPriceGWei": 1000,
+    "gasLimit": 1000000,
+    "priceFeedEndpoints": [
+      { "type": "odin", "endpoints": ["https://odin.d8x.xyz/api"] }
+    ]
+  },
+  {
     "sdkConfig": "arbitrumSepolia",
     "bots": 2,
     "rewardsAddress": "",
