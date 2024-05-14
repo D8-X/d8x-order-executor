@@ -234,7 +234,20 @@ export default class Executor {
       .then((px) => Math.min(...px.submission.timestamps));
     if (oracleTS < onChainTS) {
       // let oracle cache expire before trying
+      console.log({
+        reason: "outdated off-chain oracle(s)",
+        symbol: symbol,
+        digest: digest,
+        time: new Date(Date.now()).toISOString(),
+      });
+      // bot can continue
+      this.bots[botIdx].busy = false;
+      // order stays locked for another second
       await sleep(1_000);
+      if (!this.trash.has(digest)) {
+        this.locked.delete(digest);
+      }
+      return BotStatus.PartialError;
     }
 
     // submit txn
