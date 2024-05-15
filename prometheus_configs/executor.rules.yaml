@@ -1,0 +1,46 @@
+groups:
+- name: executor_alerts
+  rules:
+
+  - alert: TooLowGasPriceError
+    expr: increase(execute_order_errors{type="too_low_gas_price"}[1m]) > 1
+    # Do not wait to fire the alert when the condition is met
+    # for: 1m
+    labels:
+      severity: warning
+    annotations:
+      title: "Too low gas price error (executor)"
+      server_info: "Deployment {{ $externalLabels.deployment_name }} | Server IP {{ $externalLabels.server_ip }}"
+
+  - alert: OrderNotFoundError
+    expr: increase(execute_order_errors{type="order_not_found"}[1m]) > 1
+    labels:
+      severity: warning
+    annotations:
+      title: "Order not found error (executor)"
+      server_info: "Deployment {{ $externalLabels.deployment_name }} | Server IP {{ $externalLabels.server_ip }}"
+
+  - alert: InsufficientFundsError
+    expr: increase(execute_order_errors{type="insufficient_funds"}[1m]) > 1
+    labels:
+      severity: warning
+    annotations:
+      title: "Insufficient funds error (executor)"
+      server_info: "Deployment {{ $externalLabels.deployment_name }} | Server IP {{ $externalLabels.server_ip }}"
+
+  - alert: TooLowIntrinsicGasError
+    expr: increase(execute_order_errors{type="too_low_intrinsic_gas"}[1m]) > 1
+    labels:
+      severity: warning
+    annotations:
+      title: "Too low intrinsic gas error (executor)"
+      server_info: "Deployment {{ $externalLabels.deployment_name }} | Server IP {{ $externalLabels.server_ip }}"
+
+  - alert: FailedOrderConfirmationError
+    expr: increase(execute_order_failed_confirmations{}[1m]) > 1
+    labels:
+      severity: warning
+    annotations:
+      title: "Order execution tx confirmation failure (executor)"
+      server_info: "Deployment {{ $externalLabels.deployment_name }} | Server IP {{ $externalLabels.server_ip }}"
+
