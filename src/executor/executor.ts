@@ -4,6 +4,8 @@ import { providers } from "ethers";
 import { Redis } from "ioredis";
 import { constructRedis, executeWithTimeout, sleep } from "../utils";
 import { BotStatus, ExecutorConfig, ExecuteOrderMsg, TradeMsg } from "../types";
+import * as promClient from "prom-client";
+import { ExecutorMetrics } from "./metrics";
 
 export default class Executor {
   // objects
@@ -28,11 +30,16 @@ export default class Executor {
   private timesTried: Map<string, number> = new Map();
   private trash: Set<string> = new Set();
 
+  protected metrics: ExecutorMetrics;
+
   constructor(
     pkTreasury: string,
     pkLiquidators: string[],
     config: ExecutorConfig
   ) {
+    this.metrics = new ExecutorMetrics();
+    this.metrics.start();
+
     this.treasury = pkTreasury;
     this.privateKey = pkLiquidators;
     this.config = config;
@@ -63,7 +70,6 @@ export default class Executor {
       busy: false,
     }));
   }
-
   /**
    * Attempts to connect to the blockchain using all given RPC providers until one works.
    * An error is thrown if none of the providers works.
@@ -300,23 +306,27 @@ export default class Executor {
 
       switch (true) {
         case error.includes("insufficient funds"):
+          this.metrics.incrementInsufficientFunds();
           this.locked.delete(digest);
           await this.fundWallets([addr]);
           this.bots[botIdx].busy = false;
           return BotStatus.PartialError;
         case error.includes("order not found"):
+          this.metrics.incrementOrderNotFound();
           // the order stays locked: if we're here it was on chain at some
           // point, so now it's gone
           this.trash.add(digest);
           this.bots[botIdx].busy = false;
           return BotStatus.PartialError;
         case error.includes("gas price too low"):
+          this.metrics.incrementGasPriceTooLow();
           // it happens sometimes
           await sleep(1_000);
           this.locked.delete(digest);
           this.bots[botIdx].busy = false;
           return BotStatus.PartialError;
         case error.includes("intrinsic gas too low"):
+          this.metrics.incrementGasPriceTooLow();
           // this can happen on arbitrum, attempt to rerun the tx with increased
           // gas limit
           this.config.gasLimit *= this.gasLimitIncreaseFactor;
@@ -348,6 +358,7 @@ export default class Executor {
         hash: receipt.transactionHash,
         time: new Date(Date.now()).toISOString(),
       });
+      this.metrics.incrementOrderExecutionConfirmations();
 
       if (this.gasLimitIncreaseCounter > 0) {
         this.config.gasLimit = this.originalGasLimit;
@@ -371,6 +382,7 @@ export default class Executor {
         digest: digest,
         time: new Date(Date.now()).toISOString(),
       });
+      this.metrics.incrementOrderExecutionFailedConfirmations();
       // check if order is gone
       let ordr = await this.bots[botIdx].api.getOrderById(symbol, digest);
       if (ordr != undefined && ordr.quantity > 0) {

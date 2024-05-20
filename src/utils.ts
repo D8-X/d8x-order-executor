@@ -119,3 +119,25 @@ export function flagToOrderType(
     return ORDER_TYPE_MARKET;
   }
 }
+
+export async function createRedisTimer(r: Redis, name: string) {
+  const d = new Date();
+  await r.rpush(name, d.getTime());
+
+  console.log(`[REDIS TIMER: ${name}] Started at ${d.toISOString()}`);
+}
+
+export async function subRedisTimer(r: Redis, name: string, info: string) {
+  const prev = await r.rpop(name);
+  const d = new Date();
+  if (prev !== null) {
+    const prevTimestamp = parseInt(prev);
+    const diff = (d.getTime() - prevTimestamp) / 1000;
+    console.log(
+      `[REDIS TIMER: ${name}] ${info} at ${d.toISOString()} sub from last: ${diff}s`
+    );
+
+    await r.rpush(name, prev);
+    await r.rpush(name, d.getTime());
+  }
+}

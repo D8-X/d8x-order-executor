@@ -40,3 +40,9 @@ Start all the liquidator bots on testnet by running
 ```
 $ sudo docker compose up --build -d
 ```
+
+# Prometheus setup
+
+## Slack webhook url
+Edit the `prometheus_alertmanager_slack_url.txt` file and paste your slack
+webhook url.

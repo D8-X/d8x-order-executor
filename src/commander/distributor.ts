@@ -738,14 +738,12 @@ export default class Distributor {
       .get(order.symbol)
       ?.get(order.trader)?.positionBC;
     const isBuy = order.order.side == BUY_SIDE;
-    if (
-      order.order.reduceOnly &&
-      order.order.type != ORDER_TYPE_MARKET &&
-      (traderPos == undefined ||
-        (traderPos > 0 && isBuy) ||
-        (traderPos < 0 && !isBuy))
-    ) {
-      return false;
+    if (order.order.reduceOnly && order.order.type != ORDER_TYPE_MARKET) {
+      return (
+        traderPos == undefined ||
+        (traderPos <= 0 && isBuy) ||
+        (traderPos >= 0 && !isBuy)
+      );
     }
     // dependencies
     if (order.order.parentChildOrderIds) {
