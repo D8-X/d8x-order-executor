@@ -654,6 +654,7 @@ export default class Distributor {
         symbol: orderBundle.symbol,
         digest: orderBundle.digest,
         trader: orderBundle.trader,
+        reduceOnly: orderBundle.order?.reduceOnly,
       };
       // check if it's too soon to process
       const msg = JSON.stringify(command);
@@ -702,6 +703,7 @@ export default class Distributor {
     symbol: string;
     digest: string;
     trader: string;
+    reduceOnly?: boolean;
   }) {
     // send command
     const msg = JSON.stringify(command);
@@ -737,13 +739,17 @@ export default class Distributor {
     const traderPos = this.openPositions
       .get(order.symbol)
       ?.get(order.trader)?.positionBC;
-    const isBuy = order.order.side == BUY_SIDE;
-    if (order.order.reduceOnly && order.order.type != ORDER_TYPE_MARKET) {
-      return (
-        traderPos == undefined ||
-        (traderPos <= 0 && isBuy) ||
-        (traderPos >= 0 && !isBuy)
-      );
+    const isBuy = order.order.side === BUY_SIDE;
+    if (order.order.reduceOnly) {
+      if (
+        traderPos === undefined ||
+        (traderPos < 0 && !isBuy) ||
+        (traderPos > 0 && isBuy)
+      ) {
+        return false;
+      } else if (traderPos === 0 || order.order.type === ORDER_TYPE_MARKET) {
+        return true;
+      }
     }
     // dependencies
     if (order.order.parentChildOrderIds) {
