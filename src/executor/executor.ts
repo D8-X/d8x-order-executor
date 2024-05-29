@@ -277,8 +277,12 @@ export default class Executor {
         undefined,
         {
           gasLimit: this.config.gasLimit,
-          gasPrice: feeData.gasPrice ?? undefined,
-          maxFeePerGas: feeData.gasPrice ?? undefined,
+          gasPrice: feeData.gasPrice
+            ? feeData.gasPrice.mul(110).div(100)
+            : undefined,
+          maxFeePerGas: feeData.maxFeePerGas
+            ? feeData.maxFeePerGas.mul(110).div(100)
+            : undefined,
         }
       );
       console.log({
