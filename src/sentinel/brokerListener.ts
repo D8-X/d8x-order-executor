@@ -138,7 +138,9 @@ export default class BackendListener {
             console.log(
               `${new Date(
                 Date.now()
-              ).toISOString()} Error subscribing to perpetual id ${perpId} via broker WS`
+              ).toISOString()} Error subscribing to perpetual id ${perpId} on broker WS ${
+                this.config.brokerWS[this.wsIndex]
+              }`
             );
           }
           break;

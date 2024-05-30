@@ -397,9 +397,17 @@ export default class Distributor {
     if (!this.openPositions.has(symbol)) {
       this.openPositions.set(symbol, new Map());
     }
-    if (position.positionBC !== 0) {
+
+    if (
+      position.positionBC !== 0 ||
+      [...(this.openOrders.get(symbol) ?? [])].findIndex(
+        ([digest, orderBundle]) => orderBundle.trader === position.address
+      ) >= 0
+    ) {
+      // trader has either an open position or open orders - track position
       this.openPositions.get(symbol)!.set(position.address, position);
     } else {
+      // untrack inactive trader
       this.openPositions.get(symbol)!.delete(position.address);
     }
   }
