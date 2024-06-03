@@ -11,7 +11,7 @@ route:
 receivers:
 - name: 'slack'
   slack_configs:
-  - send_resolved: true
+  - send_resolved: false
     username: 'Prometheus'
     channel: '#zbot-prometheus-alerts'
     # Slack ur file should be mounted at this specified path
