@@ -4,8 +4,8 @@ import { providers } from "ethers";
 import { Redis } from "ioredis";
 import { constructRedis, executeWithTimeout, sleep } from "../utils";
 import { BotStatus, ExecutorConfig, ExecuteOrderMsg, TradeMsg } from "../types";
-import * as promClient from "prom-client";
 import { ExecutorMetrics } from "./metrics";
+import { getTxRevertReason, sendTxRevertedMessage } from "./reverts";
 
 export default class Executor {
   // objects
@@ -387,6 +387,13 @@ export default class Executor {
         time: new Date(Date.now()).toISOString(),
       });
       this.metrics.incrementOrderExecutionFailedConfirmations();
+
+      // Send message to slack whenever there is a revert reason that interests
+      // us
+      const p =
+        this.providers[Math.floor(Math.random() * this.providers.length)];
+      sendTxRevertedMessage(getTxRevertReason(tx, p), tx.hash, digest, symbol);
+
       // check if order is gone
       let ordr = await this.bots[botIdx].api.getOrderById(symbol, digest);
       if (ordr != undefined && ordr.quantity > 0) {

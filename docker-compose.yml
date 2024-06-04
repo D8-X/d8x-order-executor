@@ -56,6 +56,8 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       SDK_CONFIG: ${SDK_CONFIG}
       SEED_PHRASE: ${SEED_PHRASE}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+      SERVER_IP: ${PROMETHEUS_SERVER_IP}
     restart: always
 
   # Prometheus with alertmanager
