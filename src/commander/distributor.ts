@@ -743,6 +743,24 @@ export default class Distributor {
     if (order.order.executionTimestamp > Date.now() / 1_000) {
       return false;
     }
+
+    // dependencies must be checked before reduce-only order checks, since there
+    // can be a case when a reduce-only order is dependent on another parent
+    // order. If this check would be done after reduce only check, in case
+    // traderPos === 0 order would still be sent off for execution which would
+    // cause dcpy not fulfilled error.
+    if (order.order.parentChildOrderIds) {
+      if (
+        order.order.parentChildOrderIds[0] == ZERO_ORDER_ID &&
+        this.openOrders
+          .get(order.symbol)
+          ?.has(order.order.parentChildOrderIds[1])
+      ) {
+        // dependency hasn't been cleared
+        return false;
+      }
+    }
+
     // reduce only
     const traderPos = this.openPositions
       .get(order.symbol)
@@ -757,18 +775,6 @@ export default class Distributor {
         return false;
       } else if (traderPos === 0 || order.order.type === ORDER_TYPE_MARKET) {
         return true;
-      }
-    }
-    // dependencies
-    if (order.order.parentChildOrderIds) {
-      if (
-        order.order.parentChildOrderIds[0] == ZERO_ORDER_ID &&
-        this.openOrders
-          .get(order.symbol)
-          ?.has(order.order.parentChildOrderIds[1])
-      ) {
-        // dependency hasn't been cleared
-        return false;
       }
     }
 
