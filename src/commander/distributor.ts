@@ -748,7 +748,7 @@ export default class Distributor {
     // can be a case when a reduce-only order is dependent on another parent
     // order. If this check would be done after reduce only check, in case
     // traderPos === 0 order would still be sent off for execution which would
-    // cause dcpy not fulfilled error.
+    // cause dpcy not fulfilled error.
     if (order.order.parentChildOrderIds) {
       if (
         order.order.parentChildOrderIds[0] == ZERO_ORDER_ID &&

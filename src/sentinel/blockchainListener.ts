@@ -4,7 +4,7 @@ import {
   LimitOrderBook,
   MarketData,
   PerpetualDataHandler,
-  ZERO_ADDRESS,
+  ZERO_ORDER_ID,
 } from "@d8x/perpetuals-sdk";
 import { BigNumber } from "@ethersproject/bignumber";
 import {
@@ -468,7 +468,7 @@ export default class BlockhainListener {
             const orderDependency = await ob.orderDependency(digest);
             if (orderDependency) {
               const [id1, id2] = [orderDependency[0], orderDependency[1]];
-              if (id1 !== ZERO_ADDRESS && id2 !== ZERO_ADDRESS) {
+              if (id1 !== ZERO_ORDER_ID || id2 !== ZERO_ORDER_ID) {
                 msg.order.parentChildOrderIds = [id1, id2];
               }
             }
