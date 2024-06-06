@@ -4,6 +4,7 @@ import {
   LimitOrderBook,
   MarketData,
   PerpetualDataHandler,
+  ZERO_ORDER_ID,
 } from "@d8x/perpetuals-sdk";
 import { BigNumber } from "@ethersproject/bignumber";
 import {
@@ -442,7 +443,7 @@ export default class BlockhainListener {
       .map((ob, i) => {
         ob.on(
           "PerpetualLimitOrderCreated",
-          (
+          async (
             perpetualId: number,
             trader: string,
             brokerAddr: string,
@@ -461,6 +462,17 @@ export default class BlockhainListener {
               hash: event.transactionHash,
               id: `${event.transactionHash}:${event.logIndex}`,
             };
+
+            // Include parent/child ids if order dependency is found. Order
+            // dependency is not included in PerpetualLimitOrderCreated event
+            const orderDependency = await ob.orderDependency(digest);
+            if (orderDependency) {
+              const [id1, id2] = [orderDependency[0], orderDependency[1]];
+              if (id1 !== ZERO_ORDER_ID || id2 !== ZERO_ORDER_ID) {
+                msg.order.parentChildOrderIds = [id1, id2];
+              }
+            }
+
             console.log({
               event: "PerpetualLimitOrderCreated",
               time: new Date(Date.now()).toISOString(),
