@@ -567,7 +567,7 @@ export default class BlockhainListener {
     try {
       for (let i = 0; i < this.orderDepFetchQueue.length; i++) {
         const [msg, ob] = this.orderDepFetchQueue[i];
-        if (newBlock > msg.block + 1) {
+        if (newBlock > msg.block) {
           // Include parent/child ids if order dependency is found. Order
           // dependency is not included in PerpetualLimitOrderCreated event
           const orderDependency = await ob.orderDependency(msg.digest);
