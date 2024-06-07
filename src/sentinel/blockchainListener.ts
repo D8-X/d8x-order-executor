@@ -3,6 +3,7 @@ import {
   IPerpetualManager__factory,
   LimitOrderBook,
   MarketData,
+  ORDER_TYPE_MARKET,
   PerpetualDataHandler,
   ZERO_ORDER_ID,
 } from "@d8x/perpetuals-sdk";
@@ -64,6 +65,14 @@ export default class BlockhainListener {
   private mode: ListeningMode = ListeningMode.Events;
   private lastBlockReceivedAt: number;
   private lastRpcIndex = { http: -1, ws: -1 };
+
+  // Orders waiting for order dependency info to be fetched on next block and
+  // their corresponding orderbook contract instances (for fetching dep info).
+  // Filled in PerpetualLimitOrderCreated listener (only non-market orders)
+  private orderDepFetchQueue: Array<
+    [PerpetualLimitOrderCreatedMsg, LimitOrderBook]
+  > = [];
+  private orderDepFetchQueueMutex = false;
 
   constructor(config: ExecutorConfig) {
     this.config = config;
@@ -248,6 +257,8 @@ export default class BlockhainListener {
       this.lastBlockReceivedAt = Date.now();
       this.redisPubClient.publish("block", blockNumber.toString());
       this.blockNumber = blockNumber;
+
+      this.processOrderDependencyQueue(blockNumber);
     });
 
     const proxy = IPerpetualManager__factory.connect(
@@ -463,26 +474,39 @@ export default class BlockhainListener {
               id: `${event.transactionHash}:${event.logIndex}`,
             };
 
-            // Include parent/child ids if order dependency is found. Order
-            // dependency is not included in PerpetualLimitOrderCreated event
-            const orderDependency = await ob.orderDependency(digest);
-            if (orderDependency) {
-              const [id1, id2] = [orderDependency[0], orderDependency[1]];
-              if (id1 !== ZERO_ORDER_ID || id2 !== ZERO_ORDER_ID) {
-                msg.order.parentChildOrderIds = [id1, id2];
-              }
-            }
-
             console.log({
-              event: "PerpetualLimitOrderCreated",
+              event: "PerpetualLimitOrderCreated - Received",
               time: new Date(Date.now()).toISOString(),
               mode: this.mode,
               ...msg,
             });
-            this.redisPubClient.publish(
-              "PerpetualLimitOrderCreatedEvent",
-              JSON.stringify(msg)
-            );
+
+            // Pass market orders to the distributor immediately, we might not
+            // really care about their dependencies at this point.
+            if (msg.order.type === ORDER_TYPE_MARKET) {
+              console.log({
+                event: "Sending market order to distributor",
+                time: new Date(Date.now()).toISOString(),
+                mode: this.mode,
+                ...msg,
+              });
+              this.sendOrderToDistributor(msg);
+              return;
+            }
+
+            console.log({
+              event: "Sending non market order to orderDependency fetch queue",
+              time: new Date(Date.now()).toISOString(),
+              digest,
+              trader,
+              brokerAddr,
+              blockNumber: event.blockNumber,
+              order: msg.order.type,
+            });
+            // Add to queue for fetching order dependency on next block. We do
+            // this "delay" because for some chains (xlayer) data is not
+            // available immediately.
+            this.orderDepFetchQueue.push([msg, ob]);
           }
         );
 
@@ -519,5 +543,61 @@ export default class BlockhainListener {
           }
         );
       });
+  }
+
+  public async sendOrderToDistributor(msg: PerpetualLimitOrderCreatedMsg) {
+    this.redisPubClient.publish(
+      "PerpetualLimitOrderCreatedEvent",
+      JSON.stringify(msg)
+    );
+  }
+
+  // processOrderDependencyQueue fetches order dependency info for non-market
+  // orders in orderDepFetchQueue after their creation block is in the past and
+  // sends processed orders to distributor. Delay of fetching order dependency
+  // is required for xlayer as it usually returns incorrect order dependency
+  // information immediately after order creation event is received.
+  public async processOrderDependencyQueue(newBlock: number) {
+    if (this.orderDepFetchQueueMutex) {
+      return;
+    }
+    this.orderDepFetchQueueMutex = true;
+
+    const sentIds: number[] = [];
+    try {
+      for (let i = 0; i < this.orderDepFetchQueue.length; i++) {
+        const [msg, ob] = this.orderDepFetchQueue[i];
+        if (newBlock > msg.block + 1) {
+          // Include parent/child ids if order dependency is found. Order
+          // dependency is not included in PerpetualLimitOrderCreated event
+          const orderDependency = await ob.orderDependency(msg.digest);
+          if (orderDependency) {
+            const [id1, id2] = [orderDependency[0], orderDependency[1]];
+            if (id1 !== ZERO_ORDER_ID || id2 !== ZERO_ORDER_ID) {
+              msg.order.parentChildOrderIds = [id1, id2];
+            }
+          }
+
+          console.log({
+            event: "Sending non market order to distributor",
+            time: new Date(Date.now()).toISOString(),
+            mode: this.mode,
+            ...msg,
+          });
+          this.sendOrderToDistributor(msg);
+          sentIds.push(i);
+        }
+      }
+    } catch (e) {
+      this.orderDepFetchQueueMutex = false;
+      console.log("processOrderDependencyQueue error", e);
+    }
+
+    // Remove sent orders from queue
+    this.orderDepFetchQueue = this.orderDepFetchQueue.filter(
+      (_, i) => !sentIds.includes(i)
+    );
+
+    this.orderDepFetchQueueMutex = false;
   }
 }
