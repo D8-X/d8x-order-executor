@@ -44,7 +44,7 @@ import Executor from "./executor";
 
 export default class Distributor {
   // objects
-  private md: MarketData;
+  public md: MarketData;
   private redisSubClient: Redis;
   private redisPubClient: Redis;
   private providers: providers.StaticJsonRpcProvider[];
@@ -52,7 +52,7 @@ export default class Distributor {
   // state
   private lastRefreshTime: Map<string, number> = new Map();
   private openPositions: Map<string, Map<string, Position>> = new Map(); // symbol => (trader => Position)
-  private openOrders: Map<string, Map<string, OrderBundle>> = new Map(); // symbol => (digest => order bundle)
+  public openOrders: Map<string, Map<string, OrderBundle>> = new Map(); // symbol => (digest => order bundle)
   private brokerOrders: Map<string, Map<string, number>> = new Map(); // symbol => (digest => received ts)
   private pxSubmission: Map<
     string,
@@ -737,7 +737,8 @@ export default class Distributor {
     // can be a case when a reduce-only order is dependent on another parent
     // order. If this check would be done after reduce only check, in case
     // traderPos === 0 order would still be sent off for execution which would
-    // cause dpcy not fulfilled error.
+    // cause dpcy not fulfilled error. Note that order dependencies are usually
+    // not available here and are checked on execution.
     if (order.order.parentChildOrderIds) {
       if (
         order.order.parentChildOrderIds[0] == ZERO_ORDER_ID &&

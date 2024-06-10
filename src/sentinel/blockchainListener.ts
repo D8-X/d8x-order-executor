@@ -465,13 +465,13 @@ export default class BlockhainListener {
 
             // Include parent/child ids if order dependency is found. Order
             // dependency is not included in PerpetualLimitOrderCreated event
-            const orderDependency = await ob.orderDependency(digest);
-            if (orderDependency) {
-              const [id1, id2] = [orderDependency[0], orderDependency[1]];
-              if (id1 !== ZERO_ORDER_ID || id2 !== ZERO_ORDER_ID) {
-                msg.order.parentChildOrderIds = [id1, id2];
-              }
-            }
+            // const orderDependency = await ob.orderDependency(digest);
+            // if (orderDependency) {
+            //   const [id1, id2] = [orderDependency[0], orderDependency[1]];
+            //   if (id1 !== ZERO_ORDER_ID || id2 !== ZERO_ORDER_ID) {
+            //     msg.order.parentChildOrderIds = [id1, id2];
+            //   }
+            // }
 
             console.log({
               event: "PerpetualLimitOrderCreated",

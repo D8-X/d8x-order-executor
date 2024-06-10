@@ -39,11 +39,15 @@ async function start() {
     process.exit(1);
   }
   await executor.initialize();
-  executor.run();
 
   const obj = new Distributor(cfg, executor);
   await obj.initialize();
+
+  // Set the managing distributor for our executor before running it
+  executor.setDistributor(obj);
+
   obj.run();
+  executor.run();
 }
 
 start();

@@ -1,4 +1,13 @@
-import { PerpetualDataHandler, OrderExecutorTool } from "@d8x/perpetuals-sdk";
+import {
+  PerpetualDataHandler,
+  OrderExecutorTool,
+  Order,
+  ZERO_ORDER_ID,
+  ORDER_TYPE_MARKET,
+  SmartContractOrder,
+  ZERO_ADDRESS,
+  LimitOrderBook,
+} from "@d8x/perpetuals-sdk";
 import { ContractTransaction, Wallet, utils } from "ethers";
 import { providers } from "ethers";
 import { Redis } from "ioredis";
@@ -11,6 +20,7 @@ import {
 } from "../types";
 import { ExecutorMetrics } from "./metrics";
 import { getTxRevertReason, sendTxRevertedMessage } from "./reverts";
+import Distributor from "./distributor";
 
 export default class Executor {
   // objects
@@ -36,6 +46,8 @@ export default class Executor {
   private trash: Set<string> = new Set();
 
   protected metrics: ExecutorMetrics;
+
+  protected distributor: Distributor | undefined;
 
   constructor(
     pkTreasury: string,
@@ -197,6 +209,51 @@ export default class Executor {
     });
   }
 
+  // Checks if onchainOrder has all its dependencies resolved and order
+  // dependency information is loaded.
+  private checkOrderDependenciesResolved(onchainOrder: Order): boolean {
+    if (onchainOrder.parentChildOrderIds) {
+      if (
+        onchainOrder.parentChildOrderIds[0] == ZERO_ORDER_ID &&
+        !this.distributor?.openOrders.has(onchainOrder.parentChildOrderIds[1])
+      ) {
+        return true;
+      }
+    }
+
+    // Market order is allowed to not have dependencies loaded. This might
+    // happen on xlayer as the data is not available immediately. Other orders
+    // should not be executed if dependencies are not loaded.
+    if (onchainOrder.type == ORDER_TYPE_MARKET) {
+      return true;
+    }
+
+    // All other orders must have their dependencies fetched.
+    return false;
+  }
+
+  // getOrderByIdWithDependencies loads order with its dependencies from the
+  // smart contract
+  private async getOrderByIdWithDependencies(
+    symbol: string,
+    digest: string,
+    selectedExecutorTool: OrderExecutorTool
+  ): Promise<Order | undefined> {
+    // We can't bundle retrieval of orderbook sc and order in one go from
+    // getOrderById, so therefore we do this twice here.
+    const ob = selectedExecutorTool.getOrderBookContract(symbol);
+    const order = await selectedExecutorTool.getOrderById(symbol, digest);
+
+    // Make sure dependencies are fetched after order is fetched to introduce a
+    // slight 1 network call delay (xlayer chain problem)
+    const deps = await ob.orderDependency(digest);
+    if (order && deps) {
+      order.parentChildOrderIds = [deps[0], deps[1]];
+    }
+
+    return order;
+  }
+
   /**
    * Executes an order using a given bot.
    * @param botIdx Index of wallet used
@@ -218,13 +275,18 @@ export default class Executor {
     this.bots[botIdx].busy = true;
     this.locked.add(digest);
 
-    const onChainTS = await this.bots[botIdx].api
-      .getOrderById(symbol, digest)
-      .then((ordr) => {
-        if (ordr != undefined && ordr.quantity > 0) {
-          return ordr.submittedTimestamp;
-        }
-      });
+    // fetch order from sc, including the dependencies
+    const onChainOrder = await this.getOrderByIdWithDependencies(
+      symbol,
+      digest,
+      this.bots[botIdx].api
+    );
+
+    const onChainTS = (() => {
+      if (onChainOrder != undefined && onChainOrder.quantity > 0) {
+        return onChainOrder.submittedTimestamp;
+      }
+    })();
 
     if (!onChainTS) {
       console.log({
@@ -239,6 +301,21 @@ export default class Executor {
       }
       return BotStatus.PartialError;
     }
+
+    if (!this.checkOrderDependenciesResolved(onChainOrder!)) {
+      console.log({
+        reason: "unresolved dependencies",
+        symbol: symbol,
+        digest: digest,
+        time: new Date(Date.now()).toISOString(),
+      });
+      this.bots[botIdx].busy = false;
+      if (!this.trash.has(digest)) {
+        this.locked.delete(digest);
+      }
+      return BotStatus.PartialError;
+    }
+
     // check oracles
     const oracleTS = await this.bots[botIdx].api
       .fetchPriceSubmissionInfoForPerpetual(symbol)
@@ -546,5 +623,9 @@ export default class Executor {
         }
       }
     }
+  }
+
+  public setDistributor(distributor: Distributor) {
+    this.distributor = distributor;
   }
 }

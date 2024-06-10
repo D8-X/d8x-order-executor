@@ -33,7 +33,6 @@ services:
       - 127.0.0.1:9001:9001
     depends_on:
       - cache
-      - commander
     build:
       context: .
       dockerfile: ./src/executor/Dockerfile
