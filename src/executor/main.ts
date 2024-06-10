@@ -1,20 +1,21 @@
+import { sleep } from "@d8x/perpetuals-sdk";
 import Executor from "./executor";
-import { loadAccounts, loadConfig, sleep } from "../utils";
+import { loadAccounts, loadConfig } from "../utils";
+import Distributor from "./distributor";
 
 require("dotenv").config();
 
-async function run() {
-  // sdk config
+async function start() {
   const sdkConfig = process.env.SDK_CONFIG;
   if (sdkConfig == undefined) {
     throw new Error(`Environment variable SDK_CONFIG not defined.`);
   }
-  // seed phrase
+  // seed phrase for executor
   const seedPhrase = process.env.SEED_PHRASE;
   if (seedPhrase == undefined) {
     throw new Error(`Environment variable SEED_PHRASE not defined.`);
   }
-  // config
+
   const cfg = loadConfig(sdkConfig);
 
   // bot treasury
@@ -28,18 +29,21 @@ async function run() {
     `\nStarting ${addr.length} bots with addresses ${addr.join("\n")}`
   );
 
-  const bot = new Executor(treasuryPK, pk, cfg);
+  const executor = new Executor(treasuryPK, pk, cfg);
 
   try {
-    await bot.fundWallets(addr);
+    await executor.fundWallets(addr);
   } catch (e) {
     console.log(e);
     await sleep(60_000);
     process.exit(1);
   }
-  await bot.initialize();
+  await executor.initialize();
+  executor.run();
 
-  bot.run();
+  const obj = new Distributor(cfg, executor);
+  await obj.initialize();
+  obj.run();
 }
 
-run();
+start();

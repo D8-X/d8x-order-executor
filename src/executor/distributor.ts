@@ -40,7 +40,7 @@ import {
   PerpStorage,
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
 import { IClientOrder } from "@d8x/perpetuals-sdk/dist/esm/contracts/LimitOrderBook";
-import Executor from "../executor/executor";
+import Executor from "./executor";
 
 export default class Distributor {
   // objects

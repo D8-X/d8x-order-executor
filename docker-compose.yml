@@ -26,21 +26,8 @@ services:
       SDK_CONFIG: ${SDK_CONFIG}
     restart: always
 
-  # Account manager: fetches and distributes data to liquidators
-  commander:
-    depends_on:
-      - cache
-    build:
-      context: .
-      dockerfile: ./src/commander/Dockerfile
-    environment:
-      REDIS_HOST: cache
-      REDIS_PORT: ${REDIS_PORT}
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      SDK_CONFIG: ${SDK_CONFIG}
-    restart: always
-
-  # Executor: submits transactions to the blockchain
+  # Executor: fetches and distributes executable orders and submits transactions
+  # to the blockchain
   executor:
     ports:
       - 127.0.0.1:9001:9001

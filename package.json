@@ -20,7 +20,6 @@
   "scripts": {
     "build": "npx tsc",
     "start-sentinel": "node dist/src/sentinel/main.js",
-    "start-commander": "node dist/src/commander/main.js",
     "start-executor": "node dist/src/executor/main.js",
     "postinstall": "patch-package"
   },

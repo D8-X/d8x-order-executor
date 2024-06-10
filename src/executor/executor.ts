@@ -6,7 +6,6 @@ import { constructRedis, executeWithTimeout, sleep } from "../utils";
 import {
   BotStatus,
   ExecutorConfig,
-  ExecuteOrderMsg,
   TradeMsg,
   ExecuteOrderCommand,
 } from "../types";
@@ -107,7 +106,6 @@ export default class Executor {
     // Subscribe to relayed events
     await this.redisSubClient.subscribe(
       "block",
-      "ExecuteOrder",
       "TradeEvent",
       "Restart",
       (err, count) => {
@@ -128,6 +126,8 @@ export default class Executor {
     });
   }
 
+  // Add given msg to execution queue. Should be called directly from
+  // distributor
   public async ExecuteOrder(msg: ExecuteOrderCommand) {
     this.q.add(msg);
     await this.execute();
