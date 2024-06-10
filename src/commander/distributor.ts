@@ -22,6 +22,7 @@ import { Redis } from "ioredis";
 import { constructRedis } from "../utils";
 import {
   BrokerOrderMsg,
+  ExecuteOrderCommand,
   ExecutionFailedMsg,
   ExecutorConfig,
   OrderBundle,
@@ -39,6 +40,7 @@ import {
   PerpStorage,
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
 import { IClientOrder } from "@d8x/perpetuals-sdk/dist/esm/contracts/LimitOrderBook";
+import Executor from "../executor/executor";
 
 export default class Distributor {
   // objects
@@ -59,6 +61,7 @@ export default class Distributor {
   private markPremium: Map<string, number> = new Map();
   private midPremium: Map<string, number> = new Map();
   private unitAccumulatedFunding: Map<string, number> = new Map();
+  // order digest => sent for execution timestamp
   private messageSentAt: Map<string, number> = new Map();
   private pricesFetchedAt: Map<string, number> = new Map();
   public ready: boolean = false;
@@ -74,7 +77,7 @@ export default class Distributor {
   // publish times must be within 10 seconds of each other, or submission will fail on-chain
   private MAX_OUTOFSYNC_SECONDS: number = 10;
 
-  constructor(config: ExecutorConfig) {
+  constructor(config: ExecutorConfig, private executor: Executor) {
     this.config = config;
     this.redisSubClient = constructRedis("commanderSubClient");
     this.redisPubClient = constructRedis("commanderPubClient");
@@ -658,28 +661,20 @@ export default class Distributor {
 
     const removeOrders: string[] = [];
     for (const [digest, orderBundle] of orders) {
-      const command = {
+      const command: ExecuteOrderCommand = {
         symbol: orderBundle.symbol,
         digest: orderBundle.digest,
         trader: orderBundle.trader,
         reduceOnly: orderBundle.order?.reduceOnly,
       };
-      // check if it's too soon to process
-      const msg = JSON.stringify(command);
+      // check if it's not too soon to send order for execution again
       if (
-        Date.now() - (this.messageSentAt.get(msg) ?? 0) <
+        Date.now() - (this.messageSentAt.get(command.digest) ?? 0) <
         this.config.executeIntervalSecondsMin * 500
       ) {
         continue;
       }
-      // // check oracle time
-      // if (
-      //   orderBundle.order?.submittedTimestamp &&
-      //   orderBundle.order?.submittedTimestamp >
-      //     Math.min(...curPx.submission.timestamps)
-      // ) {
-      //   continue;
-      // }
+
       const isExecOnChain = this.isExecutableIfOnChain(
         orderBundle,
         curPx.idxPrices as [number, number | undefined]
@@ -707,27 +702,21 @@ export default class Distributor {
     return;
   }
 
-  private async sendCommand(command: {
-    symbol: string;
-    digest: string;
-    trader: string;
-    reduceOnly?: boolean;
-  }) {
-    // send command
-    const msg = JSON.stringify(command);
+  private async sendCommand(msg: ExecuteOrderCommand) {
+    // Prevent multiple executions of the same order within a short time
     if (
-      Date.now() - (this.messageSentAt.get(msg) ?? 0) >
+      Date.now() - (this.messageSentAt.get(msg.digest) ?? 0) >
       this.config.executeIntervalSecondsMin * 2000
     ) {
-      if (!this.messageSentAt.has(msg)) {
+      if (!this.messageSentAt.has(msg.digest)) {
         console.log({
           info: "execute",
-          ...command,
+          order: msg,
           time: new Date(Date.now()).toISOString(),
         });
       }
-      this.messageSentAt.set(msg, Date.now());
-      await this.redisPubClient.publish("ExecuteOrder", msg);
+      this.messageSentAt.set(msg.digest, Date.now());
+      this.executor.ExecuteOrder(msg);
     }
   }
 

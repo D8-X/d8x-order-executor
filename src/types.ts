@@ -181,3 +181,10 @@ export enum BotStatus {
   PartialError = "PartialError",
   Error = "Error",
 }
+
+export interface ExecuteOrderCommand {
+  symbol: string;
+  digest: string;
+  trader: string;
+  reduceOnly: boolean | undefined;
+}

@@ -3,7 +3,13 @@ import { ContractTransaction, Wallet, utils } from "ethers";
 import { providers } from "ethers";
 import { Redis } from "ioredis";
 import { constructRedis, executeWithTimeout, sleep } from "../utils";
-import { BotStatus, ExecutorConfig, ExecuteOrderMsg, TradeMsg } from "../types";
+import {
+  BotStatus,
+  ExecutorConfig,
+  ExecuteOrderMsg,
+  TradeMsg,
+  ExecuteOrderCommand,
+} from "../types";
 import { ExecutorMetrics } from "./metrics";
 import { getTxRevertReason, sendTxRevertedMessage } from "./reverts";
 
@@ -24,7 +30,7 @@ export default class Executor {
   protected gasLimitIncreaseCounter: number = 0;
 
   // state
-  private q: Set<string> = new Set();
+  private q: Set<ExecuteOrderCommand> = new Set();
   private locked: Set<string> = new Set();
   private lastCall: number = 0;
   private timesTried: Map<string, number> = new Map();
@@ -122,6 +128,11 @@ export default class Executor {
     });
   }
 
+  public async ExecuteOrder(msg: ExecuteOrderCommand) {
+    this.q.add(msg);
+    await this.execute();
+  }
+
   /**
    * Subscribes to liquidation opportunities and attempts to liquidate.
    */
@@ -141,7 +152,11 @@ export default class Executor {
         const trash = [...this.trash];
         this.trash = new Set();
         for (const digest of trash) {
-          this.q.delete(digest);
+          for (const order of this.q) {
+            if (order.digest === digest) {
+              this.q.delete(order);
+            }
+          }
           this.locked.delete(digest);
         }
       }, 60 * 60 * 8 * 1_000);
@@ -164,16 +179,6 @@ export default class Executor {
                 )
               );
             }
-            break;
-          }
-          case "ExecuteOrder": {
-            const prevCount = this.q.size;
-            this.q.add(msg);
-            msgs += this.q.size > prevCount ? 1 : 0;
-            const res = await this.execute();
-            busy += res.busy;
-            errors += res.error;
-            success += res.ok;
             break;
           }
 
@@ -452,7 +457,7 @@ export default class Executor {
     const responses = { busy: 0, partial: 0, error: 0, ok: 0 };
     const executed: Promise<BotStatus>[] = [];
     for (const msg of q) {
-      let { symbol, digest }: ExecuteOrderMsg = JSON.parse(msg);
+      let { symbol, digest } = msg;
       digest = digest.toLowerCase();
       if (this.locked.has(digest) || this.trash.has(digest)) {
         continue;
