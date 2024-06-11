@@ -210,25 +210,23 @@ export default class Executor {
   }
 
   // Checks if onchainOrder has all its dependencies resolved and order
-  // dependency information is loaded.
+  // dependency information is fetched.
   private checkOrderDependenciesResolved(onchainOrder: Order): boolean {
     if (onchainOrder.parentChildOrderIds) {
+      // Child order deps check
       if (
         onchainOrder.parentChildOrderIds[0] == ZERO_ORDER_ID &&
         !this.distributor?.openOrders.has(onchainOrder.parentChildOrderIds[1])
       ) {
         return true;
       }
-    }
 
-    // Market order is allowed to not have dependencies loaded. This might
-    // happen on xlayer as the data is not available immediately. Other orders
-    // should not be executed if dependencies are not loaded.
-    if (onchainOrder.type == ORDER_TYPE_MARKET) {
+      // If this is parent order, we don't care about the dependencies.
       return true;
     }
 
-    // All other orders must have their dependencies fetched.
+    // Prevent cases such as a market order with dependencies. All orders must
+    // have their dependencies checked before execution.
     return false;
   }
 
@@ -275,12 +273,38 @@ export default class Executor {
     this.bots[botIdx].busy = true;
     this.locked.add(digest);
 
-    // fetch order from sc, including the dependencies
-    const onChainOrder = await this.getOrderByIdWithDependencies(
-      symbol,
-      digest,
-      this.bots[botIdx].api
-    );
+    // If this order came from event, we might already have its info in the
+    // distributor. Attempt to get it from there first.
+    let onChainOrder: Order | undefined = undefined;
+    if (this.distributor?.openOrders.get(symbol)?.has(digest)) {
+      onChainOrder = this.distributor.openOrders
+        .get(symbol)
+        ?.get(digest)?.order;
+    }
+
+    if (!onChainOrder) {
+      // fetch order from sc, including the dependencies
+      onChainOrder = await this.getOrderByIdWithDependencies(
+        symbol,
+        digest,
+        this.bots[botIdx].api
+      );
+      console.log({
+        info: "order fetched from blockchain",
+        symbol,
+        digest,
+        time: new Date(Date.now()).toISOString(),
+        onChainOrder,
+      });
+    } else {
+      console.log({
+        info: "order found in distributor",
+        symbol,
+        digest,
+        time: new Date(Date.now()).toISOString(),
+        onChainOrder,
+      });
+    }
 
     const onChainTS = (() => {
       if (onChainOrder != undefined && onChainOrder.quantity > 0) {
@@ -304,7 +328,7 @@ export default class Executor {
 
     if (!this.checkOrderDependenciesResolved(onChainOrder!)) {
       console.log({
-        reason: "unresolved dependencies",
+        reason: "unresolved/unfetched order dependencies",
         symbol: symbol,
         digest: digest,
         time: new Date(Date.now()).toISOString(),

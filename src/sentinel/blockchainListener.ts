@@ -2,6 +2,7 @@ import {
   ABK64x64ToFloat,
   IPerpetualManager__factory,
   LimitOrderBook,
+  LimitOrderBook__factory,
   MarketData,
   PerpetualDataHandler,
   ZERO_ORDER_ID,
@@ -463,15 +464,17 @@ export default class BlockhainListener {
               id: `${event.transactionHash}:${event.logIndex}`,
             };
 
-            // Include parent/child ids if order dependency is found. Order
-            // dependency is not included in PerpetualLimitOrderCreated event
-            // const orderDependency = await ob.orderDependency(digest);
-            // if (orderDependency) {
-            //   const [id1, id2] = [orderDependency[0], orderDependency[1]];
-            //   if (id1 !== ZERO_ORDER_ID || id2 !== ZERO_ORDER_ID) {
-            //     msg.order.parentChildOrderIds = [id1, id2];
-            //   }
-            // }
+            // Include parent/child order dependency ids. Order dependency is
+            // not included in PerpetualLimitOrderCreated event but is needed
+            // for the dependency checks in distributor and executor.
+            const orderDependency = await this.getOrderDependenciesHttp(
+              ob.address,
+              digest
+            );
+            if (orderDependency) {
+              const [id1, id2] = [orderDependency[0], orderDependency[1]];
+              msg.order.parentChildOrderIds = [id1, id2];
+            }
 
             console.log({
               event: "PerpetualLimitOrderCreated",
@@ -519,5 +522,15 @@ export default class BlockhainListener {
           }
         );
       });
+  }
+
+  // Retrieves order dependencies with a http provider instead of a websocket
+  // one.
+  public async getOrderDependenciesHttp(
+    obAddress: string,
+    orderDigest: string
+  ): Promise<[string, string]> {
+    const ob = LimitOrderBook__factory.connect(obAddress, this.httpProvider);
+    return await ob.orderDependency(orderDigest);
   }
 }

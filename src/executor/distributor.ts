@@ -16,6 +16,7 @@ import {
   ORDER_TYPE_LIMIT,
   ZERO_ORDER_ID,
   OrderStatus,
+  sleep,
 } from "@d8x/perpetuals-sdk";
 import { providers } from "ethers";
 import { Redis } from "ioredis";
@@ -33,7 +34,6 @@ import {
   TradeMsg,
   UpdateMarginAccountMsg,
   UpdateMarkPriceMsg,
-  UpdateUnitAccumulatedFundingMsg,
 } from "../types";
 import {
   IPerpetualOrder,
@@ -73,6 +73,15 @@ export default class Distributor {
   private maintenanceRate: Map<string, number> = new Map();
 
   // constants
+
+  // calculated block time in milliseconds, used for delaying broker orders
+  // execution
+  public blockTimeMS = 0;
+  // Last block timestamp for blockTimeMS measurement
+  public lastBlockTs = 0;
+  // blockTimeMS * brokerOrderBlockSizeDelayFactor is the delay in milliseconds
+  // for broker orders, ideally below 1
+  public brokerOrderBlockSizeDelayFactor = 0.5;
 
   // publish times must be within 10 seconds of each other, or submission will fail on-chain
   private MAX_OUTOFSYNC_SECONDS: number = 10;
@@ -250,6 +259,14 @@ export default class Distributor {
             ) {
               this.refreshAllOpenOrders();
             }
+
+            // Periodically recalculate the block time for broker order delay
+            if (this.lastBlockTs == 0) {
+              this.lastBlockTs = Date.now();
+            } else {
+              this.blockTimeMS = Date.now() - this.lastBlockTs;
+              this.lastBlockTs = Date.now();
+            }
             break;
           }
 
@@ -330,6 +347,17 @@ export default class Distributor {
           case "BrokerOrderCreatedEvent": {
             const { symbol, traderAddr, digest, type }: BrokerOrderMsg =
               JSON.parse(msg);
+            // introduce delay of less than 1 block for broker orders
+            console.log({
+              info: "delaying broker order",
+              amountMS: this.blockTimeMS * this.brokerOrderBlockSizeDelayFactor,
+              digest: digest,
+              time: new Date(Date.now()).toISOString(),
+            });
+            await sleep(
+              this.blockTimeMS * this.brokerOrderBlockSizeDelayFactor
+            );
+
             this.addOrder(symbol, traderAddr, digest, type, undefined);
             this.brokerOrders.get(symbol)!.set(digest, Date.now());
             this.checkOrders(symbol);
