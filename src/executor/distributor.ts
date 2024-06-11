@@ -44,7 +44,7 @@ import Executor from "./executor";
 
 export default class Distributor {
   // objects
-  public md: MarketData;
+  private md: MarketData;
   private redisSubClient: Redis;
   private redisPubClient: Redis;
   private providers: providers.StaticJsonRpcProvider[];
@@ -765,8 +765,9 @@ export default class Distributor {
     // can be a case when a reduce-only order is dependent on another parent
     // order. If this check would be done after reduce only check, in case
     // traderPos === 0 order would still be sent off for execution which would
-    // cause dpcy not fulfilled error. Note that order dependencies are usually
-    // not available here and are checked on execution.
+    // cause dpcy not fulfilled error. Note that order dependencies are also
+    // checked in the executor and orders without loaded parentChildOrderIds
+    // info are not executed.
     if (order.order.parentChildOrderIds) {
       if (
         order.order.parentChildOrderIds[0] == ZERO_ORDER_ID &&
