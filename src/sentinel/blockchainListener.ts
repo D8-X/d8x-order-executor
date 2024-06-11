@@ -325,7 +325,7 @@ export default class BlockhainListener {
     // handle different events
     switch (parsedEvent.name) {
       case "TransferAddressTo":
-        this.redisPubClient.publish("Restart:", parsedEvent.name);
+        this.redisPubClient.publish("Restart", parsedEvent.args[0]);
         this.unsubscribe();
         // force restart
         process.exit(0);
