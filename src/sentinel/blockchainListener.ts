@@ -1,17 +1,16 @@
 import {
   ABK64x64ToFloat,
   IPerpetualManager__factory,
-  LimitOrderBook,
   LimitOrderBook__factory,
   MarketData,
   PerpetualDataHandler,
-  ZERO_ORDER_ID,
 } from "@d8x/perpetuals-sdk";
 import { BigNumber } from "@ethersproject/bignumber";
 import {
   Network,
   StaticJsonRpcProvider,
   WebSocketProvider,
+  Log,
 } from "@ethersproject/providers";
 import { Redis } from "ioredis";
 import SturdyWebSocket from "sturdy-websocket";
@@ -25,7 +24,6 @@ import {
   TradeMsg,
   UpdateMarginAccountMsg,
   UpdateMarkPriceMsg,
-  UpdateUnitAccumulatedFundingMsg,
 } from "../types";
 import { constructRedis, executeWithTimeout, sleep } from "../utils";
 import {
@@ -38,8 +36,8 @@ import {
   UpdateMarkPriceEvent,
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
 import {
-  ExecutionFailedEvent,
-  PerpetualLimitOrderCreatedEvent,
+  ExecutionFailedEventObject,
+  PerpetualLimitOrderCreatedEventObject,
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/LimitOrderBook";
 
 enum ListeningMode {
@@ -300,9 +298,6 @@ export default class BlockhainListener {
           perpetualId: perpetualId,
           symbol: symbol,
           traderAddr: trader,
-          // positionBC: ABK64x64ToFloat(fPositionBC),
-          // cashCC: ABK64x64ToFloat(fCashCC),
-          // lockedInQC: ABK64x64ToFloat(fLockedInValueQC),
           fundingPaymentCC: ABK64x64ToFloat(fFundingPaymentCC),
           block: event.blockNumber,
           hash: event.transactionHash,
@@ -420,108 +415,88 @@ export default class BlockhainListener {
       }
     );
 
-    const info = await this.md.exchangeInfo();
+    const iOrderBook = LimitOrderBook__factory.createInterface();
 
-    const symbols = info.pools
-      .filter(({ isRunning }) => isRunning)
-      .map((pool) =>
-        pool.perpetuals
-          .filter(({ state }) => state == "NORMAL")
-          .map(
-            (perpetual) =>
-              `${perpetual.baseCurrency}-${perpetual.quoteCurrency}-${pool.poolSymbol}`
-          )
-      )
-      .flat();
-
-    symbols
-      .map(
-        (symbol) =>
-          this.md
-            .getOrderBookContract(symbol)
-            .connect(this.listeningProvider!) as LimitOrderBook
-      )
-      .map((ob, i) => {
-        ob.on(
-          "PerpetualLimitOrderCreated",
-          async (
-            perpetualId: number,
-            trader: string,
-            brokerAddr: string,
-            order: IPerpetualOrder.OrderStructOutput,
-            digest: string,
-            event: PerpetualLimitOrderCreatedEvent
-          ) => {
-            const msg: PerpetualLimitOrderCreatedMsg = {
-              symbol: symbols[i],
-              perpetualId: perpetualId,
-              trader: trader,
-              brokerAddr: brokerAddr,
-              order: this.md!.smartContractOrderToOrder(order),
-              digest: digest,
-              block: event.blockNumber,
-              hash: event.transactionHash,
-              id: `${event.transactionHash}:${event.logIndex}`,
-            };
-
-            // Include parent/child order dependency ids. Order dependency is
-            // not included in PerpetualLimitOrderCreated event but is needed
-            // for the dependency checks in distributor and executor.
-            const orderDependency = await this.getOrderDependenciesHttp(
-              ob.address,
-              digest
-            );
-            if (orderDependency) {
-              const [id1, id2] = [orderDependency[0], orderDependency[1]];
-              msg.order.parentChildOrderIds = [id1, id2];
+    this.listeningProvider.on(
+      [
+        iOrderBook.encodeFilterTopics("ExecutionFailed", [])[0],
+        iOrderBook.encodeFilterTopics("PerpetualLimitOrderCreated", [])[0],
+      ],
+      async (event: Log) => {
+        const parsedEvent = iOrderBook.parseLog(event);
+        let msg: ExecutionFailedMsg | PerpetualLimitOrderCreatedMsg | undefined;
+        // handle different events
+        switch (parsedEvent.name) {
+          case "ExecutionFailed":
+            {
+              const { perpetualId, trader, digest, reason } =
+                parsedEvent.args as [number, string, string, string] &
+                  ExecutionFailedEventObject;
+              const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
+              msg = {
+                perpetualId: perpetualId,
+                symbol: symbol,
+                trader: trader,
+                digest: digest,
+                reason: reason,
+                block: event.blockNumber,
+                hash: event.transactionHash,
+                id: `${event.transactionHash}:${event.logIndex}`,
+              };
             }
+            break;
+          case "PerpetualLimitOrderCreated":
+            {
+              const { perpetualId, trader, brokerAddr, order, digest } =
+                parsedEvent.args as [
+                  number,
+                  string,
+                  string,
+                  IPerpetualOrder.OrderStructOutput,
+                  string
+                ] &
+                  PerpetualLimitOrderCreatedEventObject;
+              msg = {
+                symbol: this.md!.getSymbolFromPerpId(perpetualId)!,
+                perpetualId: perpetualId,
+                trader: trader,
+                brokerAddr: brokerAddr,
+                order: this.md!.smartContractOrderToOrder(order),
+                digest: digest,
+                block: event.blockNumber,
+                hash: event.transactionHash,
+                id: `${event.transactionHash}:${event.logIndex}`,
+              };
+              // Include parent/child order dependency ids. Order dependency is
+              // not included in PerpetualLimitOrderCreated event but is needed
+              // for the dependency checks in distributor and executor.
+              const orderDependency = await this.getOrderDependenciesHttp(
+                event.address,
+                digest
+              );
+              if (orderDependency) {
+                const [id1, id2] = [orderDependency[0], orderDependency[1]];
+                msg.order.parentChildOrderIds = [id1, id2];
+              }
+            }
+            break;
 
-            console.log({
-              event: "PerpetualLimitOrderCreated",
-              time: new Date(Date.now()).toISOString(),
-              mode: this.mode,
-              ...msg,
-            });
-            this.redisPubClient.publish(
-              "PerpetualLimitOrderCreatedEvent",
-              JSON.stringify(msg)
-            );
-          }
+          default:
+            break;
+        }
+        // notify
+        console.log({
+          event: parsedEvent.name,
+          time: new Date(Date.now()).toISOString(),
+          mode: this.mode,
+          ...msg,
+        });
+        this.redisPubClient.publish(
+          `${parsedEvent.name}Event`,
+          JSON.stringify(msg)
         );
-
-        ob.on(
-          "ExecutionFailed",
-          (
-            perpetualId: number,
-            trader: string,
-            digest: string,
-            reason: string,
-            event: ExecutionFailedEvent
-          ) => {
-            const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
-            const msg: ExecutionFailedMsg = {
-              perpetualId: perpetualId,
-              symbol: symbol,
-              trader: trader,
-              digest: digest,
-              reason: reason,
-              block: event.blockNumber,
-              hash: event.transactionHash,
-              id: `${event.transactionHash}:${event.logIndex}`,
-            };
-            console.log({
-              event: "ExecutionFailed",
-              time: new Date(Date.now()).toISOString(),
-              mode: this.mode,
-              ...msg,
-            });
-            this.redisPubClient.publish(
-              "ExecutionFailedEvent",
-              JSON.stringify(msg)
-            );
-          }
-        );
-      });
+      }
+    );
   }
 
   // Retrieves order dependencies with a http provider instead of a websocket
