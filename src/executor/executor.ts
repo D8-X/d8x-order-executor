@@ -47,6 +47,7 @@ export default class Executor {
 
   protected metrics: ExecutorMetrics;
 
+  // Distributor must be set
   protected distributor: Distributor | undefined;
 
   constructor(
@@ -149,6 +150,11 @@ export default class Executor {
    * Subscribes to liquidation opportunities and attempts to liquidate.
    */
   public async run(): Promise<void> {
+    // Prevent running without distributor
+    if (this.distributor === undefined) {
+      throw Error("distributor not set for executor");
+    }
+
     // consecutive responses
     let [busy, errors, success, msgs] = [0, 0, 0, 0];
     console.log({
@@ -237,11 +243,23 @@ export default class Executor {
     digest: string,
     selectedExecutorTool: OrderExecutorTool
   ): Promise<Order | undefined> {
-    // We can't bundle retrieval of orderbook sc and order in one go from
-    // getOrderById, so therefore we do this twice here.
-    const ob = selectedExecutorTool.getOrderBookContract(symbol);
     const order = await selectedExecutorTool.getOrderById(symbol, digest);
 
+    // Do not query for dependencies if order is not found - saves 1 rpc call
+    if (!order) {
+      return undefined;
+    }
+
+    // We can't bundle retrieval of orderbook sc and order in one go from
+    // getOrderById, so therefore we do this twice here.
+    let ob = selectedExecutorTool.getOrderBookContract(symbol);
+    // Pick random free rpc from distributor (we don't want to use paid executor
+    // rpc for this here)
+    const randomDistributorRPC =
+      this.distributor!.providers[
+        Math.floor(Math.random() * this.distributor!.providers.length)
+      ];
+    ob.connect(randomDistributorRPC);
     // Make sure dependencies are fetched after order is fetched to introduce a
     // slight 1 network call delay (xlayer chain problem)
     const deps = await ob.orderDependency(digest);

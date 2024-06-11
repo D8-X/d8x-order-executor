@@ -47,7 +47,7 @@ export default class Distributor {
   private md: MarketData;
   private redisSubClient: Redis;
   private redisPubClient: Redis;
-  private providers: providers.StaticJsonRpcProvider[];
+  public providers: providers.StaticJsonRpcProvider[];
 
   // state
   private lastRefreshTime: Map<string, number> = new Map();
