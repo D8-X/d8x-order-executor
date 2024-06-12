@@ -219,12 +219,16 @@ export default class Executor {
   // dependency information is fetched.
   private checkOrderDependenciesResolved(onchainOrder: Order): boolean {
     if (onchainOrder.parentChildOrderIds) {
-      // Child order deps check
+      // Child order deps check. Parent order should not be available in
+      // openOrders (already executed) in the distributor for child order to get
+      // executed
       if (
-        onchainOrder.parentChildOrderIds[0] == ZERO_ORDER_ID &&
-        !this.distributor?.openOrders.has(onchainOrder.parentChildOrderIds[1])
+        onchainOrder.parentChildOrderIds[0] === ZERO_ORDER_ID &&
+        onchainOrder.parentChildOrderIds[1] !== ZERO_ORDER_ID
       ) {
-        return true;
+        return !this.distributor?.openOrders.has(
+          onchainOrder.parentChildOrderIds[1]
+        );
       }
 
       // If this is parent order, we don't care about the dependencies.
