@@ -8,7 +8,7 @@ import {
   ZERO_ADDRESS,
   LimitOrderBook,
 } from "@d8x/perpetuals-sdk";
-import { ContractTransaction, Wallet, utils } from "ethers";
+import { BigNumber, ContractTransaction, Wallet, utils } from "ethers";
 import { providers } from "ethers";
 import { Redis } from "ioredis";
 import { constructRedis, executeWithTimeout, sleep } from "../utils";
@@ -622,12 +622,42 @@ export default class Executor {
     const provider =
       this.providers[Math.floor(Math.random() * this.providers.length)];
     const treasury = new Wallet(this.treasury, provider);
-    const gasPriceWei = await provider.getGasPrice();
-    // min balance should cover 1e7 gas
-    const minBalance = gasPriceWei.mul(this.config.gasLimit * 5);
+
+    // Wallet funding parameters
+    let minBalance: BigNumber = BigNumber.from(0);
+    let fundAmount: BigNumber = BigNumber.from(0);
+
+    // Check if config has minimum balance set
+    if (this.config.minimumBalanceETH && this.config.minimumBalanceETH > 0) {
+      minBalance = utils.parseUnits(
+        this.config.minimumBalanceETH.toString(),
+        "ether"
+      );
+    } else {
+      const gasPriceWei = await provider.getGasPrice();
+      minBalance = gasPriceWei.mul(this.config.gasLimit * 5);
+    }
+
+    if (this.config.fundGasAmountETH && this.config.fundGasAmountETH > 0) {
+      fundAmount = utils.parseUnits(
+        this.config.fundGasAmountETH.toString(),
+        "ether"
+      );
+    }
+
+    console.log({
+      info: "running fundWallets",
+      minBalance: utils.formatUnits(minBalance),
+      fundAmount: fundAmount.eq(0)
+        ? "minBalance * 2 - bot balance"
+        : utils.formatUnits(fundAmount),
+      time: new Date(Date.now()).toISOString(),
+    });
+
     for (let addr of addressArray) {
       const botBalance = await provider.getBalance(addr);
       const treasuryBalance = await provider.getBalance(treasury.address);
+
       console.log({
         treasuryAddr: treasury.address,
         treasuryBalance: utils.formatUnits(treasuryBalance),
@@ -638,7 +668,9 @@ export default class Executor {
       });
       if (botBalance.lt(minBalance)) {
         // transfer twice the min so it doesn't transfer every time
-        const transferAmount = minBalance.mul(2).sub(botBalance);
+        const transferAmount = fundAmount.eq(0)
+          ? minBalance.mul(2).sub(botBalance)
+          : fundAmount;
         if (transferAmount.lt(treasuryBalance)) {
           console.log({
             info: "transferring funds...",
