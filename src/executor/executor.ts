@@ -1,11 +1,26 @@
-import { PerpetualDataHandler, OrderExecutorTool } from "@d8x/perpetuals-sdk";
-import { ContractTransaction, Wallet, utils } from "ethers";
+import {
+  PerpetualDataHandler,
+  OrderExecutorTool,
+  Order,
+  ZERO_ORDER_ID,
+  ORDER_TYPE_MARKET,
+  SmartContractOrder,
+  ZERO_ADDRESS,
+  LimitOrderBook,
+} from "@d8x/perpetuals-sdk";
+import { BigNumber, ContractTransaction, Wallet, utils } from "ethers";
 import { providers } from "ethers";
 import { Redis } from "ioredis";
 import { constructRedis, executeWithTimeout, sleep } from "../utils";
-import { BotStatus, ExecutorConfig, ExecuteOrderMsg, TradeMsg } from "../types";
+import {
+  BotStatus,
+  ExecutorConfig,
+  TradeMsg,
+  ExecuteOrderCommand,
+} from "../types";
 import { ExecutorMetrics } from "./metrics";
 import { getTxRevertReason, sendTxRevertedMessage } from "./reverts";
+import Distributor from "./distributor";
 
 export default class Executor {
   // objects
@@ -24,13 +39,16 @@ export default class Executor {
   protected gasLimitIncreaseCounter: number = 0;
 
   // state
-  private q: Set<string> = new Set();
+  private q: Set<ExecuteOrderCommand> = new Set();
   private locked: Set<string> = new Set();
   private lastCall: number = 0;
   private timesTried: Map<string, number> = new Map();
   private trash: Set<string> = new Set();
 
   protected metrics: ExecutorMetrics;
+
+  // Distributor must be set
+  protected distributor: Distributor | undefined;
 
   constructor(
     pkTreasury: string,
@@ -101,7 +119,6 @@ export default class Executor {
     // Subscribe to relayed events
     await this.redisSubClient.subscribe(
       "block",
-      "ExecuteOrder",
       "TradeEvent",
       "Restart",
       (err, count) => {
@@ -122,10 +139,22 @@ export default class Executor {
     });
   }
 
+  // Add given msg to execution queue. Should be called directly from
+  // distributor
+  public async ExecuteOrder(msg: ExecuteOrderCommand) {
+    this.q.add(msg);
+    await this.execute();
+  }
+
   /**
    * Subscribes to liquidation opportunities and attempts to liquidate.
    */
   public async run(): Promise<void> {
+    // Prevent running without distributor
+    if (this.distributor === undefined) {
+      throw Error("distributor not set for executor");
+    }
+
     // consecutive responses
     let [busy, errors, success, msgs] = [0, 0, 0, 0];
     console.log({
@@ -141,7 +170,11 @@ export default class Executor {
         const trash = [...this.trash];
         this.trash = new Set();
         for (const digest of trash) {
-          this.q.delete(digest);
+          for (const order of this.q) {
+            if (order.digest === digest) {
+              this.q.delete(order);
+            }
+          }
           this.locked.delete(digest);
         }
       }, 60 * 60 * 8 * 1_000);
@@ -166,16 +199,6 @@ export default class Executor {
             }
             break;
           }
-          case "ExecuteOrder": {
-            const prevCount = this.q.size;
-            this.q.add(msg);
-            msgs += this.q.size > prevCount ? 1 : 0;
-            const res = await this.execute();
-            busy += res.busy;
-            errors += res.error;
-            success += res.ok;
-            break;
-          }
 
           case "TradeEvent": {
             const { digest }: TradeMsg = JSON.parse(msg);
@@ -190,6 +213,61 @@ export default class Executor {
         }
       });
     });
+  }
+
+  // Checks if onchainOrder has all its dependencies resolved and order
+  // dependency information is fetched.
+  private checkOrderDependenciesResolved(onchainOrder: Order): boolean {
+    if (onchainOrder.parentChildOrderIds) {
+      // Child order deps check
+      if (
+        onchainOrder.parentChildOrderIds[0] == ZERO_ORDER_ID &&
+        !this.distributor?.openOrders.has(onchainOrder.parentChildOrderIds[1])
+      ) {
+        return true;
+      }
+
+      // If this is parent order, we don't care about the dependencies.
+      return true;
+    }
+
+    // Prevent cases such as a market order with dependencies. All orders must
+    // have their dependencies checked before execution.
+    return false;
+  }
+
+  // getOrderByIdWithDependencies loads order with its dependencies from the
+  // smart contract
+  private async getOrderByIdWithDependencies(
+    symbol: string,
+    digest: string,
+    selectedExecutorTool: OrderExecutorTool
+  ): Promise<Order | undefined> {
+    const order = await selectedExecutorTool.getOrderById(symbol, digest);
+
+    // Do not query for dependencies if order is not found - saves 1 rpc call
+    if (!order) {
+      return undefined;
+    }
+
+    // We can't bundle retrieval of orderbook sc and order in one go from
+    // getOrderById, so therefore we do this twice here.
+    let ob = selectedExecutorTool.getOrderBookContract(symbol);
+    // Pick random free rpc from distributor (we don't want to use paid executor
+    // rpc for this here)
+    const randomDistributorRPC =
+      this.distributor!.providers[
+        Math.floor(Math.random() * this.distributor!.providers.length)
+      ];
+    ob.connect(randomDistributorRPC);
+    // Make sure dependencies are fetched after order is fetched to introduce a
+    // slight 1 network call delay (xlayer chain problem)
+    const deps = await ob.orderDependency(digest);
+    if (order && deps) {
+      order.parentChildOrderIds = [deps[0], deps[1]];
+    }
+
+    return order;
   }
 
   /**
@@ -213,13 +291,44 @@ export default class Executor {
     this.bots[botIdx].busy = true;
     this.locked.add(digest);
 
-    const onChainTS = await this.bots[botIdx].api
-      .getOrderById(symbol, digest)
-      .then((ordr) => {
-        if (ordr != undefined && ordr.quantity > 0) {
-          return ordr.submittedTimestamp;
-        }
+    // If this order came from event, we might already have its info in the
+    // distributor. Attempt to get it from there first.
+    let onChainOrder: Order | undefined = undefined;
+    if (this.distributor?.openOrders.get(symbol)?.has(digest)) {
+      onChainOrder = this.distributor.openOrders
+        .get(symbol)
+        ?.get(digest)?.order;
+    }
+
+    if (!onChainOrder) {
+      // fetch order from sc, including the dependencies
+      onChainOrder = await this.getOrderByIdWithDependencies(
+        symbol,
+        digest,
+        this.bots[botIdx].api
+      );
+      console.log({
+        info: "order fetched from blockchain",
+        symbol,
+        digest,
+        time: new Date(Date.now()).toISOString(),
+        onChainOrder,
       });
+    } else {
+      console.log({
+        info: "order found in distributor",
+        symbol,
+        digest,
+        time: new Date(Date.now()).toISOString(),
+        onChainOrder,
+      });
+    }
+
+    const onChainTS = (() => {
+      if (onChainOrder != undefined && onChainOrder.quantity > 0) {
+        return onChainOrder.submittedTimestamp;
+      }
+    })();
 
     if (!onChainTS) {
       console.log({
@@ -234,6 +343,21 @@ export default class Executor {
       }
       return BotStatus.PartialError;
     }
+
+    if (!this.checkOrderDependenciesResolved(onChainOrder!)) {
+      console.log({
+        reason: "unresolved/unfetched order dependencies",
+        symbol: symbol,
+        digest: digest,
+        time: new Date(Date.now()).toISOString(),
+      });
+      this.bots[botIdx].busy = false;
+      if (!this.trash.has(digest)) {
+        this.locked.delete(digest);
+      }
+      return BotStatus.PartialError;
+    }
+
     // check oracles
     const oracleTS = await this.bots[botIdx].api
       .fetchPriceSubmissionInfoForPerpetual(symbol)
@@ -452,7 +576,7 @@ export default class Executor {
     const responses = { busy: 0, partial: 0, error: 0, ok: 0 };
     const executed: Promise<BotStatus>[] = [];
     for (const msg of q) {
-      let { symbol, digest }: ExecuteOrderMsg = JSON.parse(msg);
+      let { symbol, digest } = msg;
       digest = digest.toLowerCase();
       if (this.locked.has(digest) || this.trash.has(digest)) {
         continue;
@@ -498,12 +622,42 @@ export default class Executor {
     const provider =
       this.providers[Math.floor(Math.random() * this.providers.length)];
     const treasury = new Wallet(this.treasury, provider);
-    const gasPriceWei = await provider.getGasPrice();
-    // min balance should cover 1e7 gas
-    const minBalance = gasPriceWei.mul(this.config.gasLimit * 5);
+
+    // Wallet funding parameters
+    let minBalance: BigNumber = BigNumber.from(0);
+    let fundAmount: BigNumber = BigNumber.from(0);
+
+    // Check if config has minimum balance set
+    if (this.config.minimumBalanceETH && this.config.minimumBalanceETH > 0) {
+      minBalance = utils.parseUnits(
+        this.config.minimumBalanceETH.toString(),
+        "ether"
+      );
+    } else {
+      const gasPriceWei = await provider.getGasPrice();
+      minBalance = gasPriceWei.mul(this.config.gasLimit * 5);
+    }
+
+    if (this.config.fundGasAmountETH && this.config.fundGasAmountETH > 0) {
+      fundAmount = utils.parseUnits(
+        this.config.fundGasAmountETH.toString(),
+        "ether"
+      );
+    }
+
+    console.log({
+      info: "running fundWallets",
+      minBalance: utils.formatUnits(minBalance),
+      fundAmount: fundAmount.eq(0)
+        ? "minBalance * 2 - bot balance"
+        : utils.formatUnits(fundAmount),
+      time: new Date(Date.now()).toISOString(),
+    });
+
     for (let addr of addressArray) {
       const botBalance = await provider.getBalance(addr);
       const treasuryBalance = await provider.getBalance(treasury.address);
+
       console.log({
         treasuryAddr: treasury.address,
         treasuryBalance: utils.formatUnits(treasuryBalance),
@@ -514,7 +668,9 @@ export default class Executor {
       });
       if (botBalance.lt(minBalance)) {
         // transfer twice the min so it doesn't transfer every time
-        const transferAmount = minBalance.mul(2).sub(botBalance);
+        const transferAmount = fundAmount.eq(0)
+          ? minBalance.mul(2).sub(botBalance)
+          : fundAmount;
         if (transferAmount.lt(treasuryBalance)) {
           console.log({
             info: "transferring funds...",
@@ -541,5 +697,9 @@ export default class Executor {
         }
       }
     }
+  }
+
+  public setDistributor(distributor: Distributor) {
+    this.distributor = distributor;
   }
 }
