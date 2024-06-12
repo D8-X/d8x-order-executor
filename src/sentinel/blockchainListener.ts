@@ -1,7 +1,7 @@
 import {
   ABK64x64ToFloat,
   IPerpetualManager__factory,
-  LimitOrderBook,
+  LimitOrderBook__factory,
   MarketData,
   PerpetualDataHandler,
 } from "@d8x/perpetuals-sdk";
@@ -10,6 +10,7 @@ import {
   Network,
   StaticJsonRpcProvider,
   WebSocketProvider,
+  Log,
 } from "@ethersproject/providers";
 import { Redis } from "ioredis";
 import SturdyWebSocket from "sturdy-websocket";
@@ -20,25 +21,27 @@ import {
   LiquidateMsg,
   PerpetualLimitOrderCancelledMsg,
   PerpetualLimitOrderCreatedMsg,
+  RedisMsg,
   TradeMsg,
   UpdateMarginAccountMsg,
   UpdateMarkPriceMsg,
-  UpdateUnitAccumulatedFundingMsg,
 } from "../types";
 import { constructRedis, executeWithTimeout, sleep } from "../utils";
 import {
+  IPerpetualManagerInterface,
   IPerpetualOrder,
-  LiquidateEvent,
-  PerpetualLimitOrderCancelledEvent,
-  TradeEvent,
-  TransferAddressToEvent,
-  UpdateMarginAccountEvent,
-  UpdateMarkPriceEvent,
+  LiquidateEventObject,
+  PerpetualLimitOrderCancelledEventObject,
+  TradeEventObject,
+  UpdateMarginAccountEventObject,
+  UpdateMarkPriceEventObject,
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
 import {
-  ExecutionFailedEvent,
-  PerpetualLimitOrderCreatedEvent,
+  ExecutionFailedEventObject,
+  LimitOrderBookInterface,
+  PerpetualLimitOrderCreatedEventObject,
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/LimitOrderBook";
+import { LogDescription } from "ethers/lib/utils";
 
 enum ListeningMode {
   Polling = "Polling",
@@ -57,6 +60,8 @@ export default class BlockhainListener {
     | undefined;
   private redisPubClient: Redis;
   private md: MarketData;
+  private proxyInterface: IPerpetualManagerInterface;
+  private orderBookInterface: LimitOrderBookInterface;
 
   // state
   private blockNumber: number | undefined;
@@ -73,6 +78,8 @@ export default class BlockhainListener {
     this.httpProvider = new StaticJsonRpcProvider(this.chooseHttpRpc());
     this.lastBlockReceivedAt = Date.now();
     this.network = { name: "", chainId: 0 };
+    this.proxyInterface = IPerpetualManager__factory.createInterface();
+    this.orderBookInterface = LimitOrderBook__factory.createInterface();
   }
 
   private chooseHttpRpc() {
@@ -249,263 +256,281 @@ export default class BlockhainListener {
       this.blockNumber = blockNumber;
     });
 
-    const proxy = IPerpetualManager__factory.connect(
-      this.md.getProxyAddress(),
-      this.listeningProvider
-    );
+    const filters = [
+      [
+        ...[
+          "Liquidate",
+          "Trade",
+          "UpdateMarginAccount",
+          "UpdateMarkPrice",
+          "PerpetualLimitOrderCancelled",
+          "TransferAddressTo",
+        ].map(
+          (eventName) =>
+            this.proxyInterface.encodeFilterTopics(eventName, [])[0] as string
+        ),
+        ...["PerpetualLimitOrderCreated", "ExecutionFailed"].map(
+          (eventName) =>
+            this.orderBookInterface.encodeFilterTopics(
+              eventName,
+              []
+            )[0] as string
+        ),
+      ],
+    ];
 
-    proxy.on(
-      "Liquidate",
-      (
-        perpetualId: number,
-        liquidator: string,
-        trader: string,
-        amountLiquidatedBC: BigNumber,
-        liquidationPrice: BigNumber,
-        newPositionSizeBC: BigNumber,
-        fFeeCC: BigNumber,
-        fPnlCC: BigNumber,
-        event: LiquidateEvent
-      ) => {
-        const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
-        const msg: LiquidateMsg = {
-          perpetualId: perpetualId,
-          symbol: symbol,
-          traderAddr: trader,
-          tradeAmount: ABK64x64ToFloat(amountLiquidatedBC),
-          liquidator: liquidator,
-          pnl: ABK64x64ToFloat(fPnlCC),
-          fee: ABK64x64ToFloat(fFeeCC),
-          newPositionSizeBC: ABK64x64ToFloat(newPositionSizeBC),
-          block: event.blockNumber,
-          hash: event.transactionHash,
-          id: `${event.transactionHash}:${event.logIndex}`,
-        };
-        this.redisPubClient.publish("LiquidateEvent", JSON.stringify(msg));
+    this.listeningProvider.on(filters, async (event: Log) => {
+      if (event.address === this.md.getProxyAddress()) {
+        // event was emitted by the proxy contract
+        this.handleProxyEvent(event);
+      } else {
+        // event was emitted by an order book
+        this.handleOrderBookEvent(event);
       }
-    );
+    });
+  }
 
-    proxy.on(
-      "UpdateMarginAccount",
-      (
-        perpetualId: number,
-        trader: string,
-        fFundingPaymentCC: BigNumber,
-        event: UpdateMarginAccountEvent
-      ) => {
-        const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
-        const msg: UpdateMarginAccountMsg = {
-          perpetualId: perpetualId,
-          symbol: symbol,
-          traderAddr: trader,
-          // positionBC: ABK64x64ToFloat(fPositionBC),
-          // cashCC: ABK64x64ToFloat(fCashCC),
-          // lockedInQC: ABK64x64ToFloat(fLockedInValueQC),
-          fundingPaymentCC: ABK64x64ToFloat(fFundingPaymentCC),
-          block: event.blockNumber,
-          hash: event.transactionHash,
-          id: `${event.transactionHash}:${event.logIndex}`,
-        };
-        this.redisPubClient.publish(
-          "UpdateMarginAccountEvent",
-          JSON.stringify(msg)
-        );
-      }
-    );
+  // Retrieves order dependencies with a http provider instead of a websocket
+  // one.
+  public async getOrderDependenciesHttp(
+    obAddress: string,
+    orderDigest: string
+  ): Promise<[string, string]> {
+    const ob = LimitOrderBook__factory.connect(obAddress, this.httpProvider);
+    return await ob.orderDependency(orderDigest);
+  }
 
-    proxy.on(
-      "UpdateMarkPrice",
-      (
-        perpetualId: number,
-        fMidPricePremium: BigNumber,
-        fMarkPricePremium: BigNumber,
-        fSpotIndexPrice: BigNumber,
-        event: UpdateMarkPriceEvent
-      ) => {
-        const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
-        const msg: UpdateMarkPriceMsg = {
-          perpetualId: perpetualId,
-          symbol: symbol,
-          midPremium: ABK64x64ToFloat(fMidPricePremium),
-          markPremium: ABK64x64ToFloat(fMarkPricePremium),
-          spotIndexPrice: ABK64x64ToFloat(fSpotIndexPrice),
-          block: event.blockNumber,
-          hash: event.transactionHash,
-          id: `${event.transactionHash}:${event.logIndex}`,
-        };
-        this.redisPubClient.publish(
-          "UpdateMarkPriceEvent",
-          JSON.stringify(msg)
-        );
-      }
+  private sendMsg(parsedEvent: LogDescription, msg: RedisMsg) {
+    console.log({
+      event: parsedEvent.name,
+      time: new Date(Date.now()).toISOString(),
+      mode: this.mode,
+      ...msg,
+    });
+    this.redisPubClient.publish(
+      `${parsedEvent.name}Event`,
+      JSON.stringify(msg)
     );
+  }
 
-    proxy.on(
-      "Trade",
-      (
-        perpetualId: number,
-        trader: string,
-        scOrder: IPerpetualOrder.OrderStructOutput,
-        orderDigest: string,
-        newPositionSizeBC: BigNumber,
-        price: BigNumber,
-        fFeeCC: BigNumber,
-        fPnlCC: BigNumber,
-        fB2C: BigNumber,
-        event: TradeEvent
-      ) => {
-        const order = this.md!.smartContractOrderToOrder(scOrder);
-        const msg: TradeMsg = {
-          perpetualId: perpetualId,
-          trader: trader,
-          digest: orderDigest,
-          ...order,
-          brokerAddr: scOrder.brokerAddr,
-          executor: scOrder.executorAddr,
-          block: event.blockNumber,
-          hash: event.transactionHash,
-          id: `${event.transactionHash}:${event.logIndex}`,
-        };
-        console.log({
-          event: "Trade",
-          time: new Date(Date.now()).toISOString(),
-          mode: this.mode,
-          ...msg,
-        });
-        this.redisPubClient.publish("TradeEvent", JSON.stringify(msg));
-      }
-    );
+  private handleProxyEvent(event: Log) {
+    const parsedEvent = this.proxyInterface.parseLog(event);
+    let msg:
+      | LiquidateMsg
+      | UpdateMarginAccountMsg
+      | TradeMsg
+      | UpdateMarkPriceMsg
+      | PerpetualLimitOrderCancelledMsg;
 
-    proxy.on(
-      "PerpetualLimitOrderCancelled",
-      (
-        perpetualId: number,
-        digest: string,
-        event: PerpetualLimitOrderCancelledEvent
-      ) => {
-        const symbol = this.md!.getSymbolFromPerpId(perpetualId)!;
-        const msg: PerpetualLimitOrderCancelledMsg = {
-          symbol: symbol,
-          perpetualId: perpetualId,
-          digest: digest,
-          block: event.blockNumber,
-          hash: event.transactionHash,
-          id: `${event.transactionHash}:${event.logIndex}`,
-        };
-        console.log({
-          event: "PerpetualLimitOrderCancelled",
-          time: new Date(Date.now()).toISOString(),
-          mode: this.mode,
-          ...msg,
-        });
-        this.redisPubClient.publish(
-          "PerpetualLimitOrderCancelledEvent",
-          JSON.stringify(msg)
-        );
-      }
-    );
-
-    proxy.on(
-      "TransferAddressTo",
-      (
-        module: string,
-        oldAddress: string,
-        newAddress: string,
-        event: TransferAddressToEvent
-      ) => {
-        this.redisPubClient.publish("Restart", module);
+    // handle different events
+    switch (parsedEvent.name) {
+      case "TransferAddressTo":
+        this.redisPubClient.publish("Restart", parsedEvent.args[0]);
+        this.unsubscribe();
+        // force restart
         process.exit(0);
-      }
-    );
 
-    const info = await this.md.exchangeInfo();
+      case "Liquidate":
+        {
+          const {
+            perpetualId,
+            trader,
+            amountLiquidatedBC,
+            liquidator,
+            fPnlCC,
+            fFeeCC,
+            newPositionSizeBC,
+          } = parsedEvent.args as [
+            number,
+            string,
+            string,
+            BigNumber,
+            BigNumber,
+            BigNumber,
+            BigNumber,
+            BigNumber
+          ] &
+            LiquidateEventObject;
+          const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
+          msg = {
+            perpetualId: perpetualId,
+            symbol: symbol,
+            traderAddr: trader,
+            tradeAmount: ABK64x64ToFloat(amountLiquidatedBC),
+            liquidator: liquidator,
+            pnl: ABK64x64ToFloat(fPnlCC),
+            fee: ABK64x64ToFloat(fFeeCC),
+            newPositionSizeBC: ABK64x64ToFloat(newPositionSizeBC),
+            block: event.blockNumber,
+            hash: event.transactionHash,
+            id: `${event.transactionHash}:${event.logIndex}`,
+          };
+        }
+        break;
+      case "Trade":
+        {
+          const {
+            perpetualId,
+            order: scOrder,
+            trader,
+            orderDigest,
+          } = parsedEvent.args as [
+            number,
+            string,
+            IPerpetualOrder.OrderStructOutput,
+            string,
+            BigNumber,
+            BigNumber,
+            BigNumber,
+            BigNumber,
+            BigNumber
+          ] &
+            TradeEventObject;
+          const order = this.md!.smartContractOrderToOrder(scOrder);
+          msg = {
+            perpetualId: perpetualId,
+            trader: trader,
+            digest: orderDigest,
+            ...order,
+            brokerAddr: scOrder.brokerAddr,
+            executor: scOrder.executorAddr,
+            block: event.blockNumber,
+            hash: event.transactionHash,
+            id: `${event.transactionHash}:${event.logIndex}`,
+          };
+        }
+        break;
+      case "UpdateMarginAccount":
+        {
+          const { perpetualId, trader, fFundingPaymentCC } =
+            parsedEvent.args as [number, string, BigNumber] &
+              UpdateMarginAccountEventObject;
+          const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
+          msg = {
+            perpetualId: perpetualId,
+            symbol: symbol,
+            traderAddr: trader,
+            fundingPaymentCC: ABK64x64ToFloat(fFundingPaymentCC),
+            block: event.blockNumber,
+            hash: event.transactionHash,
+            id: `${event.transactionHash}:${event.logIndex}`,
+          };
+        }
+        break;
+      case "UpdateMarkPrice":
+        {
+          const {
+            perpetualId,
+            fMarkPricePremium,
+            fMidPricePremium,
+            fSpotIndexPrice,
+          } = parsedEvent.args as [number, BigNumber, BigNumber, BigNumber] &
+            UpdateMarkPriceEventObject;
+          const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
+          msg = {
+            perpetualId: perpetualId,
+            symbol: symbol,
+            midPremium: ABK64x64ToFloat(fMidPricePremium),
+            markPremium: ABK64x64ToFloat(fMarkPricePremium),
+            spotIndexPrice: ABK64x64ToFloat(fSpotIndexPrice),
+            block: event.blockNumber,
+            hash: event.transactionHash,
+            id: `${event.transactionHash}:${event.logIndex}`,
+          };
+        }
+        break;
+      case "PerpetualLimitOrderCancelled":
+        {
+          const { perpetualId, orderHash } = parsedEvent.args as [
+            number,
+            string
+          ] &
+            PerpetualLimitOrderCancelledEventObject;
+          const symbol = this.md!.getSymbolFromPerpId(perpetualId)!;
+          msg = {
+            symbol: symbol,
+            perpetualId: perpetualId,
+            digest: orderHash,
+            block: event.blockNumber,
+            hash: event.transactionHash,
+            id: `${event.transactionHash}:${event.logIndex}`,
+          };
+        }
+        break;
+      default:
+        console.log("Unexpected event:", parsedEvent);
+        return;
+    }
+    this.sendMsg(parsedEvent, msg);
+  }
 
-    const symbols = info.pools
-      .filter(({ isRunning }) => isRunning)
-      .map((pool) =>
-        pool.perpetuals
-          .filter(({ state }) => state == "NORMAL")
-          .map(
-            (perpetual) =>
-              `${perpetual.baseCurrency}-${perpetual.quoteCurrency}-${pool.poolSymbol}`
-          )
-      )
-      .flat();
-
-    symbols
-      .map(
-        (symbol) =>
-          this.md
-            .getOrderBookContract(symbol)
-            .connect(this.listeningProvider!) as LimitOrderBook
-      )
-      .map((ob, i) => {
-        ob.on(
-          "PerpetualLimitOrderCreated",
-          (
-            perpetualId: number,
-            trader: string,
-            brokerAddr: string,
-            order: IPerpetualOrder.OrderStructOutput,
-            digest: string,
-            event: PerpetualLimitOrderCreatedEvent
-          ) => {
-            const msg: PerpetualLimitOrderCreatedMsg = {
-              symbol: symbols[i],
-              perpetualId: perpetualId,
-              trader: trader,
-              brokerAddr: brokerAddr,
-              order: this.md!.smartContractOrderToOrder(order),
-              digest: digest,
-              block: event.blockNumber,
-              hash: event.transactionHash,
-              id: `${event.transactionHash}:${event.logIndex}`,
-            };
-            console.log({
-              event: "PerpetualLimitOrderCreated",
-              time: new Date(Date.now()).toISOString(),
-              mode: this.mode,
-              ...msg,
-            });
-            this.redisPubClient.publish(
-              "PerpetualLimitOrderCreatedEvent",
-              JSON.stringify(msg)
-            );
+  private async handleOrderBookEvent(event: Log) {
+    const parsedEvent = this.orderBookInterface.parseLog(event);
+    let msg: ExecutionFailedMsg | PerpetualLimitOrderCreatedMsg;
+    // handle different events
+    switch (parsedEvent.name) {
+      case "ExecutionFailed":
+        {
+          const { perpetualId, trader, digest, reason } = parsedEvent.args as [
+            number,
+            string,
+            string,
+            string
+          ] &
+            ExecutionFailedEventObject;
+          const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
+          msg = {
+            perpetualId: perpetualId,
+            symbol: symbol,
+            trader: trader,
+            digest: digest,
+            reason: reason,
+            block: event.blockNumber,
+            hash: event.transactionHash,
+            id: `${event.transactionHash}:${event.logIndex}`,
+          };
+        }
+        break;
+      case "PerpetualLimitOrderCreated":
+        {
+          const { perpetualId, trader, brokerAddr, order, digest } =
+            parsedEvent.args as [
+              number,
+              string,
+              string,
+              IPerpetualOrder.OrderStructOutput,
+              string
+            ] &
+              PerpetualLimitOrderCreatedEventObject;
+          msg = {
+            symbol: this.md!.getSymbolFromPerpId(perpetualId)!,
+            perpetualId: perpetualId,
+            trader: trader,
+            brokerAddr: brokerAddr,
+            order: this.md!.smartContractOrderToOrder(order),
+            digest: digest,
+            block: event.blockNumber,
+            hash: event.transactionHash,
+            id: `${event.transactionHash}:${event.logIndex}`,
+          };
+          // Include parent/child order dependency ids. Order dependency is
+          // not included in PerpetualLimitOrderCreated event but is needed
+          // for the dependency checks in distributor and executor.
+          const orderDependency = await this.getOrderDependenciesHttp(
+            event.address,
+            digest
+          );
+          if (orderDependency) {
+            const [id1, id2] = [orderDependency[0], orderDependency[1]];
+            msg.order.parentChildOrderIds = [id1, id2];
           }
-        );
+        }
+        break;
 
-        ob.on(
-          "ExecutionFailed",
-          (
-            perpetualId: number,
-            trader: string,
-            digest: string,
-            reason: string,
-            event: ExecutionFailedEvent
-          ) => {
-            const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
-            const msg: ExecutionFailedMsg = {
-              perpetualId: perpetualId,
-              symbol: symbol,
-              trader: trader,
-              digest: digest,
-              reason: reason,
-              block: event.blockNumber,
-              hash: event.transactionHash,
-              id: `${event.transactionHash}:${event.logIndex}`,
-            };
-            console.log({
-              event: "ExecutionFailed",
-              time: new Date(Date.now()).toISOString(),
-              mode: this.mode,
-              ...msg,
-            });
-            this.redisPubClient.publish(
-              "ExecutionFailedEvent",
-              JSON.stringify(msg)
-            );
-          }
-        );
-      });
+      default:
+        console.log("Unexpected event:", parsedEvent);
+        return;
+    }
+    this.sendMsg(parsedEvent, msg);
   }
 }

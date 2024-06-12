@@ -16,12 +16,14 @@ import {
   ORDER_TYPE_LIMIT,
   ZERO_ORDER_ID,
   OrderStatus,
+  sleep,
 } from "@d8x/perpetuals-sdk";
 import { providers } from "ethers";
 import { Redis } from "ioredis";
 import { constructRedis } from "../utils";
 import {
   BrokerOrderMsg,
+  ExecuteOrderCommand,
   ExecutionFailedMsg,
   ExecutorConfig,
   OrderBundle,
@@ -32,25 +34,25 @@ import {
   TradeMsg,
   UpdateMarginAccountMsg,
   UpdateMarkPriceMsg,
-  UpdateUnitAccumulatedFundingMsg,
 } from "../types";
 import {
   IPerpetualOrder,
   PerpStorage,
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
 import { IClientOrder } from "@d8x/perpetuals-sdk/dist/esm/contracts/LimitOrderBook";
+import Executor from "./executor";
 
 export default class Distributor {
   // objects
   private md: MarketData;
   private redisSubClient: Redis;
   private redisPubClient: Redis;
-  private providers: providers.StaticJsonRpcProvider[];
+  public providers: providers.StaticJsonRpcProvider[];
 
   // state
   private lastRefreshTime: Map<string, number> = new Map();
   private openPositions: Map<string, Map<string, Position>> = new Map(); // symbol => (trader => Position)
-  private openOrders: Map<string, Map<string, OrderBundle>> = new Map(); // symbol => (digest => order bundle)
+  public openOrders: Map<string, Map<string, OrderBundle>> = new Map(); // symbol => (digest => order bundle)
   private brokerOrders: Map<string, Map<string, number>> = new Map(); // symbol => (digest => received ts)
   private pxSubmission: Map<
     string,
@@ -59,6 +61,7 @@ export default class Distributor {
   private markPremium: Map<string, number> = new Map();
   private midPremium: Map<string, number> = new Map();
   private unitAccumulatedFunding: Map<string, number> = new Map();
+  // order digest => sent for execution timestamp
   private messageSentAt: Map<string, number> = new Map();
   private pricesFetchedAt: Map<string, number> = new Map();
   public ready: boolean = false;
@@ -71,10 +74,19 @@ export default class Distributor {
 
   // constants
 
+  // calculated block time in milliseconds, used for delaying broker orders
+  // execution
+  public blockTimeMS = 0;
+  // Last block timestamp for blockTimeMS measurement
+  public lastBlockTs = 0;
+  // blockTimeMS * brokerOrderBlockSizeDelayFactor is the delay in milliseconds
+  // for broker orders, ideally below 1
+  public brokerOrderBlockSizeDelayFactor = 0.5;
+
   // publish times must be within 10 seconds of each other, or submission will fail on-chain
   private MAX_OUTOFSYNC_SECONDS: number = 10;
 
-  constructor(config: ExecutorConfig) {
+  constructor(config: ExecutorConfig, private executor: Executor) {
     this.config = config;
     this.redisSubClient = constructRedis("commanderSubClient");
     this.redisPubClient = constructRedis("commanderPubClient");
@@ -247,6 +259,14 @@ export default class Distributor {
             ) {
               this.refreshAllOpenOrders();
             }
+
+            // Periodically recalculate the block time for broker order delay
+            if (this.lastBlockTs == 0) {
+              this.lastBlockTs = Date.now();
+            } else {
+              this.blockTimeMS = Date.now() - this.lastBlockTs;
+              this.lastBlockTs = Date.now();
+            }
             break;
           }
 
@@ -327,6 +347,17 @@ export default class Distributor {
           case "BrokerOrderCreatedEvent": {
             const { symbol, traderAddr, digest, type }: BrokerOrderMsg =
               JSON.parse(msg);
+            // introduce delay of less than 1 block for broker orders
+            console.log({
+              info: "delaying broker order",
+              amountMS: this.blockTimeMS * this.brokerOrderBlockSizeDelayFactor,
+              digest: digest,
+              time: new Date(Date.now()).toISOString(),
+            });
+            await sleep(
+              this.blockTimeMS * this.brokerOrderBlockSizeDelayFactor
+            );
+
             this.addOrder(symbol, traderAddr, digest, type, undefined);
             this.brokerOrders.get(symbol)!.set(digest, Date.now());
             this.checkOrders(symbol);
@@ -658,28 +689,20 @@ export default class Distributor {
 
     const removeOrders: string[] = [];
     for (const [digest, orderBundle] of orders) {
-      const command = {
+      const command: ExecuteOrderCommand = {
         symbol: orderBundle.symbol,
         digest: orderBundle.digest,
         trader: orderBundle.trader,
         reduceOnly: orderBundle.order?.reduceOnly,
       };
-      // check if it's too soon to process
-      const msg = JSON.stringify(command);
+      // check if it's not too soon to send order for execution again
       if (
-        Date.now() - (this.messageSentAt.get(msg) ?? 0) <
+        Date.now() - (this.messageSentAt.get(command.digest) ?? 0) <
         this.config.executeIntervalSecondsMin * 500
       ) {
         continue;
       }
-      // // check oracle time
-      // if (
-      //   orderBundle.order?.submittedTimestamp &&
-      //   orderBundle.order?.submittedTimestamp >
-      //     Math.min(...curPx.submission.timestamps)
-      // ) {
-      //   continue;
-      // }
+
       const isExecOnChain = this.isExecutableIfOnChain(
         orderBundle,
         curPx.idxPrices as [number, number | undefined]
@@ -707,27 +730,21 @@ export default class Distributor {
     return;
   }
 
-  private async sendCommand(command: {
-    symbol: string;
-    digest: string;
-    trader: string;
-    reduceOnly?: boolean;
-  }) {
-    // send command
-    const msg = JSON.stringify(command);
+  private async sendCommand(msg: ExecuteOrderCommand) {
+    // Prevent multiple executions of the same order within a short time
     if (
-      Date.now() - (this.messageSentAt.get(msg) ?? 0) >
+      Date.now() - (this.messageSentAt.get(msg.digest) ?? 0) >
       this.config.executeIntervalSecondsMin * 2000
     ) {
-      if (!this.messageSentAt.has(msg)) {
+      if (!this.messageSentAt.has(msg.digest)) {
         console.log({
           info: "execute",
-          ...command,
+          order: msg,
           time: new Date(Date.now()).toISOString(),
         });
       }
-      this.messageSentAt.set(msg, Date.now());
-      await this.redisPubClient.publish("ExecuteOrder", msg);
+      this.messageSentAt.set(msg.digest, Date.now());
+      this.executor.ExecuteOrder(msg);
     }
   }
 
@@ -743,6 +760,26 @@ export default class Distributor {
     if (order.order.executionTimestamp > Date.now() / 1_000) {
       return false;
     }
+
+    // dependencies must be checked before reduce-only order checks, since there
+    // can be a case when a reduce-only order is dependent on another parent
+    // order. If this check would be done after reduce only check, in case
+    // traderPos === 0 order would still be sent off for execution which would
+    // cause dpcy not fulfilled error. Note that order dependencies are also
+    // checked in the executor and orders without loaded parentChildOrderIds
+    // info are not executed.
+    if (order.order.parentChildOrderIds) {
+      if (
+        order.order.parentChildOrderIds[0] == ZERO_ORDER_ID &&
+        this.openOrders
+          .get(order.symbol)
+          ?.has(order.order.parentChildOrderIds[1])
+      ) {
+        // dependency hasn't been cleared
+        return false;
+      }
+    }
+
     // reduce only
     const traderPos = this.openPositions
       .get(order.symbol)
@@ -757,18 +794,6 @@ export default class Distributor {
         return false;
       } else if (traderPos === 0 || order.order.type === ORDER_TYPE_MARKET) {
         return true;
-      }
-    }
-    // dependencies
-    if (order.order.parentChildOrderIds) {
-      if (
-        order.order.parentChildOrderIds[0] == ZERO_ORDER_ID &&
-        this.openOrders
-          .get(order.symbol)
-          ?.has(order.order.parentChildOrderIds[1])
-      ) {
-        // dependency hasn't been cleared
-        return false;
       }
     }
 
