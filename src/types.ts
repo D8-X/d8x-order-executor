@@ -54,6 +54,12 @@ export interface ExecutorConfig {
   maxGasPriceGWei: number;
   gasLimit: number;
   priceFeedEndpoints: [{ type: "pyth" | "odin"; endpoints: string[] }];
+
+  // How much gas to send to each bot when funding them in ETH. If not defined,
+  // gasLimit*5 approach is used.
+  fundGasAmountETH?: number;
+  // What is the minimum balance in ETH that a bot must have to be funded
+  minimumBalanceETH?: number;
 }
 
 export interface BrokerWSErrorData {
@@ -180,4 +186,11 @@ export enum BotStatus {
   Busy = "Busy",
   PartialError = "PartialError",
   Error = "Error",
+}
+
+export interface ExecuteOrderCommand {
+  symbol: string;
+  digest: string;
+  trader: string;
+  reduceOnly: boolean | undefined;
 }
