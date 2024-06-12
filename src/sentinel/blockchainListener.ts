@@ -4,6 +4,7 @@ import {
   LimitOrderBook__factory,
   MarketData,
   PerpetualDataHandler,
+  ZERO_ORDER_ID,
 } from "@d8x/perpetuals-sdk";
 import { BigNumber } from "@ethersproject/bignumber";
 import {
