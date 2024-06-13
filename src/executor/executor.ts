@@ -22,6 +22,9 @@ import { ExecutorMetrics } from "./metrics";
 import { getTxRevertReason, sendTxRevertedMessage } from "./reverts";
 import Distributor from "./distributor";
 
+// How much back in time we consider order to be recent. Currently 5 minutes.
+const RECENT_ORDER_TIME_S = 5 * 60;
+
 export default class Executor {
   // objects
   private providers: providers.StaticJsonRpcProvider[];
@@ -49,6 +52,14 @@ export default class Executor {
 
   // Distributor must be set
   protected distributor: Distributor | undefined;
+
+  // order digest => timestamp of execution. Used to ensure that recent child
+  // orders are not executed before their parent is. Sometimes child order's
+  // PerpetualLimitOrderCreatedEvent can be received before parent's. This might
+  // cause child order to be sent for execution because order depenedency checks
+  // will pass with a true since no parent is present in dsitributor.openOrders.
+  // Cleaned up every RECENT_ORDER_TIME_S * 2 minutes.
+  public recentlyExecutedOrders: Map<string, Date> = new Map();
 
   constructor(
     pkTreasury: string,
@@ -179,6 +190,10 @@ export default class Executor {
         }
       }, 60 * 60 * 8 * 1_000);
 
+      setInterval(() => {
+        this.cleanupRecentOrderExecutions();
+      }, RECENT_ORDER_TIME_S * 2 * 1_000);
+
       this.redisSubClient.on("message", async (channel, msg) => {
         switch (channel) {
           case "block": {
@@ -215,17 +230,55 @@ export default class Executor {
     });
   }
 
+  // For a recent (less than 5 minutes from submission ts as defined in
+  // RECENT_ORDER_TIME_S) child order, checks if parent order was executed
+  // recently. Provided childOrder must be a child order - no additional checks
+  // for that are made. If order is not so recent, all checks are simply
+  // ignored.
+  public wasParentExecutedRecentlyForRecentChild(childOrder: Order): boolean {
+    if (
+      childOrder.submittedTimestamp! + RECENT_ORDER_TIME_S >
+      Date.now() / 1000
+    ) {
+      return this.recentlyExecutedOrders.has(
+        childOrder.parentChildOrderIds![1]
+      );
+    }
+
+    // For not so recent orders - simply ignore this check (parent might be
+    // executed long time ago, canceled, etc.)
+    return true;
+  }
+
+  // remove old entries from recentlyExecutedOrders
+  private cleanupRecentOrderExecutions() {
+    for (const [digest, ts] of this.recentlyExecutedOrders) {
+      if (ts < new Date(Date.now() - RECENT_ORDER_TIME_S * 1_000)) {
+        this.recentlyExecutedOrders.delete(digest);
+      }
+    }
+  }
+
   // Checks if onchainOrder has all its dependencies resolved and order
-  // dependency information is fetched.
+  // dependency information is fetched. Additionally, for recent orders, check
+  // if parent was executed recently, in order to prevent cases where child order
+  // event is received before parent order event and child order is sent for
+  // execution first.
   private checkOrderDependenciesResolved(onchainOrder: Order): boolean {
     if (onchainOrder.parentChildOrderIds) {
-      // Child order deps check. Parent order should not be available in
-      // openOrders (already executed) in the distributor for child order to get
-      // executed
+      // Child order deps check.
       if (
         onchainOrder.parentChildOrderIds[0] === ZERO_ORDER_ID &&
         onchainOrder.parentChildOrderIds[1] !== ZERO_ORDER_ID
       ) {
+        // If parent order was not executed recently for a recent child, do not
+        // allow for it to be executed.
+        if (!this.wasParentExecutedRecentlyForRecentChild(onchainOrder)) {
+          return false;
+        }
+
+        // Parent order should not be available in openOrders (already executed)
+        // in the distributor for child order to get executed
         return !this.distributor?.openOrders.has(
           onchainOrder.parentChildOrderIds[1]
         );
@@ -413,6 +466,11 @@ export default class Executor {
             : undefined,
         }
       );
+
+      // Mark order as executed here once the transaction was sent to the
+      // blockchain so that any child orders can be executed.
+      this.recentlyExecutedOrders.set(digest, new Date());
+
       console.log({
         info: "txn accepted",
         symbol: symbol,
