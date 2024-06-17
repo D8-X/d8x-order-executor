@@ -22,8 +22,8 @@ import { ExecutorMetrics } from "./metrics";
 import { getTxRevertReason, sendTxRevertedMessage } from "./reverts";
 import Distributor from "./distributor";
 
-// How much back in time we consider order to be recent. Currently 5 minutes.
-const RECENT_ORDER_TIME_S = 5 * 60;
+// How much back in time we consider order to be recent. Currently 2 minutes.
+const RECENT_ORDER_TIME_S = 2 * 60;
 
 export default class Executor {
   // objects
@@ -230,11 +230,10 @@ export default class Executor {
     });
   }
 
-  // For a recent (less than 5 minutes from submission ts as defined in
-  // RECENT_ORDER_TIME_S) child order, checks if parent order was executed
-  // recently. Provided childOrder must be a child order - no additional checks
-  // for that are made. If order is not so recent, all checks are simply
-  // ignored.
+  // For a recent (less than RECENT_ORDER_TIME_S from submission ts) child
+  // order, checks if parent order was executed recently. Provided childOrder
+  // must be a child order - no additional checks for that are made. If order is
+  // not so recent, all checks are simply ignored.
   public wasParentExecutedRecentlyForRecentChild(childOrder: Order): boolean {
     if (
       childOrder.submittedTimestamp! + RECENT_ORDER_TIME_S >
