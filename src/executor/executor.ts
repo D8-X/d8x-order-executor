@@ -25,10 +25,22 @@ import Distributor from "./distributor";
 // How much back in time we consider order to be recent. Currently 2 minutes.
 const RECENT_ORDER_TIME_S = 2 * 60;
 
+export interface Bot {
+  api: OrderExecutorTool;
+  busy: boolean;
+  wallet: string;
+
+  // How many times we got nonce already used error.
+  nonceWrong: number;
+
+  // Last used provider index
+  lastUsedProviderIndex: number;
+}
+
 export default class Executor {
   // objects
   private providers: providers.StaticJsonRpcProvider[];
-  private bots: { api: OrderExecutorTool; busy: boolean }[];
+  private bots: Bot[];
   private redisSubClient: Redis;
 
   // parameters
@@ -97,6 +109,9 @@ export default class Executor {
     this.bots = this.privateKey.map((pk) => ({
       api: new OrderExecutorTool(sdkConfig, pk),
       busy: false,
+      wallet: new Wallet(pk).address,
+      nonceWrong: 0,
+      lastUsedProviderIndex: 0,
     }));
   }
   /**
@@ -326,6 +341,23 @@ export default class Executor {
     return order;
   }
 
+  // Retrieve a random provider and its index. Argument skipIndex can be used to
+  // skip particular provider and use another one whenever possible.
+  public getRandomProvider(
+    skipIndex?: number
+  ): [providers.StaticJsonRpcProvider, number] {
+    let index = Math.floor(Math.random() * this.providers.length);
+    if (
+      skipIndex !== undefined &&
+      skipIndex === index &&
+      this.providers.length > 1
+    ) {
+      index = (index + 1) % this.providers.length;
+    }
+
+    return [this.providers[index], index];
+  }
+
   /**
    * Executes an order using a given bot.
    * @param botIdx Index of wallet used
@@ -436,6 +468,13 @@ export default class Executor {
       return BotStatus.PartialError;
     }
 
+    const selectedBot = this.bots[botIdx];
+    // Skip last used provider if there were nonce problems
+    const [selectedProvider, selectedProviderIndex] = this.getRandomProvider(
+      selectedBot.nonceWrong > 0 ? selectedBot.lastUsedProviderIndex : undefined
+    );
+    this.bots[botIdx].lastUsedProviderIndex = selectedProviderIndex;
+
     // submit txn
     console.log({
       info: "submitting txn...",
@@ -447,15 +486,22 @@ export default class Executor {
     });
     let tx: ContractTransaction;
     try {
-      const feeData = await this.providers[
-        Math.floor(Math.random() * this.providers.length)
-      ].getFeeData();
+      const feeData = await selectedProvider.getFeeData();
+
+      // Get nonce ourselves, otherwise it is fetched by ethers anyway, but here
+      // we control the provider.
+      const nonce = await selectedProvider.getTransactionCount(
+        selectedBot.wallet,
+        "pending"
+      );
+
       tx = await this.bots[botIdx].api.executeOrders(
         symbol,
         [digest],
         this.config.rewardsAddress,
         undefined,
         {
+          nonce: nonce,
           gasLimit: this.config.gasLimit,
           gasPrice: feeData.gasPrice
             ? feeData.gasPrice.mul(110).div(100)
@@ -527,6 +573,13 @@ export default class Executor {
           this.bots[botIdx].busy = false;
           return BotStatus.PartialError;
 
+        case error.includes("nonce has already been used"):
+          // this can happen on bad rpcs (happened on xlayer with ankr). Attempt
+          // to rerun with different rpc
+          this.bots[botIdx].nonceWrong++;
+          this.locked.delete(digest);
+          this.bots[botIdx].busy = false;
+          return BotStatus.PartialError;
         default:
           // something else, prob rpc
           throw e;
@@ -555,6 +608,7 @@ export default class Executor {
       }
 
       // order was executed
+      this.bots[botIdx].nonceWrong = 0;
       this.bots[botIdx].busy = false;
       this.locked.add(digest);
       this.trash.add(digest);
