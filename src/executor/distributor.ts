@@ -748,7 +748,7 @@ export default class Distributor {
     }
   }
 
-  private isExecutableIfOnChain(
+  public isExecutableIfOnChain(
     order: OrderBundle,
     pxS2S3: [number, number | undefined]
   ) {

@@ -519,6 +519,10 @@ export default class Executor {
           // this can happen on arbitrum, attempt to rerun the tx with increased
           // gas limit
           this.config.gasLimit *= this.gasLimitIncreaseFactor;
+          // Floor the gasLimit so that we don't ethers.bignum underflow if
+          // gasLimit has decimal places.
+          // https://docs.ethers.org/v5/troubleshooting/errors/#help-NUMERIC_FAULT-underflow
+          this.config.gasLimit = Math.floor(this.config.gasLimit);
           this.gasLimitIncreaseCounter++;
           console.log("intrinsic gas too low, increasing gas limit", {
             new_gas_limit: this.config.gasLimit,
