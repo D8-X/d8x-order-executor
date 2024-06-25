@@ -53,6 +53,8 @@ export default class Executor {
   // Distributor must be set
   protected distributor: Distributor | undefined;
 
+  private lastUsedRpcIndex: number = 0;
+
   // order digest => timestamp of execution. Used to ensure that recent child
   // orders are not executed before their parent is. Sometimes child order's
   // PerpetualLimitOrderCreatedEvent can be received before parent's. This might
@@ -447,9 +449,9 @@ export default class Executor {
     });
     let tx: ContractTransaction;
     try {
-      const feeData = await this.providers[
-        Math.floor(Math.random() * this.providers.length)
-      ].getFeeData();
+      const p = this.getNextRpc();
+
+      const feeData = await p.getFeeData();
       tx = await this.bots[botIdx].api.executeOrders(
         symbol,
         [digest],
@@ -463,6 +465,7 @@ export default class Executor {
           maxFeePerGas: feeData.maxFeePerGas
             ? feeData.maxFeePerGas.mul(110).div(100)
             : undefined,
+          rpcURL: p.connection.url,
         }
       );
 
@@ -519,6 +522,10 @@ export default class Executor {
           // this can happen on arbitrum, attempt to rerun the tx with increased
           // gas limit
           this.config.gasLimit *= this.gasLimitIncreaseFactor;
+          // Floor the gasLimit so that we don't ethers.bignum underflow if
+          // gasLimit has decimal places.
+          // https://docs.ethers.org/v5/troubleshooting/errors/#help-NUMERIC_FAULT-underflow
+          this.config.gasLimit = Math.floor(this.config.gasLimit);
           this.gasLimitIncreaseCounter++;
           console.log("intrinsic gas too low, increasing gas limit", {
             new_gas_limit: this.config.gasLimit,
@@ -762,5 +769,11 @@ export default class Executor {
 
   public setDistributor(distributor: Distributor) {
     this.distributor = distributor;
+  }
+
+  // Returns next rpc provider in the list
+  public getNextRpc() {
+    this.lastUsedRpcIndex = (this.lastUsedRpcIndex + 1) % this.providers.length;
+    return this.providers[this.lastUsedRpcIndex];
   }
 }
