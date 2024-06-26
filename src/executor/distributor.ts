@@ -17,6 +17,7 @@ import {
   ZERO_ORDER_ID,
   OrderStatus,
   sleep,
+  SELL_SIDE,
 } from "@d8x/perpetuals-sdk";
 import { providers } from "ethers";
 import { Redis } from "ioredis";
@@ -36,6 +37,7 @@ import {
   UpdateMarkPriceMsg,
 } from "../types";
 import {
+  IPerpetualManager,
   IPerpetualOrder,
   PerpStorage,
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
@@ -61,6 +63,7 @@ export default class Distributor {
   private markPremium: Map<string, number> = new Map();
   private midPremium: Map<string, number> = new Map();
   private unitAccumulatedFunding: Map<string, number> = new Map();
+  private tradePremium: Map<string, [number, number]> = new Map();
   // order digest => sent for execution timestamp
   private messageSentAt: Map<string, number> = new Map();
   private pricesFetchedAt: Map<string, number> = new Map();
@@ -155,9 +158,9 @@ export default class Distributor {
         await this.md.fetchPricesForPerpetual(symbol)
       );
       // mark premium, accumulated funding per BC unit
-      const perpState = await this.md
-        .getReadOnlyProxyInstance()
-        .getPerpetual(this.md.getPerpIdFromSymbol(symbol));
+      const perpState = await (
+        this.md.getReadOnlyProxyInstance() as IPerpetualManager
+      ).getPerpetual(this.md.getPerpIdFromSymbol(symbol));
       this.markPremium.set(
         symbol,
         ABK64x64ToFloat(perpState.currentMarkPremiumRate.fPrice)
@@ -172,6 +175,10 @@ export default class Distributor {
         symbol,
         ABK64x64ToFloat(perpState.fUnitAccumulatedFunding)
       );
+      this.tradePremium.set(symbol, [
+        this.midPremium.get(symbol)! + 5e-4,
+        this.midPremium.get(symbol)! - 5e-4,
+      ]);
       // "preallocate" trader set
       this.openPositions.set(symbol, new Map());
       this.openOrders.set(symbol, new Map());
@@ -292,6 +299,7 @@ export default class Distributor {
               JSON.parse(msg);
             this.markPremium.set(symbol, markPremium);
             this.midPremium.set(symbol, midPremium);
+            this.updatePriceCurve(symbol);
             break;
           }
 
@@ -371,6 +379,38 @@ export default class Distributor {
       });
       await this.refreshAllOpenOrders();
     });
+  }
+
+  private getOrderAverage(symbol: string, side: string) {
+    const orders = [...this.openOrders.get(symbol)!]
+      .filter(([, order]) => order.order?.side === side)
+      .map(([, order]) => order.order!.quantity); // undefined is ok because these are fill or kill if tried
+
+    return orders.length > 0
+      ? orders.reduce((acc, val) => acc + val, 0) / orders.length
+      : undefined;
+  }
+  /**
+   * Update [short prem, long prem] by computing price of average long (short) order sizes.
+   * No update needed if no orders exist on that side.
+   * Broker orders are only tried without knowing the order side/quantity when they are fill or kill, so can be ignored.
+   * @param symbol
+   */
+  private async updatePriceCurve(symbol: string) {
+    const prem = this.tradePremium.get(symbol)!;
+    for (const i of [0, 1]) {
+      const side = [BUY_SIDE, SELL_SIDE][i];
+      const pxS2S3 = this.pxSubmission.get(symbol)?.idxPrices! as [
+        number,
+        number
+      ];
+      const tradeSize = this.getOrderAverage(symbol, side);
+      if (tradeSize) {
+        const p = await this.md.getPerpetualPrice(symbol, tradeSize, pxS2S3);
+        prem[i] = p / pxS2S3[0] - 1;
+      }
+    }
+    this.tradePremium.set(symbol, prem);
   }
 
   private addOrder(
@@ -798,42 +838,72 @@ export default class Distributor {
     }
 
     const markPrice = pxS2S3[0] * (1 + this.markPremium.get(order.symbol)!);
-    const midPrice = pxS2S3[0] * (1 + this.midPremium.get(order.symbol)!);
+    // const midPrice = pxS2S3[0] * (1 + this.midPremium.get(order.symbol)!);
     const limitPrice = order.order.limitPrice;
     const triggerPrice = order.order.stopPrice;
+    const idx = [BUY_SIDE, SELL_SIDE].findIndex(
+      (side) => side === order.order!.side
+    );
+    const refSize = this.getOrderAverage(order.symbol, order.order!.side);
+    const tradePrice =
+      pxS2S3[0] *
+      (1 + this.tradePremium.get(order.symbol)![idx]) *
+      (!refSize ? 1 : order.order.quantity / refSize);
+
+    let execute: boolean | undefined;
 
     switch (order.order.type) {
       case ORDER_TYPE_MARKET:
-        return true;
+        execute = true;
+        console.log("reason: market order");
+        break;
 
       case ORDER_TYPE_LIMIT:
-        return (
+        execute =
           limitPrice != undefined &&
-          ((isBuy && midPrice * 1.0005 < limitPrice) ||
-            (!isBuy && midPrice * 0.9995 > limitPrice))
-        );
+          ((isBuy && tradePrice < limitPrice) ||
+            (!isBuy && tradePrice > limitPrice));
+        if (execute)
+          console.log("reason: limit order:", tradePrice, limitPrice);
+        break;
 
       case ORDER_TYPE_STOP_MARKET:
-        return (
+        execute =
           triggerPrice != undefined &&
           ((isBuy && markPrice > triggerPrice) ||
-            (!isBuy && markPrice < triggerPrice))
-        );
+            (!isBuy && markPrice < triggerPrice));
+        if (execute)
+          console.log(
+            "reason: stop market order",
+            isBuy,
+            markPrice,
+            triggerPrice
+          );
+        break;
 
       case ORDER_TYPE_STOP_LIMIT:
-        return (
+        execute =
           triggerPrice != undefined &&
           limitPrice != undefined &&
           ((isBuy && markPrice > triggerPrice) ||
             (!isBuy && markPrice < triggerPrice)) &&
-          ((isBuy && midPrice * 1.0005 < limitPrice) ||
-            (!isBuy && midPrice * 0.9995 > limitPrice))
-        );
+          ((isBuy && tradePrice < limitPrice) ||
+            (!isBuy && tradePrice > limitPrice));
+        if (execute)
+          console.log(
+            "reason: stop limit order",
+            isBuy,
+            tradePrice,
+            limitPrice,
+            markPrice,
+            triggerPrice
+          );
+        break;
 
       default:
         break;
     }
-    return undefined;
+    return execute;
   }
 
   /**
