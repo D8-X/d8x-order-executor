@@ -124,6 +124,14 @@ export default class Executor {
         this.bots.map((bot) => bot.api.createProxyInstance(this.providers[i]))
       );
       success = results.every((r) => r.status === "fulfilled");
+      if (!success) {
+        console.log(`Connection to ${this.config.rpcExec[i]} failed:`);
+        console.log(
+          results.map((r) => {
+            if (r.status === "rejected") console.log(r.reason);
+          })
+        );
+      }
     }
     if (!success) {
       throw new Error("critical: all RPCs are down");
@@ -417,9 +425,10 @@ export default class Executor {
     }
 
     // check oracles
-    const oracleTS = await this.bots[botIdx].api
-      .fetchPriceSubmissionInfoForPerpetual(symbol)
-      .then((px) => Math.min(...px.submission.timestamps));
+    const px = await this.bots[botIdx].api.fetchPriceSubmissionInfoForPerpetual(
+      symbol
+    );
+    const oracleTS = Math.min(...px.submission.timestamps);
     if (oracleTS < onChainTS) {
       // let oracle cache expire before trying
       console.log({
@@ -456,7 +465,7 @@ export default class Executor {
         symbol,
         [digest],
         this.config.rewardsAddress,
-        undefined,
+        px.submission,
         {
           gasLimit: this.config.gasLimit,
           gasPrice: feeData.gasPrice
@@ -588,7 +597,7 @@ export default class Executor {
 
       // check if order is gone
       let ordr = await this.bots[botIdx].api.getOrderById(symbol, digest);
-      if (ordr != undefined && ordr.quantity > 0) {
+      if (ordr !== undefined && ordr.quantity > 0) {
         // order is still on chain - maybe still processing, so wait and check again,
         // then unlock if it hasn't been trashed
         console.log({
@@ -601,7 +610,7 @@ export default class Executor {
         await sleep(10_000);
         this.bots[botIdx].busy = false;
         ordr = await this.bots[botIdx].api.getOrderById(symbol, digest);
-        if (ordr != undefined && ordr.quantity > 0) {
+        if (ordr !== undefined && ordr.quantity > 0) {
           if (!this.trash.has(digest)) {
             this.locked.delete(digest);
           }

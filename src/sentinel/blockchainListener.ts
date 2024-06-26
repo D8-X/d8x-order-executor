@@ -52,6 +52,7 @@ enum ListeningMode {
 export default class BlockhainListener {
   private config: ExecutorConfig;
   private network: Network;
+  private orderBooks: Set<string> = new Set();
 
   // objects
   private httpProvider: StaticJsonRpcProvider;
@@ -207,11 +208,32 @@ export default class BlockhainListener {
       "could not establish http connection"
     );
     await this.md.createProxyInstance(this.httpProvider);
+
+    const perps = await this.md
+      .exchangeInfo()
+      .then(({ pools }) =>
+        pools
+          .map(({ perpetuals, poolSymbol }) =>
+            perpetuals
+              .filter(({ state }) => state === "NORMAL")
+              .map(
+                ({ baseCurrency, quoteCurrency }) =>
+                  `${baseCurrency}-${quoteCurrency}-${poolSymbol}`
+              )
+          )
+          .flat()
+      );
+
+    for (const symbol of perps) {
+      this.orderBooks.add(this.md.getOrderBookContract(symbol).address);
+    }
+
     console.log(
       `${new Date(Date.now()).toISOString()}: connected to ${
         this.network.name
       }, chain id ${this.network.chainId}, using HTTP provider`
     );
+
     // ws rpc
     if (this.config.rpcListenWs.length > 0) {
       this.listeningProvider = new WebSocketProvider(
@@ -284,10 +306,10 @@ export default class BlockhainListener {
       if (event.address === this.md.getProxyAddress()) {
         // event was emitted by the proxy contract
         this.handleProxyEvent(event);
-      } else {
+      } else if (this.orderBooks.has(event.address)) {
         // event was emitted by an order book
         this.handleOrderBookEvent(event);
-      }
+      } // else: not one of ours
     });
   }
 
