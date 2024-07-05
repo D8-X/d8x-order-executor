@@ -384,7 +384,7 @@ export default class Distributor {
   private getOrderAverage(symbol: string, side: string) {
     const orders = [...this.openOrders.get(symbol)!]
       .filter(([, order]) => order.order?.side === side)
-      .map(([, order]) => order.order!.quantity); // undefined is ok because these are fill or kill if tried
+      .map(([, order]) => order.order!.quantity * (side === BUY_SIDE ? 1 : -1)); // undefined is ok because these are fill or kill if tried
 
     return orders.length > 0
       ? orders.reduce((acc, val) => acc + val, 0) / orders.length
