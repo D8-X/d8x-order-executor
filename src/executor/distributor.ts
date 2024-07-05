@@ -381,13 +381,21 @@ export default class Distributor {
     });
   }
 
+  /**
+   * Signed geometric mean of order sizes
+   * @param symbol
+   * @param side
+   * @returns
+   */
   private getOrderAverage(symbol: string, side: string) {
-    const orders = [...this.openOrders.get(symbol)!]
+    const logSizes = [...this.openOrders.get(symbol)!]
       .filter(([, order]) => order.order?.side === side)
-      .map(([, order]) => order.order!.quantity * (side === BUY_SIDE ? 1 : -1)); // undefined is ok because these are fill or kill if tried
-
-    return orders.length > 0
-      ? orders.reduce((acc, val) => acc + val, 0) / orders.length
+      .map(([, order]) => order.order!.quantity); // undefined is ok because these are fill or kill if tried
+    return logSizes.length > 0
+      ? Math.exp(
+          logSizes.reduce((acc, val) => acc + Math.log(val), 0) /
+            logSizes.length
+        ) * (side === BUY_SIDE ? 1 : -1)
       : undefined;
   }
   /**
@@ -406,8 +414,13 @@ export default class Distributor {
       ];
       const tradeSize = this.getOrderAverage(symbol, side);
       if (tradeSize) {
+        // empirical
         const p = await this.md.getPerpetualPrice(symbol, tradeSize, pxS2S3);
         prem[i] = p / pxS2S3[0] - 1;
+      } else {
+        // default to mid premium +/- 5 bps buffer
+        prem[i] =
+          this.midPremium.get(symbol)! + (side === BUY_SIDE ? 1e5 : -1e5);
       }
     }
     this.tradePremium.set(symbol, prem);
@@ -844,18 +857,20 @@ export default class Distributor {
     const idx = [BUY_SIDE, SELL_SIDE].findIndex(
       (side) => side === order.order!.side
     );
-    const refSize = this.getOrderAverage(order.symbol, order.order!.side);
+    const refSize = this.getOrderAverage(order.symbol, order.order.side);
+    // scale premium by: 1 if this order is small or we have no reference, else ratio this order  size / reference size
+    const scale =
+      !refSize || Math.abs(refSize) > order.order.quantity
+        ? 1
+        : order.order.quantity / Math.abs(refSize);
     const tradePrice =
-      pxS2S3[0] *
-      (1 + this.tradePremium.get(order.symbol)![idx]) *
-      (!refSize ? 1 : order.order.quantity / refSize);
+      pxS2S3[0] * (1 + this.tradePremium.get(order.symbol)![idx] * scale);
 
     let execute: boolean | undefined;
 
     switch (order.order.type) {
       case ORDER_TYPE_MARKET:
         execute = true;
-        console.log("reason: market order");
         break;
 
       case ORDER_TYPE_LIMIT:
@@ -863,8 +878,6 @@ export default class Distributor {
           limitPrice != undefined &&
           ((isBuy && tradePrice < limitPrice) ||
             (!isBuy && tradePrice > limitPrice));
-        if (execute)
-          console.log("reason: limit order:", tradePrice, limitPrice);
         break;
 
       case ORDER_TYPE_STOP_MARKET:
@@ -872,13 +885,6 @@ export default class Distributor {
           triggerPrice != undefined &&
           ((isBuy && markPrice > triggerPrice) ||
             (!isBuy && markPrice < triggerPrice));
-        if (execute)
-          console.log(
-            "reason: stop market order",
-            isBuy,
-            markPrice,
-            triggerPrice
-          );
         break;
 
       case ORDER_TYPE_STOP_LIMIT:
@@ -889,19 +895,20 @@ export default class Distributor {
             (!isBuy && markPrice < triggerPrice)) &&
           ((isBuy && tradePrice < limitPrice) ||
             (!isBuy && tradePrice > limitPrice));
-        if (execute)
-          console.log(
-            "reason: stop limit order",
-            isBuy,
-            tradePrice,
-            limitPrice,
-            markPrice,
-            triggerPrice
-          );
         break;
 
       default:
         break;
+    }
+    if (execute) {
+      console.log({
+        side: order.order.side,
+        indexPrice: pxS2S3[0],
+        tradePrice,
+        limitPrice,
+        markPrice,
+        triggerPrice,
+      });
     }
     return execute;
   }
