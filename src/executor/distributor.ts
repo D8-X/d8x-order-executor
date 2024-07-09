@@ -811,8 +811,9 @@ export default class Distributor {
     order: OrderBundle,
     pxS2S3: [number, number | undefined]
   ) {
-    if (!order.order) {
+    if (order.order == undefined) {
       // broker order: if it's market and on chain, it's executable, nothing to check
+      // console.log("order undefined and type=", order.type);
       return order.type == ORDER_TYPE_MARKET;
     }
     // exec ts
@@ -822,7 +823,8 @@ export default class Distributor {
     }
 
     // deadline
-    if (!!order.order.deadline && order.order.deadline > Date.now() / 1_000) {
+    if (!!order.order.deadline && order.order.deadline < Date.now() / 1_000) {
+      // console.log("expired");
       // expired - get paid to remove it
       return true;
     }
@@ -834,16 +836,15 @@ export default class Distributor {
     // cause dpcy not fulfilled error. Note that order dependencies are also
     // checked in the executor and orders without loaded parentChildOrderIds
     // info are not executed.
-    if (order.order.parentChildOrderIds) {
-      if (
-        order.order.parentChildOrderIds[0] == ZERO_ORDER_ID &&
+    if (
+      !order.order.parentChildOrderIds ||
+      (order.order.parentChildOrderIds[0] == ZERO_ORDER_ID &&
         this.openOrders
           .get(order.symbol)
-          ?.has(order.order.parentChildOrderIds[1])
-      ) {
-        // dependency hasn't been cleared
-        return false;
-      }
+          ?.has(order.order.parentChildOrderIds[1]))
+    ) {
+      // dependency hasn't been cleared
+      return false;
     }
 
     // reduce only
@@ -852,13 +853,14 @@ export default class Distributor {
       ?.get(order.trader)?.positionBC;
     const isLong = order.order.side === BUY_SIDE;
     if (order.order.reduceOnly) {
-      if (
-        traderPos === undefined ||
-        (traderPos < 0 && !isLong) ||
-        (traderPos > 0 && isLong)
-      ) {
+      if (traderPos == undefined) {
+        // not enough information
+        return false;
+      }
+      if ((traderPos < 0 && !isLong) || (traderPos > 0 && isLong)) {
         return false;
       } else if (traderPos === 0 || order.order.type === ORDER_TYPE_MARKET) {
+        // console.log("reduce only");
         return true;
       }
     }
@@ -890,6 +892,7 @@ export default class Distributor {
     switch (order.order.type) {
       case ORDER_TYPE_MARKET:
         execute = true;
+        // console.log("mkt");
         break;
 
       case ORDER_TYPE_LIMIT:

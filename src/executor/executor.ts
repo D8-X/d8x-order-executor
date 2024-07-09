@@ -477,23 +477,35 @@ export default class Executor {
       const p = this.getNextRpc();
 
       const feeData = await p.getFeeData();
-      tx = await this.bots[botIdx].api.executeOrders(
+      const execTx = await this.bots[botIdx].api.executeOrders(
         symbol,
         [digest],
         this.config.rewardsAddress,
         px.submission,
         {
-          gasLimit: this.config.gasLimit,
+          // gasLimit: this.config.gasLimit, // no gas limit (sdk handles it)
           gasPrice: feeData.gasPrice
             ? feeData.gasPrice.mul(110).div(100)
             : undefined,
-          maxFeePerGas: feeData.maxFeePerGas
-            ? feeData.maxFeePerGas.mul(110).div(100)
-            : undefined,
+          // maxFeePerGas: feeData.maxFeePerGas
+          //   ? feeData.maxFeePerGas.mul(110).div(100)
+          //   : undefined,
           rpcURL: p.connection.url,
         }
       );
-
+      if (!execTx) {
+        // tried but cannot be executed
+        this.trash.add(digest);
+        this.bots[botIdx].busy = false;
+        console.log({
+          info: "txn would fail",
+          symbol: symbol,
+          digest: digest,
+          time: new Date(Date.now()).toISOString(),
+        });
+        return BotStatus.PartialError;
+      }
+      tx = execTx;
       // Mark order as executed here once the transaction was sent to the
       // blockchain so that any child orders can be executed.
       this.recentlyExecutedOrders.set(digest, new Date());
