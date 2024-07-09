@@ -801,6 +801,12 @@ export default class Distributor {
     }
   }
 
+  /**
+   * True if order can be executed if found on-chain
+   * @param order Order bundle
+   * @param pxS2S3 spot prices [S2, S3]
+   * @returns
+   */
   public isExecutableIfOnChain(
     order: OrderBundle,
     pxS2S3: [number, number | undefined]
@@ -811,7 +817,14 @@ export default class Distributor {
     }
     // exec ts
     if (order.order.executionTimestamp > Date.now() / 1_000) {
+      // too soon
       return false;
+    }
+
+    // deadline
+    if (!!order.order.deadline && order.order.deadline > Date.now() / 1_000) {
+      // expired - get paid to remove it
+      return true;
     }
 
     // dependencies must be checked before reduce-only order checks, since there
@@ -837,12 +850,12 @@ export default class Distributor {
     const traderPos = this.openPositions
       .get(order.symbol)
       ?.get(order.trader)?.positionBC;
-    const isBuy = order.order.side === BUY_SIDE;
+    const isLong = order.order.side === BUY_SIDE;
     if (order.order.reduceOnly) {
       if (
         traderPos === undefined ||
-        (traderPos < 0 && !isBuy) ||
-        (traderPos > 0 && isBuy)
+        (traderPos < 0 && !isLong) ||
+        (traderPos > 0 && isLong)
       ) {
         return false;
       } else if (traderPos === 0 || order.order.type === ORDER_TYPE_MARKET) {
@@ -854,19 +867,25 @@ export default class Distributor {
     // const midPrice = pxS2S3[0] * (1 + this.midPremium.get(order.symbol)!);
     const limitPrice = order.order.limitPrice;
     const triggerPrice = order.order.stopPrice;
-    const idx = [BUY_SIDE, SELL_SIDE].findIndex(
-      (side) => side === order.order!.side
-    );
+
     const refSize = this.getOrderAverage(order.symbol, order.order.side);
     // scale premium by: 1 if this order is small or we have no reference, else ratio this order  size / reference size
     const scale =
       !refSize || Math.abs(refSize) > order.order.quantity
         ? 1
         : order.order.quantity / Math.abs(refSize);
+    const sideIdx = [BUY_SIDE, SELL_SIDE].findIndex(
+      (side) => side === order.order!.side
+    );
     const tradePrice =
-      pxS2S3[0] * (1 + this.tradePremium.get(order.symbol)![idx] * scale);
+      pxS2S3[0] * (1 + this.tradePremium.get(order.symbol)![sideIdx] * scale);
 
-    let execute: boolean | undefined;
+    let execute = false;
+
+    // smart contract:
+    // bool isTriggerSatisfied = _isLong
+    // ? _fMarkPrice >= _fTriggerPrice
+    // : _fMarkPrice <= _fTriggerPrice;
 
     switch (order.order.type) {
       case ORDER_TYPE_MARKET:
@@ -876,25 +895,25 @@ export default class Distributor {
       case ORDER_TYPE_LIMIT:
         execute =
           limitPrice != undefined &&
-          ((isBuy && tradePrice < limitPrice) ||
-            (!isBuy && tradePrice > limitPrice));
+          ((isLong && tradePrice < limitPrice) ||
+            (!isLong && tradePrice > limitPrice));
         break;
 
       case ORDER_TYPE_STOP_MARKET:
         execute =
           triggerPrice != undefined &&
-          ((isBuy && markPrice > triggerPrice) ||
-            (!isBuy && markPrice < triggerPrice));
+          ((isLong && markPrice > triggerPrice) ||
+            (!isLong && markPrice < triggerPrice));
         break;
 
       case ORDER_TYPE_STOP_LIMIT:
         execute =
           triggerPrice != undefined &&
           limitPrice != undefined &&
-          ((isBuy && markPrice > triggerPrice) ||
-            (!isBuy && markPrice < triggerPrice)) &&
-          ((isBuy && tradePrice < limitPrice) ||
-            (!isBuy && tradePrice > limitPrice));
+          ((isLong && markPrice > triggerPrice) ||
+            (!isLong && markPrice < triggerPrice)) &&
+          ((isLong && tradePrice < limitPrice) ||
+            (!isLong && tradePrice > limitPrice));
         break;
 
       default:
@@ -927,5 +946,9 @@ export default class Distributor {
       return false;
     }
     return true;
+  }
+
+  public getOrder(symbol: string, digest: string) {
+    return this.openOrders.get(symbol)?.get(digest);
   }
 }

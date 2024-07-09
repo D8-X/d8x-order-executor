@@ -447,6 +447,22 @@ export default class Executor {
       return BotStatus.PartialError;
     }
 
+    // last check in case signal was old
+    const savedOrder = this.distributor?.getOrder(symbol, digest);
+    if (
+      !!savedOrder &&
+      !this.distributor?.isExecutableIfOnChain(savedOrder, px.pxS2S3)
+    ) {
+      // prices moved - retreat
+      console.log({
+        reason: "no longer executable",
+        symbol: symbol,
+        digest: digest,
+        time: new Date(Date.now()).toISOString(),
+      });
+      return BotStatus.PartialError;
+    }
+
     // submit txn
     console.log({
       info: "submitting txn...",
