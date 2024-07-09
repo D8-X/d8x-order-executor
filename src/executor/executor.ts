@@ -477,7 +477,7 @@ export default class Executor {
       const p = this.getNextRpc();
 
       const feeData = await p.getFeeData();
-      const execTx = await this.bots[botIdx].api.executeOrders(
+      tx = await this.bots[botIdx].api.executeOrders(
         symbol,
         [digest],
         this.config.rewardsAddress,
@@ -487,25 +487,13 @@ export default class Executor {
           gasPrice: feeData.gasPrice
             ? feeData.gasPrice.mul(110).div(100)
             : undefined,
-          // maxFeePerGas: feeData.maxFeePerGas
-          //   ? feeData.maxFeePerGas.mul(110).div(100)
-          //   : undefined,
+          maxFeePerGas:
+            !feeData.gasPrice && feeData.maxFeePerGas // don't send both at the same time
+              ? feeData.maxFeePerGas.mul(110).div(100)
+              : undefined,
           rpcURL: p.connection.url,
         }
       );
-      if (!execTx) {
-        // tried but cannot be executed
-        this.trash.add(digest);
-        this.bots[botIdx].busy = false;
-        console.log({
-          info: "txn would fail",
-          symbol: symbol,
-          digest: digest,
-          time: new Date(Date.now()).toISOString(),
-        });
-        return BotStatus.PartialError;
-      }
-      tx = execTx;
       // Mark order as executed here once the transaction was sent to the
       // blockchain so that any child orders can be executed.
       this.recentlyExecutedOrders.set(digest, new Date());
@@ -546,6 +534,12 @@ export default class Executor {
           // point, so now it's gone
           this.trash.add(digest);
           this.bots[botIdx].busy = false;
+          return BotStatus.PartialError;
+        case error.includes("delay required"):
+          // this.metrics increment error type ?
+          this.bots[botIdx].busy = false;
+          await sleep(5_000);
+          this.locked.delete(digest);
           return BotStatus.PartialError;
         case error.includes("gas price too low"):
           this.metrics.incrementGasPriceTooLow();

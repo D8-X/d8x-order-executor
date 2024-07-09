@@ -1,21 +1,18 @@
 import {
   MarketData,
   PerpetualDataHandler,
-  PriceFeedSubmission,
   ABK64x64ToFloat,
   COLLATERAL_CURRENCY_QUOTE,
   Multicall3__factory,
   MULTICALL_ADDRESS,
   Multicall3,
   Order,
-  LimitOrderBook,
   ORDER_TYPE_MARKET,
   ORDER_TYPE_STOP_LIMIT,
   ORDER_TYPE_STOP_MARKET,
   BUY_SIDE,
   ORDER_TYPE_LIMIT,
   ZERO_ORDER_ID,
-  OrderStatus,
   sleep,
   SELL_SIDE,
 } from "@d8x/perpetuals-sdk";
@@ -52,6 +49,8 @@ export default class Distributor {
   public providers: providers.StaticJsonRpcProvider[];
 
   // state
+  private blockNumber = 0;
+  private priceCurveUpdatedAtBlock: Map<string, number> = new Map(); // symbol => block number
   private lastRefreshTime: Map<string, number> = new Map();
   private openPositions: Map<string, Map<string, Position>> = new Map(); // symbol => (trader => Position)
   public openOrders: Map<string, Map<string, OrderBundle>> = new Map(); // symbol => (digest => order bundle)
@@ -257,6 +256,7 @@ export default class Distributor {
       this.redisSubClient.on("message", async (channel, msg) => {
         switch (channel) {
           case "block": {
+            this.blockNumber = +msg;
             for (const symbol of this.symbols) {
               this.checkOrders(symbol);
             }
@@ -299,7 +299,6 @@ export default class Distributor {
               JSON.parse(msg);
             this.markPremium.set(symbol, markPremium);
             this.midPremium.set(symbol, midPremium);
-            this.updatePriceCurve(symbol);
             break;
           }
 
@@ -317,6 +316,7 @@ export default class Distributor {
               order.type as OrderType,
               order
             );
+            await this.updatePriceCurve(symbol);
             this.checkOrders(symbol);
             break;
           }
@@ -340,6 +340,7 @@ export default class Distributor {
               ).fUnitAccumulatedFunding
             );
             this.unitAccumulatedFunding.set(symbol, unitAccumulatedFundingCC);
+            this.updatePriceCurve(symbol);
             break;
           }
 
@@ -390,13 +391,16 @@ export default class Distributor {
   private getOrderAverage(symbol: string, side: string) {
     const logSizes = [...this.openOrders.get(symbol)!]
       .filter(([, order]) => order.order?.side === side)
-      .map(([, order]) => order.order!.quantity); // undefined is ok because these are fill or kill if tried
-    return logSizes.length > 0
-      ? Math.exp(
-          logSizes.reduce((acc, val) => acc + Math.log(val), 0) /
-            logSizes.length
+      .map(([, order]) => Math.log(order.order!.quantity)); // undefined is ok because these are fill or kill if tried
+    if (logSizes.length > 0) {
+      return (
+        Math.exp(
+          logSizes.reduce((acc, val) => acc + val, 0) / logSizes.length
         ) * (side === BUY_SIDE ? 1 : -1)
-      : undefined;
+      );
+    } else {
+      return undefined;
+    }
   }
   /**
    * Update [short prem, long prem] by computing price of average long (short) order sizes.
@@ -405,6 +409,15 @@ export default class Distributor {
    * @param symbol
    */
   private async updatePriceCurve(symbol: string) {
+    const blockLatency = 2;
+    if (
+      (this.priceCurveUpdatedAtBlock.get(symbol) ?? 0) - this.blockNumber >=
+      blockLatency
+    ) {
+      // price curve already updated at most X blocks ago
+      return;
+    }
+    this.priceCurveUpdatedAtBlock.set(symbol, this.blockNumber);
     const prem = this.tradePremium.get(symbol)!;
     for (const i of [0, 1]) {
       const side = [BUY_SIDE, SELL_SIDE][i];
@@ -722,7 +735,6 @@ export default class Distributor {
    */
   private async checkOrders(symbol: string) {
     this.requireReady();
-
     const orders = this.openOrders.get(symbol)!;
     if (orders.size == 0) {
       return;
@@ -813,7 +825,6 @@ export default class Distributor {
   ) {
     if (order.order == undefined) {
       // broker order: if it's market and on chain, it's executable, nothing to check
-      // console.log("order undefined and type=", order.type);
       return order.type == ORDER_TYPE_MARKET;
     }
     // exec ts
@@ -824,9 +835,24 @@ export default class Distributor {
 
     // deadline
     if (!!order.order.deadline && order.order.deadline < Date.now() / 1_000) {
-      // console.log("expired");
       // expired - get paid to remove it
       return true;
+    }
+
+    // reduce only
+    const traderPos = this.openPositions
+      .get(order.symbol)
+      ?.get(order.trader)?.positionBC;
+    const isLong = order.order.side === BUY_SIDE;
+    if (order.order.reduceOnly) {
+      if (traderPos == undefined) {
+        // not enough information
+        return false;
+      } else if ((traderPos < 0 && !isLong) || (traderPos > 0 && isLong)) {
+        return false;
+      } else if (traderPos === 0 || order.order.type === ORDER_TYPE_MARKET) {
+        return true;
+      }
     }
 
     // dependencies must be checked before reduce-only order checks, since there
@@ -845,24 +871,6 @@ export default class Distributor {
     ) {
       // dependency hasn't been cleared
       return false;
-    }
-
-    // reduce only
-    const traderPos = this.openPositions
-      .get(order.symbol)
-      ?.get(order.trader)?.positionBC;
-    const isLong = order.order.side === BUY_SIDE;
-    if (order.order.reduceOnly) {
-      if (traderPos == undefined) {
-        // not enough information
-        return false;
-      }
-      if ((traderPos < 0 && !isLong) || (traderPos > 0 && isLong)) {
-        return false;
-      } else if (traderPos === 0 || order.order.type === ORDER_TYPE_MARKET) {
-        // console.log("reduce only");
-        return true;
-      }
     }
 
     const markPrice = pxS2S3[0] * (1 + this.markPremium.get(order.symbol)!);

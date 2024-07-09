@@ -103,5 +103,29 @@
     "priceFeedEndpoints": [
       { "type": "pyth", "endpoints": ["https://hermes.pyth.network"] }
     ]
+  },
+  {
+    "sdkConfig": "europaTestnet",
+    "bots": 2,
+    "rewardsAddress": "0xA131CF69D5456142E96A92583E11bb7c123eaa26",
+    "brokerWS": [],
+    "rpcExec": ["https://testnet.skalenodes.com/v1/juicy-low-small-testnet"],
+    "rpcWatch": ["https://testnet.skalenodes.com/v1/juicy-low-small-testnet"],
+    "rpcListenHttp": [
+      "https://testnet.skalenodes.com/v1/juicy-low-small-testnet"
+    ],
+    "rpcListenWs": [],
+    "waitForBlockSeconds": 30,
+    "healthCheckSeconds": 2000,
+    "refreshOrdersIntervalSecondsMax": 2000,
+    "refreshOrdersIntervalSecondsMin": 10,
+    "executeIntervalSecondsMax": 60,
+    "executeIntervalSecondsMin": 1,
+    "refreshOrdersSecondsMax": 28800,
+    "fetchPricesIntervalSecondsMin": 5,
+    "brokerReconnectIntervalMaxSeconds": 28800,
+    "maxGasPriceGWei": 0.001,
+    "gasLimit": 1500000,
+    "priceFeedEndpoints": []
   }
 ]
