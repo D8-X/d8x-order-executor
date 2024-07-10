@@ -492,6 +492,7 @@ export default class Executor {
               ? feeData.maxFeePerGas.mul(110).div(100)
               : undefined,
           rpcURL: p.connection.url,
+          maxGasLimit: this.config.gasLimit,
         }
       );
       // Mark order as executed here once the transaction was sent to the
@@ -564,7 +565,15 @@ export default class Executor {
           this.locked.delete(digest);
           this.bots[botIdx].busy = false;
           return BotStatus.PartialError;
-
+        case error.includes("dpcy not fulfilled") ||
+          error.includes("trigger cond not met") ||
+          error.includes("price exceeds limit"):
+          // false positive - trash and wait to unlock
+          this.bots[botIdx].busy = false;
+          this.trash.add(digest);
+          await sleep(10_000);
+          this.locked.delete(digest);
+          return BotStatus.PartialError;
         default:
           // something else, prob rpc
           throw e;

@@ -839,22 +839,6 @@ export default class Distributor {
       return true;
     }
 
-    // reduce only
-    const traderPos = this.openPositions
-      .get(order.symbol)
-      ?.get(order.trader)?.positionBC;
-    const isLong = order.order.side === BUY_SIDE;
-    if (order.order.reduceOnly) {
-      if (traderPos == undefined) {
-        // not enough information
-        return false;
-      } else if ((traderPos < 0 && !isLong) || (traderPos > 0 && isLong)) {
-        return false;
-      } else if (traderPos === 0 || order.order.type === ORDER_TYPE_MARKET) {
-        return true;
-      }
-    }
-
     // dependencies must be checked before reduce-only order checks, since there
     // can be a case when a reduce-only order is dependent on another parent
     // order. If this check would be done after reduce only check, in case
@@ -871,6 +855,22 @@ export default class Distributor {
     ) {
       // dependency hasn't been cleared
       return false;
+    }
+
+    // reduce only
+    const traderPos = this.openPositions
+      .get(order.symbol)
+      ?.get(order.trader)?.positionBC;
+    const isLong = order.order.side === BUY_SIDE;
+    if (order.order.reduceOnly) {
+      if (traderPos == undefined) {
+        // not enough information
+        return false;
+      } else if ((traderPos < 0 && !isLong) || (traderPos > 0 && isLong)) {
+        return false;
+      } else if (traderPos === 0 || order.order.type === ORDER_TYPE_MARKET) {
+        return true;
+      }
     }
 
     const markPrice = pxS2S3[0] * (1 + this.markPremium.get(order.symbol)!);
