@@ -128,9 +128,19 @@ export default class BlockhainListener {
   }
 
   private async switchListeningMode() {
-    this.unsubscribe();
     this.blockNumber = undefined;
-    this.listeningProvider?.removeAllListeners();
+
+    // Destroy websockets provider and close underlying connection. Do not call
+    // unsubscribe for websocket provider as it will cause async eth_unsubscribe
+    // calls while underlying connection is being closed.
+    //
+    // Change this once ether.js is upgraded to v6
+    if (this.listeningProvider instanceof WebSocketProvider) {
+      this.listeningProvider.destroy();
+    } else {
+      this.listeningProvider?.removeAllListeners();
+    }
+
     if (this.mode == ListeningMode.Events) {
       console.log(
         `${new Date(Date.now()).toISOString()}: switching from WS to HTTP`
@@ -195,6 +205,9 @@ export default class BlockhainListener {
           if (success) {
             await this.switchListeningMode();
           }
+          // Destroy the one-off websocket provider and close underlying ws
+          // connection.
+          wsProvider.destroy();
         }, this.config.waitForBlockSeconds * 1_000);
       }
     }, this.config.healthCheckSeconds * 1_000);
