@@ -16,7 +16,6 @@ import {
   sleep,
   SELL_SIDE,
 } from "@d8x/perpetuals-sdk";
-import { providers } from "ethers";
 import { Redis } from "ioredis";
 import { constructRedis } from "../utils";
 import {
@@ -40,13 +39,14 @@ import {
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
 import { IClientOrder } from "@d8x/perpetuals-sdk/dist/esm/contracts/LimitOrderBook";
 import Executor from "./executor";
+import { JsonRpcProvider } from "ethers";
 
 export default class Distributor {
   // objects
   private md: MarketData;
   private redisSubClient: Redis;
   private redisPubClient: Redis;
-  public providers: providers.StaticJsonRpcProvider[];
+  public providers: JsonRpcProvider[];
 
   // state
   private blockNumber = 0;
@@ -93,7 +93,7 @@ export default class Distributor {
     this.redisSubClient = constructRedis("commanderSubClient");
     this.redisPubClient = constructRedis("commanderPubClient");
     this.providers = this.config.rpcWatch.map(
-      (url) => new providers.StaticJsonRpcProvider(url)
+      (url) => new JsonRpcProvider(url)
     );
     this.md = new MarketData(
       PerpetualDataHandler.readSDKConfig(config.sdkConfig)
@@ -157,9 +157,9 @@ export default class Distributor {
         await this.md.fetchPricesForPerpetual(symbol)
       );
       // mark premium, accumulated funding per BC unit
-      const perpState = await (
-        this.md.getReadOnlyProxyInstance() as IPerpetualManager
-      ).getPerpetual(this.md.getPerpIdFromSymbol(symbol));
+      const perpState = await this.md
+        .getReadOnlyProxyInstance()
+        .getPerpetual(this.md.getPerpIdFromSymbol(symbol));
       this.markPremium.set(
         symbol,
         ABK64x64ToFloat(perpState.currentMarkPremiumRate.fPrice)
@@ -528,16 +528,16 @@ export default class Distributor {
     }
     const chunkSize1 = 2 ** 4; // for orders
     const rpcProviders = this.config.rpcWatch.map(
-      (url) => new providers.StaticJsonRpcProvider(url)
+      (url) => new JsonRpcProvider(url)
     );
     let providerIdx = Math.floor(Math.random() * rpcProviders.length);
     this.lastRefreshTime.set(symbol, Date.now());
 
     let tsStart = Date.now();
 
-    const numOpenOrders = (
+    const numOpenOrders = Number(
       await this.md.getOrderBookContract(symbol)!.orderCount()
-    ).toNumber();
+    );
 
     // fetch orders
     const promises: Promise<{
@@ -546,11 +546,11 @@ export default class Distributor {
       submittedTs: number[];
     }>[] = [];
     for (let i = 0; i < numOpenOrders; i += chunkSize1) {
-      promises.push(
-        this.md!.getOrderBookContract(symbol)
-          .connect(rpcProviders[providerIdx])
-          .pollRange(i, chunkSize1)
+      const ob = this.md!.getOrderBookContract(
+        symbol,
+        rpcProviders[providerIdx]
       );
+      promises.push(ob.pollRange(i, chunkSize1));
       providerIdx = (providerIdx + 1) % rpcProviders.length;
     }
 
@@ -619,7 +619,7 @@ export default class Distributor {
     console.log({
       info: "open orders",
       symbol: symbol,
-      orderBook: this.md!.getOrderBookContract(symbol)!.address,
+      orderBook: this.md!.getOrderBookContract(symbol)!.target,
       time: new Date(Date.now()).toISOString(),
       ...numOrders,
       waited: `${Date.now() - tsStart} ms`,
@@ -634,7 +634,7 @@ export default class Distributor {
     const perpId = this.md.getPerpIdFromSymbol(symbol)!;
     const proxy = this.md.getReadOnlyProxyInstance();
     const rpcProviders = this.config.rpcWatch.map(
-      (url) => new providers.StaticJsonRpcProvider(url)
+      (url) => new JsonRpcProvider(url)
     );
     let providerIdx = Math.floor(Math.random() * rpcProviders.length);
     this.lastRefreshTime.set(symbol, Date.now());
@@ -651,7 +651,7 @@ export default class Distributor {
       const addressChunk = traderList.slice(i, i + chunkSize2);
       const calls: Multicall3.Call3Struct[] = addressChunk.map((addr) => ({
         allowFailure: true,
-        target: proxy.address,
+        target: proxy.target,
         callData: proxy.interface.encodeFunctionData("getMarginAccount", [
           perpId,
           addr,
@@ -660,7 +660,7 @@ export default class Distributor {
       promises2.push(
         multicall
           .connect(rpcProviders[providerIdx])
-          .callStatic.aggregate3(calls)
+          .aggregate3.staticCall(calls)
       );
       addressChunks.push(addressChunk);
       providerIdx = (providerIdx + 1) % rpcProviders.length;
