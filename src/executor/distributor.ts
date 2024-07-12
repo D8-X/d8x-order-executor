@@ -543,7 +543,7 @@ export default class Distributor {
     const promises: Promise<{
       orders: IClientOrder.ClientOrderStructOutput[];
       orderHashes: string[];
-      submittedTs: number[];
+      submittedTs: bigint[];
     }>[] = [];
     for (let i = 0; i < numOpenOrders; i += chunkSize1) {
       const ob = this.md!.getOrderBookContract(

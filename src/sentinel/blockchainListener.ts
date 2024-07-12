@@ -6,13 +6,6 @@ import {
   PerpetualDataHandler,
   ZERO_ORDER_ID,
 } from "@d8x/perpetuals-sdk";
-import { BigNumber } from "@ethersproject/bignumber";
-import {
-  Network,
-  StaticJsonRpcProvider,
-  WebSocketProvider,
-  Log,
-} from "@ethersproject/providers";
 import { Redis } from "ioredis";
 import SturdyWebSocket from "sturdy-websocket";
 import Websocket from "ws";
@@ -29,37 +22,38 @@ import {
 } from "../types";
 import { constructRedis, executeWithTimeout, sleep } from "../utils";
 import {
+  JsonRpcProvider,
+  Log,
+  LogDescription,
+  Network,
+  WebSocketProvider,
+} from "ethers";
+import {
   IPerpetualManagerInterface,
-  IPerpetualOrder,
-  LiquidateEventObject,
-  PerpetualLimitOrderCancelledEventObject,
-  TradeEventObject,
-  UpdateMarginAccountEventObject,
-  UpdateMarkPriceEventObject,
+  LiquidateEvent,
+  PerpetualLimitOrderCancelledEvent,
+  TradeEvent,
+  UpdateMarginAccountEvent,
+  UpdateMarkPriceEvent,
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
 import {
-  ExecutionFailedEventObject,
+  ExecutionFailedEvent,
   LimitOrderBookInterface,
-  PerpetualLimitOrderCreatedEventObject,
+  PerpetualLimitOrderCreatedEvent,
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/LimitOrderBook";
-import { LogDescription } from "ethers/lib/utils";
 
 enum ListeningMode {
-  Polling = "Polling",
-  Events = "Events",
+  Polling = "HTTP",
+  Events = "Websocket",
 }
 
 export default class BlockhainListener {
   private config: ExecutorConfig;
-  private network: Network;
   private orderBooks: Set<string> = new Set();
 
   // objects
-  private httpProvider: StaticJsonRpcProvider;
-  private listeningProvider:
-    | StaticJsonRpcProvider
-    | WebSocketProvider
-    | undefined;
+  private httpProvider: JsonRpcProvider;
+  private listeningProvider: JsonRpcProvider | WebSocketProvider | undefined;
   private redisPubClient: Redis;
   private md: MarketData;
   private proxyInterface: IPerpetualManagerInterface;
@@ -77,9 +71,12 @@ export default class BlockhainListener {
       PerpetualDataHandler.readSDKConfig(this.config.sdkConfig)
     );
     this.redisPubClient = constructRedis("sentinelPubClient");
-    this.httpProvider = new StaticJsonRpcProvider(this.chooseHttpRpc());
+    this.httpProvider = new JsonRpcProvider(
+      this.chooseHttpRpc(),
+      this.md.network,
+      { staticNetwork: true }
+    );
     this.lastBlockReceivedAt = Date.now();
-    this.network = { name: "", chainId: 0 };
     this.proxyInterface = IPerpetualManager__factory.createInterface();
     this.orderBookInterface = LimitOrderBook__factory.createInterface();
   }
@@ -146,9 +143,10 @@ export default class BlockhainListener {
         `${new Date(Date.now()).toISOString()}: switching from WS to HTTP`
       );
       this.mode = ListeningMode.Polling;
-      this.listeningProvider = new StaticJsonRpcProvider(
+      this.listeningProvider = new JsonRpcProvider(
         this.chooseHttpRpc(),
-        this.network
+        this.md.network,
+        { staticNetwork: true }
       );
     } else {
       console.log(
@@ -157,7 +155,8 @@ export default class BlockhainListener {
       this.mode = ListeningMode.Events;
       this.listeningProvider = new WebSocketProvider(
         this.chooseWsRpc(),
-        this.network
+        this.md.network,
+        { staticNetwork: true }
       );
     }
     await this.addListeners();
@@ -195,7 +194,8 @@ export default class BlockhainListener {
           new SturdyWebSocket(this.chooseWsRpc(), {
             wsConstructor: Websocket,
           }),
-          this.network
+          this.md.network,
+          { staticNetwork: true }
         );
         wsProvider.once("block", () => {
           success = true;
@@ -215,8 +215,8 @@ export default class BlockhainListener {
 
   public async start() {
     // http rpc
-    this.network = await executeWithTimeout(
-      this.httpProvider.ready,
+    const network = await executeWithTimeout(
+      this.httpProvider._detectNetwork(),
       10_000,
       "could not establish http connection"
     );
@@ -238,13 +238,15 @@ export default class BlockhainListener {
       );
 
     for (const symbol of perps) {
-      this.orderBooks.add(this.md.getOrderBookContract(symbol).address);
+      this.orderBooks.add(
+        this.md.getOrderBookContract(symbol).target.toString()
+      );
     }
 
     console.log(
       `${new Date(Date.now()).toISOString()}: connected to ${
-        this.network.name
-      }, chain id ${this.network.chainId}, using HTTP provider`
+        network.name
+      }, chain id ${Number(network.chainId)}, using HTTP provider`
     );
 
     // ws rpc
@@ -253,10 +255,15 @@ export default class BlockhainListener {
         new SturdyWebSocket(this.chooseWsRpc(), {
           wsConstructor: Websocket,
         }),
-        this.network
+        network,
+        { staticNetwork: true }
       );
     } else if (this.config.rpcListenHttp.length > 0) {
-      this.listeningProvider = new StaticJsonRpcProvider(this.chooseHttpRpc());
+      this.listeningProvider = new JsonRpcProvider(
+        this.chooseHttpRpc(),
+        network,
+        { staticNetwork: true }
+      );
     } else {
       throw new Error(
         "Please specify RPC URLs for listening to blockchain events"
@@ -351,6 +358,10 @@ export default class BlockhainListener {
 
   private handleProxyEvent(event: Log) {
     const parsedEvent = this.proxyInterface.parseLog(event);
+    if (!parsedEvent) {
+      console.log("Unexpected event log:", event);
+      return;
+    }
     let msg:
       | LiquidateMsg
       | UpdateMarginAccountMsg
@@ -376,20 +387,10 @@ export default class BlockhainListener {
             fPnlCC,
             fFeeCC,
             newPositionSizeBC,
-          } = parsedEvent.args as [
-            number,
-            string,
-            string,
-            BigNumber,
-            BigNumber,
-            BigNumber,
-            BigNumber,
-            BigNumber
-          ] &
-            LiquidateEventObject;
-          const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
+          } = parsedEvent.args as unknown as LiquidateEvent.OutputObject;
+          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
-            perpetualId: perpetualId,
+            perpetualId: Number(perpetualId),
             symbol: symbol,
             traderAddr: trader,
             tradeAmount: ABK64x64ToFloat(amountLiquidatedBC),
@@ -399,7 +400,7 @@ export default class BlockhainListener {
             newPositionSizeBC: ABK64x64ToFloat(newPositionSizeBC),
             block: event.blockNumber,
             hash: event.transactionHash,
-            id: `${event.transactionHash}:${event.logIndex}`,
+            id: `${event.transactionHash}:${event.index}`,
           };
         }
         break;
@@ -410,21 +411,10 @@ export default class BlockhainListener {
             order: scOrder,
             trader,
             orderDigest,
-          } = parsedEvent.args as [
-            number,
-            string,
-            IPerpetualOrder.OrderStructOutput,
-            string,
-            BigNumber,
-            BigNumber,
-            BigNumber,
-            BigNumber,
-            BigNumber
-          ] &
-            TradeEventObject;
+          } = parsedEvent.args as unknown as TradeEvent.OutputObject;
           const order = this.md!.smartContractOrderToOrder(scOrder);
           msg = {
-            perpetualId: perpetualId,
+            perpetualId: Number(perpetualId),
             trader: trader,
             digest: orderDigest,
             ...order,
@@ -432,24 +422,23 @@ export default class BlockhainListener {
             executor: scOrder.executorAddr,
             block: event.blockNumber,
             hash: event.transactionHash,
-            id: `${event.transactionHash}:${event.logIndex}`,
+            id: `${event.transactionHash}:${event.index}`,
           };
         }
         break;
       case "UpdateMarginAccount":
         {
           const { perpetualId, trader, fFundingPaymentCC } =
-            parsedEvent.args as [number, string, BigNumber] &
-              UpdateMarginAccountEventObject;
-          const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
+            parsedEvent.args as unknown as UpdateMarginAccountEvent.OutputObject;
+          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
-            perpetualId: perpetualId,
+            perpetualId: Number(perpetualId),
             symbol: symbol,
             traderAddr: trader,
             fundingPaymentCC: ABK64x64ToFloat(fFundingPaymentCC),
             block: event.blockNumber,
             hash: event.transactionHash,
-            id: `${event.transactionHash}:${event.logIndex}`,
+            id: `${event.transactionHash}:${event.index}`,
           };
         }
         break;
@@ -460,36 +449,32 @@ export default class BlockhainListener {
             fMarkPricePremium,
             fMidPricePremium,
             fSpotIndexPrice,
-          } = parsedEvent.args as [number, BigNumber, BigNumber, BigNumber] &
-            UpdateMarkPriceEventObject;
-          const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
+          } = parsedEvent.args as unknown as UpdateMarkPriceEvent.OutputObject;
+          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
-            perpetualId: perpetualId,
+            perpetualId: Number(perpetualId),
             symbol: symbol,
             midPremium: ABK64x64ToFloat(fMidPricePremium),
             markPremium: ABK64x64ToFloat(fMarkPricePremium),
             spotIndexPrice: ABK64x64ToFloat(fSpotIndexPrice),
             block: event.blockNumber,
             hash: event.transactionHash,
-            id: `${event.transactionHash}:${event.logIndex}`,
+            id: `${event.transactionHash}:${event.index}`,
           };
         }
         break;
       case "PerpetualLimitOrderCancelled":
         {
-          const { perpetualId, orderHash } = parsedEvent.args as [
-            number,
-            string
-          ] &
-            PerpetualLimitOrderCancelledEventObject;
-          const symbol = this.md!.getSymbolFromPerpId(perpetualId)!;
+          const { perpetualId, orderHash } =
+            parsedEvent.args as unknown as PerpetualLimitOrderCancelledEvent.OutputObject;
+          const symbol = this.md!.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
             symbol: symbol,
-            perpetualId: perpetualId,
+            perpetualId: Number(perpetualId),
             digest: orderHash,
             block: event.blockNumber,
             hash: event.transactionHash,
-            id: `${event.transactionHash}:${event.logIndex}`,
+            id: `${event.transactionHash}:${event.index}`,
           };
         }
         break;
@@ -502,52 +487,45 @@ export default class BlockhainListener {
 
   private async handleOrderBookEvent(event: Log) {
     const parsedEvent = this.orderBookInterface.parseLog(event);
+    if (!parsedEvent) {
+      console.log("Unexpected order book event log:", event);
+      return;
+    }
+
     let msg: ExecutionFailedMsg | PerpetualLimitOrderCreatedMsg;
     // handle different events
     switch (parsedEvent.name) {
       case "ExecutionFailed":
         {
-          const { perpetualId, trader, digest, reason } = parsedEvent.args as [
-            number,
-            string,
-            string,
-            string
-          ] &
-            ExecutionFailedEventObject;
-          const symbol = this.md.getSymbolFromPerpId(perpetualId)!;
+          const { perpetualId, trader, digest, reason } =
+            parsedEvent.args as unknown as ExecutionFailedEvent.OutputObject;
+          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
-            perpetualId: perpetualId,
+            perpetualId: Number(perpetualId),
             symbol: symbol,
             trader: trader,
             digest: digest,
             reason: reason,
             block: event.blockNumber,
             hash: event.transactionHash,
-            id: `${event.transactionHash}:${event.logIndex}`,
+            id: `${event.transactionHash}:${event.index}`,
           };
         }
         break;
       case "PerpetualLimitOrderCreated":
         {
           const { perpetualId, trader, brokerAddr, order, digest } =
-            parsedEvent.args as [
-              number,
-              string,
-              string,
-              IPerpetualOrder.OrderStructOutput,
-              string
-            ] &
-              PerpetualLimitOrderCreatedEventObject;
+            parsedEvent.args as unknown as PerpetualLimitOrderCreatedEvent.OutputObject;
           msg = {
-            symbol: this.md!.getSymbolFromPerpId(perpetualId)!,
-            perpetualId: perpetualId,
+            symbol: this.md!.getSymbolFromPerpId(Number(perpetualId))!,
+            perpetualId: Number(perpetualId),
             trader: trader,
             brokerAddr: brokerAddr,
             order: this.md!.smartContractOrderToOrder(order),
             digest: digest,
             block: event.blockNumber,
             hash: event.transactionHash,
-            id: `${event.transactionHash}:${event.logIndex}`,
+            id: `${event.transactionHash}:${event.index}`,
           };
           // Include parent/child order dependency ids. Order dependency is
           // not included in PerpetualLimitOrderCreated event but is needed

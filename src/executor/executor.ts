@@ -8,8 +8,6 @@ import {
   ZERO_ADDRESS,
   LimitOrderBook,
 } from "@d8x/perpetuals-sdk";
-import { BigNumber, ContractTransaction, Wallet, utils } from "ethers";
-import { providers } from "ethers";
 import { Redis } from "ioredis";
 import { constructRedis, executeWithTimeout, sleep } from "../utils";
 import {
@@ -21,13 +19,21 @@ import {
 import { ExecutorMetrics } from "./metrics";
 import { getTxRevertReason, sendTxRevertedMessage } from "./reverts";
 import Distributor from "./distributor";
+import {
+  ContractTransactionResponse,
+  formatUnits,
+  JsonRpcProvider,
+  parseUnits,
+  TransactionResponse,
+  Wallet,
+} from "ethers";
 
 // How much back in time we consider order to be recent. Currently 2 minutes.
 const RECENT_ORDER_TIME_S = 2 * 60;
 
 export default class Executor {
   // objects
-  private providers: providers.StaticJsonRpcProvider[];
+  private providers: JsonRpcProvider[];
   private bots: { api: OrderExecutorTool; busy: boolean }[];
   private redisSubClient: Redis;
 
@@ -76,9 +82,7 @@ export default class Executor {
     this.config = config;
     this.originalGasLimit = this.config.gasLimit;
     this.redisSubClient = constructRedis("executorSubClient");
-    this.providers = this.config.rpcExec.map(
-      (url) => new providers.StaticJsonRpcProvider(url)
-    );
+    this.providers = this.config.rpcExec.map((url) => new JsonRpcProvider(url));
 
     const sdkConfig = PerpetualDataHandler.readSDKConfig(this.config.sdkConfig);
 
@@ -472,7 +476,7 @@ export default class Executor {
       oracleTimestamp: oracleTS,
       time: new Date(Date.now()).toISOString(),
     });
-    let tx: ContractTransaction;
+    let tx: TransactionResponse;
     try {
       const p = this.getNextRpc();
 
@@ -485,13 +489,13 @@ export default class Executor {
         {
           // gasLimit: this.config.gasLimit, // no gas limit (sdk handles it)
           gasPrice: feeData.gasPrice
-            ? feeData.gasPrice.mul(110).div(100)
+            ? (feeData.gasPrice * 110n) / 100n
             : undefined,
           maxFeePerGas:
             !feeData.gasPrice && feeData.maxFeePerGas // don't send both at the same time
-              ? feeData.maxFeePerGas.mul(110).div(100)
+              ? (feeData.maxFeePerGas * 110n) / 100n
               : undefined,
-          rpcURL: p.connection.url,
+          // rpcURL: p.connection.url, // TODO
           maxGasLimit: this.config.gasLimit,
         }
       );
@@ -505,7 +509,7 @@ export default class Executor {
         orderBook: tx.to,
         executor: tx.from,
         digest: digest,
-        gasLimit: `${utils.formatUnits(tx.gasLimit, "wei")} wei`,
+        gasLimit: `${formatUnits(tx.gasLimit, "wei")} wei`,
         hash: tx.hash,
         time: new Date(Date.now()).toISOString(),
       });
@@ -583,6 +587,9 @@ export default class Executor {
     // confirm execution
     try {
       const receipt = await executeWithTimeout(tx.wait(), 10_000, "timeout");
+      if (!receipt) {
+        throw new Error("null receipt");
+      }
       console.log({
         info: "txn confirmed",
         symbol: symbol,
@@ -590,8 +597,8 @@ export default class Executor {
         executor: receipt.from,
         digest: digest,
         block: receipt.blockNumber,
-        gasUsed: `${utils.formatUnits(receipt.gasUsed, "wei")} wei`,
-        hash: receipt.transactionHash,
+        gasUsed: `${formatUnits(receipt.gasUsed, "wei")} wei`,
+        hash: receipt.hash,
         time: new Date(Date.now()).toISOString(),
       });
       this.metrics.incrementOrderExecutionConfirmations();
@@ -732,33 +739,34 @@ export default class Executor {
     const treasury = new Wallet(this.treasury, provider);
 
     // Wallet funding parameters
-    let minBalance: BigNumber = BigNumber.from(0);
-    let fundAmount: BigNumber = BigNumber.from(0);
+    let minBalance = 0n;
+    let fundAmount = 0n;
 
     // Check if config has minimum balance set
     if (this.config.minimumBalanceETH && this.config.minimumBalanceETH > 0) {
-      minBalance = utils.parseUnits(
+      minBalance = parseUnits(
         this.config.minimumBalanceETH.toString(),
         "ether"
       );
     } else {
-      const gasPriceWei = await provider.getGasPrice();
-      minBalance = gasPriceWei.mul(this.config.gasLimit * 5);
+      const { gasPrice: gasPriceWei } = await provider.getFeeData();
+      if (!gasPriceWei) {
+        throw new Error("Unable to fetch fee data");
+      }
+      minBalance = gasPriceWei * (BigInt(this.config.gasLimit) * 5n);
     }
 
     if (this.config.fundGasAmountETH && this.config.fundGasAmountETH > 0) {
-      fundAmount = utils.parseUnits(
-        this.config.fundGasAmountETH.toString(),
-        "ether"
-      );
+      fundAmount = parseUnits(this.config.fundGasAmountETH.toString(), "ether");
     }
 
     console.log({
       info: "running fundWallets",
-      minBalance: utils.formatUnits(minBalance),
-      fundAmount: fundAmount.eq(0)
-        ? "minBalance * 2 - bot balance"
-        : utils.formatUnits(fundAmount),
+      minBalance: formatUnits(minBalance),
+      fundAmount:
+        fundAmount == 0n
+          ? "minBalance * 2 - bot balance"
+          : formatUnits(fundAmount),
       time: new Date(Date.now()).toISOString(),
     });
 
@@ -768,22 +776,21 @@ export default class Executor {
 
       console.log({
         treasuryAddr: treasury.address,
-        treasuryBalance: utils.formatUnits(treasuryBalance),
+        treasuryBalance: formatUnits(treasuryBalance),
         botAddress: addr,
-        botBalance: utils.formatUnits(botBalance),
-        minBalance: utils.formatUnits(minBalance),
-        needsFunding: botBalance.lt(minBalance),
+        botBalance: formatUnits(botBalance),
+        minBalance: formatUnits(minBalance),
+        needsFunding: botBalance < minBalance,
       });
-      if (botBalance.lt(minBalance)) {
+      if (botBalance < minBalance) {
         // transfer twice the min so it doesn't transfer every time
-        const transferAmount = fundAmount.eq(0)
-          ? minBalance.mul(2).sub(botBalance)
-          : fundAmount;
-        if (transferAmount.lt(treasuryBalance)) {
+        const transferAmount =
+          fundAmount == 0n ? minBalance * 2n - botBalance : fundAmount;
+        if (transferAmount < treasuryBalance) {
           console.log({
             info: "transferring funds...",
             to: addr,
-            transferAmount: utils.formatUnits(transferAmount),
+            transferAmount: formatUnits(transferAmount),
           });
           const tx = await treasury.sendTransaction({
             to: addr,
@@ -791,14 +798,14 @@ export default class Executor {
           });
           await tx.wait();
           console.log({
-            transferAmount: utils.formatUnits(transferAmount),
+            transferAmount: formatUnits(transferAmount),
             txn: tx.hash,
           });
         } else {
           throw new Error(
-            `insufficient balance in treasury (${utils.formatUnits(
+            `insufficient balance in treasury (${formatUnits(
               treasuryBalance
-            )}); send at least ${utils.formatUnits(transferAmount)} to ${
+            )}); send at least ${formatUnits(transferAmount)} to ${
               treasury.address
             }`
           );
