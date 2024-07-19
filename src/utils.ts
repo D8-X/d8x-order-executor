@@ -47,7 +47,7 @@ export function getPrivateKeyFromSeed(mnemonic: string, idx: number) {
   }
   const baseDerivationPath = "m/44'/60'/0'/0";
   const path = `${baseDerivationPath}/${idx}`;
-  const mnemonicWallet = HDNodeWallet.fromPhrase(mnemonic, path);
+  const mnemonicWallet = HDNodeWallet.fromPhrase(mnemonic, undefined, path);
   return [mnemonicWallet.address, mnemonicWallet.privateKey];
 }
 
