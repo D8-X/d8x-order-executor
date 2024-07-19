@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@d8x/perpetuals-sdk": "https://github.com/D8-X/d8x-futures-node-sdk#feature/v6",
+    "@d8x/perpetuals-sdk": "^2.0.3-alpha",
     "@pythnetwork/pyth-sdk-solidity": "^2.2.1",
     "@slack/webhook": "^7.0.2",
     "@types/ws": "^8.5.5",
