@@ -540,11 +540,7 @@ export default class Distributor {
     );
 
     // fetch orders
-    const promises: Promise<{
-      orders: IClientOrder.ClientOrderStructOutput[];
-      orderHashes: string[];
-      submittedTs: bigint[];
-    }>[] = [];
+    const promises = [];
     for (let i = 0; i < numOpenOrders; i += chunkSize1) {
       const ob = this.md!.getOrderBookContract(
         symbol,
@@ -565,7 +561,7 @@ export default class Distributor {
         );
         for (const result of chunks) {
           if (result.status === "fulfilled") {
-            const { orders, orderHashes, submittedTs } = result.value;
+            const [orders, orderHashes, submittedTs] = result.value;
             for (let j = 0; j < orders.length; j++) {
               if (orderHashes[j] == ZERO_ORDER_ID) {
                 continue;
@@ -575,18 +571,7 @@ export default class Distributor {
                 trader: orders[j].traderAddr,
                 digest: orderHashes[j],
                 order: this.md!.smartContractOrderToOrder({
-                  brokerAddr: orders[j].brokerAddr,
-                  brokerFeeTbps: orders[j].brokerFeeTbps,
-                  brokerSignature: orders[j].brokerSignature,
-                  executionTimestamp: orders[j].executionTimestamp,
-                  fAmount: orders[j].fAmount,
-                  flags: orders[j].flags,
-                  fLimitPrice: orders[j].fLimitPrice,
-                  fTriggerPrice: orders[j].fTriggerPrice,
-                  iDeadline: orders[j].iDeadline,
-                  leverageTDR: orders[j].leverageTDR,
-                  traderAddr: orders[j].traderAddr,
-
+                  ...orders[j],
                   iPerpetualId: this.md!.getPerpIdFromSymbol(symbol),
                   executorAddr: this.config.rewardsAddress,
                   submittedTimestamp: submittedTs[j],
