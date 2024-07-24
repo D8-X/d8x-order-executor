@@ -280,15 +280,15 @@ export default class Distributor {
           case "UpdateMarginAccountEvent": {
             const { traderAddr, perpetualId }: UpdateMarginAccountMsg =
               JSON.parse(msg);
-            const { fPositionBC, fCashCC, fLockedInValueQC } = await this.md
-              .getReadOnlyProxyInstance()
-              .getMarginAccount(perpetualId, traderAddr);
+            const account = await (
+              this.md.getReadOnlyProxyInstance() as unknown as IPerpetualManager
+            ).getMarginAccount(perpetualId, traderAddr);
             this.updatePosition({
               address: traderAddr,
               perpetualId: perpetualId,
-              positionBC: ABK64x64ToFloat(fPositionBC),
-              cashCC: ABK64x64ToFloat(fCashCC),
-              lockedInQC: ABK64x64ToFloat(fLockedInValueQC),
+              positionBC: ABK64x64ToFloat(account.fPositionBC),
+              cashCC: ABK64x64ToFloat(account.fCashCC),
+              lockedInQC: ABK64x64ToFloat(account.fLockedInValueQC),
               unpaidFundingCC: 0,
             });
             break;
