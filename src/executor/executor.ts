@@ -85,6 +85,10 @@ export default class Executor {
     this.providers = this.config.rpcExec.map((url) => new JsonRpcProvider(url));
 
     const sdkConfig = PerpetualDataHandler.readSDKConfig(this.config.sdkConfig);
+    // Chain id supplied from env. For testing purposes (hardhat network)
+    if (process.env.CHAIN_ID !== undefined) {
+      sdkConfig.chainId = parseInt(process.env.CHAIN_ID);
+    }
 
     // Use price feed endpoints from user specified config
     if (this.config.priceFeedEndpoints.length > 0) {
