@@ -268,9 +268,23 @@ export default class Executor {
   }
 
   // remove old entries from recentlyExecutedOrders
-  private cleanupRecentOrderExecutions() {
+  private async cleanupRecentOrderExecutions() {
     for (const [digest, ts] of this.recentlyExecutedOrders) {
       if (ts < new Date(Date.now() - RECENT_ORDER_TIME_S * 1_000)) {
+        // If order is still in openOrders, there might be something wrong with
+        // events coming from sentinel. Attempt to refresh open orders for
+        // order's symbol.
+        const order = this.distributor!.getOrderByDigest(digest);
+        if (order !== undefined) {
+          console.log({
+            info: "executed order still present in open orders, refreshing open orders",
+            digest: digest,
+            order: order,
+            time: new Date(Date.now()).toISOString(),
+          });
+          await this.distributor!.refreshOpenOrders(order.symbol);
+        }
+
         this.recentlyExecutedOrders.delete(digest);
       }
     }

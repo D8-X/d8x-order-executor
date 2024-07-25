@@ -25,11 +25,12 @@ import {
   JsonRpcProvider,
   Log,
   LogDescription,
-  Network,
+  Result,
   WebSocketProvider,
 } from "ethers";
 import {
   IPerpetualManagerInterface,
+  IPerpetualOrder,
   LiquidateEvent,
   PerpetualLimitOrderCancelledEvent,
   TradeEvent,
@@ -531,7 +532,10 @@ export default class BlockhainListener {
             perpetualId: Number(perpetualId),
             trader: trader,
             brokerAddr: brokerAddr,
-            order: this.md!.smartContractOrderToOrder(order),
+            order: this.md!.smartContractOrderToOrder(
+              // Convert ethers result proxy to js object with Orderkeys
+              (order as any as Result).toObject() as IPerpetualOrder.OrderStruct
+            ),
             digest: digest,
             block: event.blockNumber,
             hash: event.transactionHash,

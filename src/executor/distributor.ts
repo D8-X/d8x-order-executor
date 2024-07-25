@@ -538,14 +538,14 @@ export default class Distributor {
   /**
    * Refresh open orders, in parallel over perpetuals
    */
-  private async refreshAllOpenOrders() {
+  public async refreshAllOpenOrders() {
     this.lastRefreshOfAllOpenOrders = new Date();
     await Promise.allSettled(
       this.symbols.map((symbol) => this.refreshOpenOrders(symbol))
     );
   }
 
-  private async refreshOpenOrders(symbol: string) {
+  public async refreshOpenOrders(symbol: string) {
     this.requireReady();
     if (
       Date.now() - (this.lastRefreshTime.get(symbol) ?? 0) <
@@ -999,5 +999,15 @@ export default class Distributor {
 
   public getOrder(symbol: string, digest: string) {
     return this.openOrders.get(symbol)?.get(digest);
+  }
+
+  public getOrderByDigest(digest: string): OrderBundle | undefined {
+    for (const symbol of this.symbols) {
+      const order = this.openOrders.get(symbol)?.get(digest);
+      if (order) {
+        return order;
+      }
+    }
+    return undefined;
   }
 }
