@@ -533,7 +533,7 @@ export default class BlockhainListener {
             trader: trader,
             brokerAddr: brokerAddr,
             order: this.md!.smartContractOrderToOrder(
-              // Convert ethers result proxy to js object with Orderkeys
+              // Convert ethers result proxy to js object with OrderStruct keys
               (order as any as Result).toObject() as IPerpetualOrder.OrderStruct
             ),
             digest: digest,
