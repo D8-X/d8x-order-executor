@@ -1,6 +1,5 @@
-import { TransactionResponse, Provider } from "@ethersproject/providers";
 import { IncomingWebhook } from "@slack/webhook";
-import { utils } from "ethers";
+import { Provider, toUtf8String, TransactionResponse } from "ethers";
 
 // sendTxRevertedMessage sends a message to the Slack channel when a transaction
 // is reverted with reason other than execution frontruns
@@ -90,16 +89,13 @@ export const getTxRevertReason = async (
   tx: TransactionResponse,
   p: Provider
 ) => {
-  const txResp = await p.call(
-    {
-      to: tx.to,
-      from: tx.from,
-      data: tx.data,
-      value: tx.value,
-    },
-    tx.blockNumber
-  );
+  const txResp = await p.call({
+    to: tx.to,
+    from: tx.from,
+    data: tx.data,
+    value: tx.value,
+  });
 
   // Substring 128 also works. revert => Error(string)
-  return utils.toUtf8String("0x" + txResp.substring(138)).trim();
+  return toUtf8String("0x" + txResp.substring(138)).trim();
 };

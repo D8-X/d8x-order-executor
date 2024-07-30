@@ -1,29 +1,5 @@
 [
   {
-    "sdkConfig": "zkevmTestnet",
-    "bots": 2,
-    "rewardsAddress": "",
-    "brokerWS": [],
-    "rpcExec": ["https://rpc.public.zkevm-test.net"],
-    "rpcWatch": ["https://rpc.public.zkevm-test.net"],
-    "rpcListenHttp": ["https://rpc.public.zkevm-test.net"],
-    "rpcListenWs": [],
-    "waitForBlockSeconds": 30,
-    "healthCheckSeconds": 2000,
-    "refreshOrdersIntervalSecondsMax": 2000,
-    "refreshOrdersIntervalSecondsMin": 10,
-    "executeIntervalSecondsMax": 60,
-    "executeIntervalSecondsMin": 5,
-    "refreshOrdersSecondsMax": 28800,
-    "fetchPricesIntervalSecondsMin": 10,
-    "brokerReconnectIntervalMaxSeconds": 28800,
-    "maxGasPriceGWei": 1,
-    "gasLimit": 2000000,
-    "priceFeedEndpoints": [
-      { "type": "pyth", "endpoints": ["https://hermes-beta.pyth.network"] }
-    ]
-  },
-  {
     "sdkConfig": "x1",
     "bots": 2,
     "rewardsAddress": "",
@@ -33,7 +9,7 @@
     "rpcListenHttp": ["https://x1testrpc.okx.com", "https://testrpc.x1.tech"],
     "rpcListenWs": ["wss://x1testws.okx.com", "wss://testws.x1.tech"],
     "waitForBlockSeconds": 30,
-    "healthCheckSeconds": 2000,
+    "healthCheckSeconds": 100,
     "refreshOrdersIntervalSecondsMax": 2000,
     "refreshOrdersIntervalSecondsMin": 10,
     "executeIntervalSecondsMax": 60,
@@ -44,7 +20,11 @@
     "maxGasPriceGWei": 1000,
     "gasLimit": 1000000,
     "priceFeedEndpoints": [
-      { "type": "odin", "endpoints": ["https://odin.d8x.xyz"] }
+      {
+        "type": "odin",
+        "endpoints": ["https://hermes.pyth.network"],
+        "writeEndpoints": ["https://odin.d8x.xyz"]
+      }
     ]
   },
   {
@@ -57,7 +37,7 @@
     "rpcListenHttp": ["https://x1testrpc.okx.com", "https://testrpc.x1.tech"],
     "rpcListenWs": ["wss://x1testws.okx.com", "wss://testws.x1.tech"],
     "waitForBlockSeconds": 30,
-    "healthCheckSeconds": 2000,
+    "healthCheckSeconds": 100,
     "refreshOrdersIntervalSecondsMax": 2000,
     "refreshOrdersIntervalSecondsMin": 10,
     "executeIntervalSecondsMax": 60,
@@ -68,7 +48,11 @@
     "maxGasPriceGWei": 1000,
     "gasLimit": 1000000,
     "priceFeedEndpoints": [
-      { "type": "odin", "endpoints": ["https://odin.d8x.xyz"] }
+      {
+        "type": "odin",
+        "endpoints": ["https://hermes.pyth.network"],
+        "writeEndpoints": ["https://odin.d8x.xyz"]
+      }
     ]
   },
   {
@@ -90,7 +74,7 @@
     ],
     "rpcListenWs": [],
     "waitForBlockSeconds": 30,
-    "healthCheckSeconds": 2000,
+    "healthCheckSeconds": 100,
     "refreshOrdersIntervalSecondsMax": 2000,
     "refreshOrdersIntervalSecondsMin": 10,
     "executeIntervalSecondsMax": 60,
@@ -101,7 +85,11 @@
     "maxGasPriceGWei": 100,
     "gasLimit": 20000000,
     "priceFeedEndpoints": [
-      { "type": "pyth", "endpoints": ["https://hermes.pyth.network"] }
+      {
+        "type": "pyth",
+        "endpoints": ["https://hermes.pyth.network"],
+        "writeEndpoints": ["https://hermes.pyth.network"]
+      }
     ]
   },
   {
@@ -116,7 +104,7 @@
     ],
     "rpcListenWs": [],
     "waitForBlockSeconds": 30,
-    "healthCheckSeconds": 2000,
+    "healthCheckSeconds": 100,
     "refreshOrdersIntervalSecondsMax": 2000,
     "refreshOrdersIntervalSecondsMin": 10,
     "executeIntervalSecondsMax": 60,
@@ -126,6 +114,12 @@
     "brokerReconnectIntervalMaxSeconds": 28800,
     "maxGasPriceGWei": 0.001,
     "gasLimit": 1500000,
-    "priceFeedEndpoints": []
+    "priceFeedEndpoints": [
+      {
+        "type": "odin",
+        "endpoints": ["https://hermes.pyth.network"],
+        "writeEndpoints": ["https://odin.d8x.xyz"]
+      }
+    ]
   }
 ]

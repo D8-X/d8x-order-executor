@@ -1,5 +1,4 @@
 import { MarketData, PerpetualDataHandler } from "@d8x/perpetuals-sdk";
-import { BigNumber, ethers } from "ethers";
 import { Redis } from "ioredis";
 import SturdyWebSocket from "sturdy-websocket";
 import Websocket from "ws";
@@ -12,13 +11,14 @@ import {
 } from "../types";
 import { constructRedis, executeWithTimeout, flagToOrderType } from "../utils";
 import { PerpetualCreatedEvent } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
+import { JsonRpcProvider } from "ethers";
 
 export default class BackendListener {
   private config: ExecutorConfig;
   private wsIndex: number;
 
   // objects
-  private httpProvider: ethers.providers.StaticJsonRpcProvider;
+  private httpProvider: JsonRpcProvider;
   private redisPubClient: Redis;
   private md: MarketData;
   private ws: SturdyWebSocket;
@@ -35,8 +35,10 @@ export default class BackendListener {
       PerpetualDataHandler.readSDKConfig(this.config.sdkConfig)
     );
     this.redisPubClient = constructRedis("BlockchainListener");
-    this.httpProvider = new ethers.providers.StaticJsonRpcProvider(
-      this.chooseHttpRpc()
+    this.httpProvider = new JsonRpcProvider(
+      this.chooseHttpRpc(),
+      this.md.network,
+      { staticNetwork: true }
     );
     this.ws = new SturdyWebSocket(this.config.brokerWS[wsIndex], {
       wsConstructor: Websocket,
@@ -57,14 +59,17 @@ export default class BackendListener {
 
   public async start() {
     // infer chain from provider
-    const network = await executeWithTimeout(this.httpProvider.ready, 10_000);
+    const network = await executeWithTimeout(
+      this.httpProvider._detectNetwork(),
+      10_000
+    );
     // connect to http provider
     console.log(
       `${new Date(Date.now()).toISOString()}: Broker listener connected to ${
         network.name
       }, chain id ${network.chainId}, using HTTP provider`
     );
-    this.chainId = network.chainId;
+    this.chainId = Number(network.chainId);
 
     await this.md.createProxyInstance(this.httpProvider);
     console.log(
@@ -160,10 +165,7 @@ export default class BackendListener {
             perpetualId: +perpId,
             traderAddr: traderAddr,
             digest: `0x${orderId}`,
-            type: flagToOrderType(
-              BigNumber.from(flags),
-              BigNumber.from(fLimitPrice)
-            ),
+            type: flagToOrderType(BigInt(flags), BigInt(fLimitPrice)),
           };
           console.log({
             event: "BrokerOrderCreated",
