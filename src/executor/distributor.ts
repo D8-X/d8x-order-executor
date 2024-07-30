@@ -16,7 +16,6 @@ import {
   sleep,
   SELL_SIDE,
 } from "@d8x/perpetuals-sdk";
-import { providers } from "ethers";
 import { Redis } from "ioredis";
 import { constructRedis } from "../utils";
 import {
@@ -40,13 +39,14 @@ import {
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
 import { IClientOrder } from "@d8x/perpetuals-sdk/dist/esm/contracts/LimitOrderBook";
 import Executor from "./executor";
+import { JsonRpcProvider } from "ethers";
 
 export default class Distributor {
   // objects
   private md: MarketData;
   private redisSubClient: Redis;
   private redisPubClient: Redis;
-  public providers: providers.StaticJsonRpcProvider[];
+  public providers: JsonRpcProvider[];
 
   // state
   private blockNumber = 0;
@@ -88,12 +88,15 @@ export default class Distributor {
   // publish times must be within 10 seconds of each other, or submission will fail on-chain
   private MAX_OUTOFSYNC_SECONDS: number = 10;
 
+  // Last time when refreshAllOpenOrders was called
+  private lastRefreshOfAllOpenOrders: Date = new Date();
+
   constructor(config: ExecutorConfig, private executor: Executor) {
     this.config = config;
     this.redisSubClient = constructRedis("commanderSubClient");
     this.redisPubClient = constructRedis("commanderPubClient");
     this.providers = this.config.rpcWatch.map(
-      (url) => new providers.StaticJsonRpcProvider(url)
+      (url) => new JsonRpcProvider(url)
     );
     this.md = new MarketData(
       PerpetualDataHandler.readSDKConfig(config.sdkConfig)
@@ -157,9 +160,9 @@ export default class Distributor {
         await this.md.fetchPricesForPerpetual(symbol)
       );
       // mark premium, accumulated funding per BC unit
-      const perpState = await (
-        this.md.getReadOnlyProxyInstance() as IPerpetualManager
-      ).getPerpetual(this.md.getPerpIdFromSymbol(symbol));
+      const perpState = await this.md
+        .getReadOnlyProxyInstance()
+        .getPerpetual(this.md.getPerpIdFromSymbol(symbol));
       this.markPremium.set(
         symbol,
         ABK64x64ToFloat(perpState.currentMarkPremiumRate.fPrice)
@@ -197,6 +200,8 @@ export default class Distributor {
       "PerpetualLimitOrderCancelledEvent",
       "BrokerOrderCreatedEvent",
       "Restart",
+      "switch-mode",
+      "listener-error",
       (err, count) => {
         if (err) {
           console.log(
@@ -280,15 +285,15 @@ export default class Distributor {
           case "UpdateMarginAccountEvent": {
             const { traderAddr, perpetualId }: UpdateMarginAccountMsg =
               JSON.parse(msg);
-            const { fPositionBC, fCashCC, fLockedInValueQC } = await this.md
-              .getReadOnlyProxyInstance()
-              .getMarginAccount(perpetualId, traderAddr);
+            const account = await (
+              this.md.getReadOnlyProxyInstance() as unknown as IPerpetualManager
+            ).getMarginAccount(perpetualId, traderAddr);
             this.updatePosition({
               address: traderAddr,
               perpetualId: perpetualId,
-              positionBC: ABK64x64ToFloat(fPositionBC),
-              cashCC: ABK64x64ToFloat(fCashCC),
-              lockedInQC: ABK64x64ToFloat(fLockedInValueQC),
+              positionBC: ABK64x64ToFloat(account.fPositionBC),
+              cashCC: ABK64x64ToFloat(account.fCashCC),
+              lockedInQC: ABK64x64ToFloat(account.fLockedInValueQC),
               unpaidFundingCC: 0,
             });
             break;
@@ -372,6 +377,27 @@ export default class Distributor {
             this.checkOrders(symbol);
             break;
           }
+
+          case "listener-error":
+          case "switch-mode":
+            // Whenever something wrong happens on sentinel, refresh orders if
+            // they were not refreshed recently in the last 30 (should be more
+            // than refreshOrdersIntervalSecondsMin) seconds. Sentinel might
+            // have missed events and executed orders might still be held in
+            // memory in distributor.
+            if (
+              new Date(Date.now() - 30_000) > this.lastRefreshOfAllOpenOrders
+            ) {
+              console.log({
+                message: "Refreshing all open orders due to sentinel error",
+                time: new Date(Date.now()).toISOString(),
+                lastRefreshOfAllOpenOrders:
+                  this.lastRefreshOfAllOpenOrders.toISOString(),
+                sentinelReason: channel,
+              });
+              this.refreshAllOpenOrders();
+            }
+            break;
 
           case "Restart": {
             process.exit(0);
@@ -512,45 +538,47 @@ export default class Distributor {
   /**
    * Refresh open orders, in parallel over perpetuals
    */
-  private async refreshAllOpenOrders() {
+  public async refreshAllOpenOrders() {
+    this.lastRefreshOfAllOpenOrders = new Date();
     await Promise.allSettled(
       this.symbols.map((symbol) => this.refreshOpenOrders(symbol))
     );
   }
 
-  private async refreshOpenOrders(symbol: string) {
+  public async refreshOpenOrders(symbol: string) {
     this.requireReady();
     if (
       Date.now() - (this.lastRefreshTime.get(symbol) ?? 0) <
       this.config.refreshOrdersIntervalSecondsMin * 1_000
     ) {
+      console.log("[refreshOpenOrders] called too soon", {
+        symbol: symbol,
+        time: new Date(Date.now()).toISOString(),
+        lastRefresh: new Date(this.lastRefreshTime.get(symbol) ?? 0),
+      });
       return;
     }
     const chunkSize1 = 2 ** 4; // for orders
     const rpcProviders = this.config.rpcWatch.map(
-      (url) => new providers.StaticJsonRpcProvider(url)
+      (url) => new JsonRpcProvider(url)
     );
     let providerIdx = Math.floor(Math.random() * rpcProviders.length);
     this.lastRefreshTime.set(symbol, Date.now());
 
     let tsStart = Date.now();
 
-    const numOpenOrders = (
+    const numOpenOrders = Number(
       await this.md.getOrderBookContract(symbol)!.orderCount()
-    ).toNumber();
+    );
 
     // fetch orders
-    const promises: Promise<{
-      orders: IClientOrder.ClientOrderStructOutput[];
-      orderHashes: string[];
-      submittedTs: number[];
-    }>[] = [];
+    const promises = [];
     for (let i = 0; i < numOpenOrders; i += chunkSize1) {
-      promises.push(
-        this.md!.getOrderBookContract(symbol)
-          .connect(rpcProviders[providerIdx])
-          .pollRange(i, chunkSize1)
+      const ob = this.md!.getOrderBookContract(
+        symbol,
+        rpcProviders[providerIdx]
       );
+      promises.push(ob.pollRange(i, chunkSize1));
       providerIdx = (providerIdx + 1) % rpcProviders.length;
     }
 
@@ -565,7 +593,7 @@ export default class Distributor {
         );
         for (const result of chunks) {
           if (result.status === "fulfilled") {
-            const { orders, orderHashes, submittedTs } = result.value;
+            const [orders, orderHashes, submittedTs] = result.value;
             for (let j = 0; j < orders.length; j++) {
               if (orderHashes[j] == ZERO_ORDER_ID) {
                 continue;
@@ -575,7 +603,17 @@ export default class Distributor {
                 trader: orders[j].traderAddr,
                 digest: orderHashes[j],
                 order: this.md!.smartContractOrderToOrder({
-                  ...orders[j],
+                  brokerAddr: orders[j].brokerAddr,
+                  brokerFeeTbps: orders[j].brokerFeeTbps,
+                  brokerSignature: orders[j].brokerSignature,
+                  executionTimestamp: orders[j].executionTimestamp,
+                  fAmount: orders[j].fAmount,
+                  flags: orders[j].flags,
+                  fLimitPrice: orders[j].fLimitPrice,
+                  fTriggerPrice: orders[j].fTriggerPrice,
+                  iDeadline: orders[j].iDeadline,
+                  leverageTDR: orders[j].leverageTDR,
+                  traderAddr: orders[j].traderAddr,
                   iPerpetualId: this.md!.getPerpIdFromSymbol(symbol),
                   executorAddr: this.config.rewardsAddress,
                   submittedTimestamp: submittedTs[j],
@@ -619,7 +657,7 @@ export default class Distributor {
     console.log({
       info: "open orders",
       symbol: symbol,
-      orderBook: this.md!.getOrderBookContract(symbol)!.address,
+      orderBook: this.md!.getOrderBookContract(symbol)!.target,
       time: new Date(Date.now()).toISOString(),
       ...numOrders,
       waited: `${Date.now() - tsStart} ms`,
@@ -634,7 +672,7 @@ export default class Distributor {
     const perpId = this.md.getPerpIdFromSymbol(symbol)!;
     const proxy = this.md.getReadOnlyProxyInstance();
     const rpcProviders = this.config.rpcWatch.map(
-      (url) => new providers.StaticJsonRpcProvider(url)
+      (url) => new JsonRpcProvider(url)
     );
     let providerIdx = Math.floor(Math.random() * rpcProviders.length);
     this.lastRefreshTime.set(symbol, Date.now());
@@ -651,7 +689,7 @@ export default class Distributor {
       const addressChunk = traderList.slice(i, i + chunkSize2);
       const calls: Multicall3.Call3Struct[] = addressChunk.map((addr) => ({
         allowFailure: true,
-        target: proxy.address,
+        target: proxy.target,
         callData: proxy.interface.encodeFunctionData("getMarginAccount", [
           perpId,
           addr,
@@ -660,7 +698,7 @@ export default class Distributor {
       promises2.push(
         multicall
           .connect(rpcProviders[providerIdx])
-          .callStatic.aggregate3(calls)
+          .aggregate3.staticCall(calls)
       );
       addressChunks.push(addressChunk);
       providerIdx = (providerIdx + 1) % rpcProviders.length;
@@ -962,5 +1000,15 @@ export default class Distributor {
 
   public getOrder(symbol: string, digest: string) {
     return this.openOrders.get(symbol)?.get(digest);
+  }
+
+  public getOrderByDigest(digest: string): OrderBundle | undefined {
+    for (const symbol of this.symbols) {
+      const order = this.openOrders.get(symbol)?.get(digest);
+      if (order) {
+        return order;
+      }
+    }
+    return undefined;
   }
 }

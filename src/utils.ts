@@ -1,6 +1,5 @@
 import { Redis } from "ioredis";
 import { RedisConfig, ExecutorConfig, OrderType } from "./types";
-import { BigNumber, ethers } from "ethers";
 import {
   MASK_LIMIT_ORDER,
   MASK_STOP_ORDER,
@@ -11,6 +10,7 @@ import {
   ORDER_TYPE_STOP_MARKET,
   containsFlag,
 } from "@d8x/perpetuals-sdk";
+import { HDNodeWallet } from "ethers";
 
 require("dotenv").config();
 
@@ -47,7 +47,7 @@ export function getPrivateKeyFromSeed(mnemonic: string, idx: number) {
   }
   const baseDerivationPath = "m/44'/60'/0'/0";
   const path = `${baseDerivationPath}/${idx}`;
-  const mnemonicWallet = ethers.Wallet.fromMnemonic(mnemonic, path);
+  const mnemonicWallet = HDNodeWallet.fromPhrase(mnemonic, undefined, path);
   return [mnemonicWallet.address, mnemonicWallet.privateKey];
 }
 
@@ -99,14 +99,13 @@ export function sleep(ms: number) {
 }
 
 export function flagToOrderType(
-  orderFlags: BigNumber,
-  orderLimitPrice: BigNumber
+  orderFlags: bigint,
+  orderLimitPrice: bigint
 ): OrderType {
-  let flag = BigNumber.from(orderFlags);
+  let flag = BigInt(orderFlags);
   let isLimit = containsFlag(flag, MASK_LIMIT_ORDER);
   let hasLimit =
-    !BigNumber.from(orderLimitPrice).eq(0) ||
-    !BigNumber.from(orderLimitPrice).eq(MAX_64x64);
+    BigInt(orderLimitPrice) != 0n || BigInt(orderLimitPrice) != MAX_64x64;
   let isStop = containsFlag(flag, MASK_STOP_ORDER);
 
   if (isStop && hasLimit) {
