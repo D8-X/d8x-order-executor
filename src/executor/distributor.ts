@@ -976,6 +976,7 @@ export default class Distributor {
         limitPrice,
         markPrice,
         triggerPrice,
+        timestamp: new Date(Date.now()).toISOString(),
       });
     }
     return execute;

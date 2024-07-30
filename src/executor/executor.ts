@@ -590,10 +590,10 @@ export default class Executor {
         case error.includes("dpcy not fulfilled") ||
           error.includes("trigger cond not met") ||
           error.includes("price exceeds limit"):
-          // false positive - trash and wait to unlock
+          // false positive: order can be tried again later
+          // so just unlock it after a second (so pxs move)
           this.bots[botIdx].busy = false;
-          this.trash.add(digest);
-          await sleep(10_000);
+          await sleep(1_000);
           this.locked.delete(digest);
           return BotStatus.PartialError;
         default:
