@@ -88,6 +88,9 @@ export default class Distributor {
   // publish times must be within 10 seconds of each other, or submission will fail on-chain
   private MAX_OUTOFSYNC_SECONDS: number = 10;
 
+  // Last time when refreshAllOpenOrders was called
+  private lastRefreshOfAllOpenOrders: Date = new Date();
+
   constructor(config: ExecutorConfig, private executor: Executor) {
     this.config = config;
     this.redisSubClient = constructRedis("commanderSubClient");
@@ -197,6 +200,8 @@ export default class Distributor {
       "PerpetualLimitOrderCancelledEvent",
       "BrokerOrderCreatedEvent",
       "Restart",
+      "switch-mode",
+      "listener-error",
       (err, count) => {
         if (err) {
           console.log(
@@ -373,6 +378,27 @@ export default class Distributor {
             break;
           }
 
+          case "listener-error":
+          case "switch-mode":
+            // Whenever something wrong happens on sentinel, refresh orders if
+            // they were not refreshed recently in the last 30 (should be more
+            // than refreshOrdersIntervalSecondsMin) seconds. Sentinel might
+            // have missed events and executed orders might still be held in
+            // memory in distributor.
+            if (
+              new Date(Date.now() - 30_000) > this.lastRefreshOfAllOpenOrders
+            ) {
+              console.log({
+                message: "Refreshing all open orders due to sentinel error",
+                time: new Date(Date.now()).toISOString(),
+                lastRefreshOfAllOpenOrders:
+                  this.lastRefreshOfAllOpenOrders.toISOString(),
+                sentinelReason: channel,
+              });
+              this.refreshAllOpenOrders();
+            }
+            break;
+
           case "Restart": {
             process.exit(0);
           }
@@ -512,18 +538,24 @@ export default class Distributor {
   /**
    * Refresh open orders, in parallel over perpetuals
    */
-  private async refreshAllOpenOrders() {
+  public async refreshAllOpenOrders() {
+    this.lastRefreshOfAllOpenOrders = new Date();
     await Promise.allSettled(
       this.symbols.map((symbol) => this.refreshOpenOrders(symbol))
     );
   }
 
-  private async refreshOpenOrders(symbol: string) {
+  public async refreshOpenOrders(symbol: string) {
     this.requireReady();
     if (
       Date.now() - (this.lastRefreshTime.get(symbol) ?? 0) <
       this.config.refreshOrdersIntervalSecondsMin * 1_000
     ) {
+      console.log("[refreshOpenOrders] called too soon", {
+        symbol: symbol,
+        time: new Date(Date.now()).toISOString(),
+        lastRefresh: new Date(this.lastRefreshTime.get(symbol) ?? 0),
+      });
       return;
     }
     const chunkSize1 = 2 ** 4; // for orders
@@ -967,5 +999,15 @@ export default class Distributor {
 
   public getOrder(symbol: string, digest: string) {
     return this.openOrders.get(symbol)?.get(digest);
+  }
+
+  public getOrderByDigest(digest: string): OrderBundle | undefined {
+    for (const symbol of this.symbols) {
+      const order = this.openOrders.get(symbol)?.get(digest);
+      if (order) {
+        return order;
+      }
+    }
+    return undefined;
   }
 }

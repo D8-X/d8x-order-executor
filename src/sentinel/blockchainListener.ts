@@ -25,11 +25,12 @@ import {
   JsonRpcProvider,
   Log,
   LogDescription,
-  Network,
+  Result,
   WebSocketProvider,
 } from "ethers";
 import {
   IPerpetualManagerInterface,
+  IPerpetualOrder,
   LiquidateEvent,
   PerpetualLimitOrderCancelledEvent,
   TradeEvent,
@@ -67,9 +68,12 @@ export default class BlockhainListener {
 
   constructor(config: ExecutorConfig) {
     this.config = config;
-    this.md = new MarketData(
-      PerpetualDataHandler.readSDKConfig(this.config.sdkConfig)
-    );
+    const sdkConfig = PerpetualDataHandler.readSDKConfig(this.config.sdkConfig);
+    // Chain id supplied from env. For testing purposes (hardhat network)
+    if (process.env.CHAIN_ID !== undefined) {
+      sdkConfig.chainId = parseInt(process.env.CHAIN_ID);
+    }
+    this.md = new MarketData(sdkConfig);
     this.redisPubClient = constructRedis("sentinelPubClient");
     this.httpProvider = new JsonRpcProvider(
       this.chooseHttpRpc(),
@@ -289,6 +293,13 @@ export default class BlockhainListener {
         } mode:`,
         e
       );
+      // Submit last block received ts to executor/distributor to take action if
+      // needed.
+      this.redisPubClient.publish(
+        "listener-error",
+        this.lastBlockReceivedAt.toString()
+      );
+
       this.unsubscribe();
       this.switchListeningMode();
     });
@@ -521,7 +532,10 @@ export default class BlockhainListener {
             perpetualId: Number(perpetualId),
             trader: trader,
             brokerAddr: brokerAddr,
-            order: this.md!.smartContractOrderToOrder(order),
+            order: this.md!.smartContractOrderToOrder(
+              // Convert ethers result proxy to js object with OrderStruct keys
+              (order as any as Result).toObject() as IPerpetualOrder.OrderStruct
+            ),
             digest: digest,
             block: event.blockNumber,
             hash: event.transactionHash,
