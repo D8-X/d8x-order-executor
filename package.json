@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@d8x/perpetuals-sdk": "^2.0.3-alpha",
+    "@d8x/perpetuals-sdk": "^2.0.8-alpha",
     "@pythnetwork/pyth-sdk-solidity": "^2.2.1",
     "@slack/webhook": "^7.0.2",
     "@types/ws": "^8.5.5",
