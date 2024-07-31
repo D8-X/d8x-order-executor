@@ -150,7 +150,7 @@ export default class BlockhainListener {
       this.listeningProvider = new JsonRpcProvider(
         this.chooseHttpRpc(),
         this.md.network,
-        { staticNetwork: true }
+        { staticNetwork: true, polling: true }
       );
     } else {
       console.log(
@@ -266,7 +266,7 @@ export default class BlockhainListener {
       this.listeningProvider = new JsonRpcProvider(
         this.chooseHttpRpc(),
         network,
-        { staticNetwork: true }
+        { staticNetwork: true, polling: true }
       );
     } else {
       throw new Error(
