@@ -14,10 +14,9 @@
   dependencies:
     "@jridgewell/trace-mapping" "0.3.9"
 
-"@d8x/perpetuals-sdk@^2.0.8-alpha":
-  version "2.0.8-alpha"
-  resolved "https://registry.yarnpkg.com/@d8x/perpetuals-sdk/-/perpetuals-sdk-2.0.8-alpha.tgz#7290a0c497b4b8d43331d9cb076255f67187872f"
-  integrity sha512-btJ1QSOWFednsjdobCjMS7b3BLpNDa5fC3X9K1oOkAsbtR7S5lulqmYLqKeoirE4OeE1ELa4xzUaJ+XocM3oCQ==
+"@d8x/perpetuals-sdk@https://github.com/D8-X/d8x-futures-node-sdk#pred-mkts":
+  version "2.1.0-alpha2"
+  resolved "https://github.com/D8-X/d8x-futures-node-sdk#3d27f239ed59637489fbb3f9050a24874852c027"
   dependencies:
     "@typechain/ethers-v6" "^0.5.1"
     buffer "6.0.3"

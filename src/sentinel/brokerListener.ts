@@ -24,7 +24,7 @@ export default class BackendListener {
   private ws: SturdyWebSocket;
 
   // state
-  private perpIds: number[] = [];
+  private perpIds: bigint[] = [];
   private chainId: number | undefined = undefined;
   private lastRpcIndex = { http: -1, ws: -1 };
 

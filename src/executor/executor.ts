@@ -473,7 +473,7 @@ export default class Executor {
     const savedOrder = this.distributor?.getOrder(symbol, digest);
     if (
       !!savedOrder &&
-      !this.distributor?.isExecutableIfOnChain(savedOrder, px.pxS2S3)
+      !this.distributor?.isExecutableIfOnChain(savedOrder, px.pxS2S3[0])
     ) {
       // prices moved - retreat
       console.log({

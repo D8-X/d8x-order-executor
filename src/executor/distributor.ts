@@ -15,6 +15,7 @@ import {
   ZERO_ORDER_ID,
   sleep,
   SELL_SIDE,
+  IdxPriceInfo,
 } from "@d8x/perpetuals-sdk";
 import { Redis } from "ioredis";
 import { constructRedis } from "../utils";
@@ -55,10 +56,7 @@ export default class Distributor {
   private openPositions: Map<string, Map<string, Position>> = new Map(); // symbol => (trader => Position)
   public openOrders: Map<string, Map<string, OrderBundle>> = new Map(); // symbol => (digest => order bundle)
   private brokerOrders: Map<string, Map<string, number>> = new Map(); // symbol => (digest => received ts)
-  private pxSubmission: Map<
-    string,
-    { idxPrices: number[]; mktClosed: boolean[] }
-  > = new Map(); // symbol => px submission
+  private pxSubmission: Map<string, IdxPriceInfo> = new Map(); // symbol => px submission
   private markPremium: Map<string, number> = new Map();
   private midPremium: Map<string, number> = new Map();
   private unitAccumulatedFunding: Map<string, number> = new Map();
@@ -447,15 +445,12 @@ export default class Distributor {
     const prem = this.tradePremium.get(symbol)!;
     for (const i of [0, 1]) {
       const side = [BUY_SIDE, SELL_SIDE][i];
-      const pxS2S3 = this.pxSubmission.get(symbol)?.idxPrices! as [
-        number,
-        number
-      ];
+      const pxS2S3 = this.pxSubmission.get(symbol)!;
       const tradeSize = this.getOrderAverage(symbol, side);
       if (tradeSize) {
         // empirical
         const p = await this.md.getPerpetualPrice(symbol, tradeSize, pxS2S3);
-        prem[i] = p / pxS2S3[0] - 1;
+        prem[i] = p / pxS2S3.s2 - 1;
       } else {
         // default to mid premium +/- 5 bps buffer
         prem[i] =
@@ -786,7 +781,7 @@ export default class Distributor {
     }
 
     const curPx = this.pxSubmission.get(symbol)!;
-    if (curPx.mktClosed.some((x) => x)) {
+    if (curPx.s2MktClosed || curPx.s3MktClosed) {
       return;
     }
 
@@ -806,10 +801,7 @@ export default class Distributor {
         continue;
       }
 
-      const isExecOnChain = this.isExecutableIfOnChain(
-        orderBundle,
-        curPx.idxPrices as [number, number | undefined]
-      );
+      const isExecOnChain = this.isExecutableIfOnChain(orderBundle, curPx.s2);
       if (isExecOnChain) {
         await this.sendCommand(command);
       }
@@ -857,10 +849,7 @@ export default class Distributor {
    * @param pxS2S3 spot prices [S2, S3]
    * @returns
    */
-  public isExecutableIfOnChain(
-    order: OrderBundle,
-    pxS2S3: [number, number | undefined]
-  ) {
+  public isExecutableIfOnChain(order: OrderBundle, indexPrice: number) {
     if (order.order == undefined) {
       // broker order: if it's market and on chain, it's executable, nothing to check
       return order.type == ORDER_TYPE_MARKET;
@@ -911,7 +900,7 @@ export default class Distributor {
       }
     }
 
-    const markPrice = pxS2S3[0] * (1 + this.markPremium.get(order.symbol)!);
+    const markPrice = indexPrice * (1 + this.markPremium.get(order.symbol)!);
     // const midPrice = pxS2S3[0] * (1 + this.midPremium.get(order.symbol)!);
     const limitPrice = order.order.limitPrice;
     const triggerPrice = order.order.stopPrice;
@@ -926,7 +915,7 @@ export default class Distributor {
       (side) => side === order.order!.side
     );
     const tradePrice =
-      pxS2S3[0] * (1 + this.tradePremium.get(order.symbol)![sideIdx] * scale);
+      indexPrice * (1 + this.tradePremium.get(order.symbol)![sideIdx] * scale);
 
     let execute = false;
 
@@ -971,7 +960,7 @@ export default class Distributor {
     if (execute) {
       console.log({
         side: order.order.side,
-        indexPrice: pxS2S3[0],
+        indexPrice,
         tradePrice,
         limitPrice,
         markPrice,
