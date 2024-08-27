@@ -450,7 +450,11 @@ export default class Distributor {
       if (tradeSize) {
         // empirical
         const p = await this.md.getPerpetualPrice(symbol, tradeSize, pxS2S3);
-        prem[i] = p / pxS2S3.s2 - 1;
+        if (this.md.isPredictionMarket(symbol)) {
+          prem[i] = p - pxS2S3.s2;
+        } else {
+          prem[i] = p / pxS2S3.s2 - 1;
+        }
       } else {
         // default to mid premium +/- 5 bps buffer
         prem[i] =
@@ -869,9 +873,15 @@ export default class Distributor {
    * @returns
    */
   public isExecutableIfOnChain(order: OrderBundle, indexPrice: number) {
+    // console.log(order);
     if (order.order == undefined) {
       // broker order: if it's market and on chain, it's executable, nothing to check
       return order.type == ORDER_TYPE_MARKET;
+    }
+
+    if (order.isPredictionMarket && order.type !== ORDER_TYPE_MARKET) {
+      // prediction markets are spot only
+      return false;
     }
     // exec ts
     if (order.order.executionTimestamp > Date.now() / 1_000) {
@@ -935,8 +945,11 @@ export default class Distributor {
     const sideIdx = [BUY_SIDE, SELL_SIDE].findIndex(
       (side) => side === order.order!.side
     );
-    const tradePrice =
-      indexPrice * (1 + this.tradePremium.get(order.symbol)![sideIdx] * scale);
+    let tradePrice: number;
+    tradePrice = order.isPredictionMarket
+      ? indexPrice + this.tradePremium.get(order.symbol)![sideIdx] * scale
+      : indexPrice *
+        (1 + this.tradePremium.get(order.symbol)![sideIdx] * scale);
 
     let execute = false;
 
