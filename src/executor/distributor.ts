@@ -18,7 +18,7 @@ import {
   IdxPriceInfo,
 } from "@d8x/perpetuals-sdk";
 import { Redis } from "ioredis";
-import { constructRedis } from "../utils";
+import { constructRedis, executeWithTimeout } from "../utils";
 import {
   BrokerOrderMsg,
   ExecuteOrderCommand,
@@ -477,6 +477,7 @@ export default class Distributor {
         order: order,
         symbol: symbol,
         type: type,
+        isPredictionMarket: this.md.isPredictionMarket(symbol),
       });
       console.log({
         info: "order added",
@@ -553,7 +554,8 @@ export default class Distributor {
       });
       return;
     }
-    const chunkSize1 = 2 ** 4; // for orders
+    console.log(`refreshing open orders for symbol ${symbol}...`);
+    const chunkSize1 = 2 ** 6; // for orders
     const rpcProviders = this.config.rpcWatch.map(
       (url) => new JsonRpcProvider(url)
     );
@@ -563,8 +565,14 @@ export default class Distributor {
     let tsStart = Date.now();
 
     const numOpenOrders = Number(
-      await this.md.getOrderBookContract(symbol)!.orderCount()
+      await executeWithTimeout(
+        this.md
+          .getOrderBookContract(symbol, rpcProviders[providerIdx])!
+          .orderCount(),
+        10_000
+      )
     );
+    console.log(`found ${numOpenOrders} orders.`);
 
     // fetch orders
     const promises = [];
@@ -583,8 +591,9 @@ export default class Distributor {
     const orderBundles: Map<string, OrderBundle> = new Map();
     for (let i = 0; i < promises.length; i += rpcProviders.length) {
       try {
-        const chunks = await Promise.allSettled(
-          promises.slice(i, i + rpcProviders.length)
+        const chunks = await executeWithTimeout(
+          Promise.allSettled(promises.slice(i, i + rpcProviders.length)),
+          10_000
         );
         for (const result of chunks) {
           if (result.status === "fulfilled") {
@@ -597,6 +606,7 @@ export default class Distributor {
                 symbol: symbol,
                 trader: orders[j].traderAddr,
                 digest: orderHashes[j],
+                isPredictionMarket: this.md.isPredictionMarket(symbol),
                 order: this.md!.smartContractOrderToOrder({
                   brokerAddr: orders[j].brokerAddr,
                   brokerFeeTbps: orders[j].brokerFeeTbps,
@@ -616,6 +626,10 @@ export default class Distributor {
                 type: ORDER_TYPE_MARKET as OrderType,
               };
               bundle.type = bundle.order.type as OrderType;
+              bundle.order.parentChildOrderIds = [
+                orders[j].parentChildDigest1,
+                orders[j].parentChildDigest2,
+              ];
               orderBundles.set(orderHashes[j], bundle);
             }
           }
@@ -658,11 +672,12 @@ export default class Distributor {
       waited: `${Date.now() - tsStart} ms`,
     });
     // }
-
+    // console.log(orderBundles);
     await this.refreshAccounts(symbol);
   }
 
   private async refreshAccounts(symbol: string) {
+    console.log(`refreshing accounts for symbol ${symbol}...`);
     const chunkSize2 = 2 ** 4; // for margin accounts
     const perpId = this.md.getPerpIdFromSymbol(symbol)!;
     const proxy = this.md.getReadOnlyProxyInstance();
@@ -770,6 +785,7 @@ export default class Distributor {
     this.requireReady();
     const orders = this.openOrders.get(symbol)!;
     if (orders.size == 0) {
+      // console.log(`no open orders for symbol ${symbol}`);
       return;
     }
 
@@ -782,6 +798,7 @@ export default class Distributor {
 
     const curPx = this.pxSubmission.get(symbol)!;
     if (curPx.s2MktClosed || curPx.s3MktClosed) {
+      // console.log(`${symbol} market is closed`);
       return;
     }
 
@@ -804,6 +821,8 @@ export default class Distributor {
       const isExecOnChain = this.isExecutableIfOnChain(orderBundle, curPx.s2);
       if (isExecOnChain) {
         await this.sendCommand(command);
+      } else {
+        // console.log("Not executable:", { orderBundle, curPx });
       }
       if (
         orderBundle.order == undefined &&
@@ -900,7 +919,9 @@ export default class Distributor {
       }
     }
 
-    const markPrice = indexPrice * (1 + this.markPremium.get(order.symbol)!);
+    const markPrice = order.isPredictionMarket
+      ? indexPrice + this.markPremium.get(order.symbol)!
+      : indexPrice * (1 + this.markPremium.get(order.symbol)!);
     // const midPrice = pxS2S3[0] * (1 + this.midPremium.get(order.symbol)!);
     const limitPrice = order.order.limitPrice;
     const triggerPrice = order.order.stopPrice;
