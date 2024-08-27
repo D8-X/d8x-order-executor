@@ -459,7 +459,7 @@ export default class BlockhainListener {
             perpetualId,
             fMarkPricePremium,
             fMidPricePremium,
-            fSpotIndexPrice,
+            fMarkIndexPrice,
           } = parsedEvent.args as unknown as UpdateMarkPriceEvent.OutputObject;
           const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
@@ -467,7 +467,7 @@ export default class BlockhainListener {
             symbol: symbol,
             midPremium: ABK64x64ToFloat(fMidPricePremium),
             markPremium: ABK64x64ToFloat(fMarkPricePremium),
-            spotIndexPrice: ABK64x64ToFloat(fSpotIndexPrice),
+            spotIndexPrice: ABK64x64ToFloat(fMarkIndexPrice),
             block: event.blockNumber,
             hash: event.transactionHash,
             id: `${event.transactionHash}:${event.index}`,
