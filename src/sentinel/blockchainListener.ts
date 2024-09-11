@@ -460,7 +460,7 @@ export default class BlockhainListener {
             perpetualId,
             fMarkPricePremium,
             fMidPricePremium,
-            fSpotIndexPrice,
+            fMarkIndexPrice,
           } = parsedEvent.args as unknown as UpdateMarkPriceEvent.OutputObject;
           const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
@@ -468,7 +468,7 @@ export default class BlockhainListener {
             symbol: symbol,
             midPremium: ABK64x64ToFloat(fMidPricePremium),
             markPremium: ABK64x64ToFloat(fMarkPricePremium),
-            spotIndexPrice: ABK64x64ToFloat(fSpotIndexPrice),
+            spotIndexPrice: ABK64x64ToFloat(fMarkIndexPrice),
             block: event.blockNumber,
             hash: event.transactionHash,
             id: `${event.transactionHash}:${event.index}`,
@@ -545,14 +545,12 @@ export default class BlockhainListener {
           // Include parent/child order dependency ids. Order dependency is
           // not included in PerpetualLimitOrderCreated event but is needed
           // for the dependency checks in distributor and executor.
-          const orderDependency = await this.getOrderDependenciesHttp(
-            event.address,
-            digest
+          const orderDependency = await executeWithTimeout(
+            this.getOrderDependenciesHttp(event.address, digest),
+            10_000
           );
-          if (orderDependency) {
-            const [id1, id2] = [orderDependency[0], orderDependency[1]];
-            msg.order.parentChildOrderIds = [id1, id2];
-          }
+          const [id1, id2] = [orderDependency[0], orderDependency[1]];
+          msg.order.parentChildOrderIds = [id1, id2];
         }
         break;
 

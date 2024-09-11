@@ -24,7 +24,7 @@ export default class BackendListener {
   private ws: SturdyWebSocket;
 
   // state
-  private perpIds: number[] = [];
+  private perpIds: bigint[] = [];
   private chainId: number | undefined = undefined;
   private lastRpcIndex = { http: -1, ws: -1 };
 
@@ -79,9 +79,15 @@ export default class BackendListener {
     );
 
     // get perpetuals and order books
-    this.perpIds = (
-      await this.md.getReadOnlyProxyInstance().getPoolStaticInfo(1, 255)
-    )[0].flat();
+    const info = await this.md.exchangeInfo();
+    this.perpIds = info.pools
+      .filter(({ isRunning }) => isRunning)
+      .map((pool) =>
+        pool.perpetuals
+          .filter(({ state }) => state === "NORMAL")
+          .map(({ id }) => BigInt(id))
+      )
+      .flat();
 
     // subscribe
     this.addListeners();
