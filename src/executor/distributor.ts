@@ -133,10 +133,12 @@ export default class Distributor {
     this.symbols = info.pools
       .filter(({ isRunning }) => isRunning)
       .map((pool) =>
-        pool.perpetuals.map(
-          (perpetual) =>
-            `${perpetual.baseCurrency}-${perpetual.quoteCurrency}-${pool.poolSymbol}`
-        )
+        pool.perpetuals
+          .filter(({ state }) => state === "NORMAL")
+          .map(
+            (perpetual) =>
+              `${perpetual.baseCurrency}-${perpetual.quoteCurrency}-${pool.poolSymbol}`
+          )
       )
       .flat();
     console.log({ symbols: this.symbols });
@@ -446,6 +448,10 @@ export default class Distributor {
     for (const i of [0, 1]) {
       const side = [BUY_SIDE, SELL_SIDE][i];
       const pxS2S3 = this.pxSubmission.get(symbol)!;
+      if (pxS2S3.s2MktClosed || pxS2S3.s3MktClosed) {
+        // mkt is closed
+        return;
+      }
       const tradeSize = this.getOrderAverage(symbol, side);
       if (tradeSize) {
         // empirical
@@ -677,6 +683,7 @@ export default class Distributor {
     });
     // }
     // console.log(orderBundles);
+    await this.updatePriceCurve(symbol);
     await this.refreshAccounts(symbol);
   }
 
@@ -879,8 +886,12 @@ export default class Distributor {
       return order.type == ORDER_TYPE_MARKET;
     }
 
-    if (order.isPredictionMarket && order.type !== ORDER_TYPE_MARKET) {
-      // prediction markets are spot only
+    if (
+      order.isPredictionMarket &&
+      order.type !== ORDER_TYPE_MARKET &&
+      !order.order?.reduceOnly
+    ) {
+      // prediction markets are spot only (non-market orders can only be closing)
       return false;
     }
     // exec ts
@@ -991,17 +1002,21 @@ export default class Distributor {
       default:
         break;
     }
-    if (execute) {
-      console.log({
-        side: order.order.side,
-        indexPrice,
-        tradePrice,
-        limitPrice,
-        markPrice,
-        triggerPrice,
-        timestamp: new Date(Date.now()).toISOString(),
-      });
-    }
+    // if (execute) {
+    //   console.log({
+    //     side: order.order.side,
+    //     indexPrice,
+    //     tradePrice,
+    //     limitPrice,
+    //     markPrice,
+    //     triggerPrice,
+    //     size: order.order.quantity,
+    //     refSize,
+    //     scale,
+    //     tradePrem: this.tradePremium.get(order.symbol)![sideIdx],
+    //     timestamp: new Date(Date.now()).toISOString(),
+    //   });
+    // }
     return execute;
   }
 

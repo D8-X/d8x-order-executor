@@ -591,9 +591,9 @@ export default class Executor {
           error.includes("trigger cond not met") ||
           error.includes("price exceeds limit"):
           // false positive: order can be tried again later
-          // so just unlock it after a second (so pxs move)
+          // so just unlock it after waiting
           this.bots[botIdx].busy = false;
-          await sleep(1_000);
+          await sleep(10_000);
           this.locked.delete(digest);
           return BotStatus.PartialError;
         default:
