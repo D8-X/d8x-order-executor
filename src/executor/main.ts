@@ -1,6 +1,5 @@
-import { sleep } from "@d8x/perpetuals-sdk";
 import Executor from "./executor";
-import { loadAccounts, loadConfig } from "../utils";
+import { loadAccounts, loadConfig, sleep } from "../utils";
 import Distributor from "./distributor";
 
 require("dotenv").config();
