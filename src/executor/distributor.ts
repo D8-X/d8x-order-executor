@@ -728,8 +728,9 @@ export default class Distributor {
     for (let i = 0; i < promises2.length; i += rpcProviders.length) {
       try {
         const addressChunkBin = addressChunks.slice(i, i + rpcProviders.length);
-        const accountChunk = await Promise.allSettled(
-          promises2.slice(i, i + rpcProviders.length)
+        const accountChunk = await executeWithTimeout(
+          Promise.allSettled(promises2.slice(i, i + rpcProviders.length)),
+          10_000
         );
         accountChunk.map((results, j) => {
           if (results.status === "fulfilled") {
