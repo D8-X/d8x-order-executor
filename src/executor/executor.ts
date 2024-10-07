@@ -605,7 +605,7 @@ export default class Executor {
 
     // confirm execution
     try {
-      const receipt = await executeWithTimeout(tx.wait(), 10_000, "timeout");
+      const receipt = await executeWithTimeout(tx.wait(), 30_000, "timeout");
       if (!receipt) {
         throw new Error("null receipt");
       }
