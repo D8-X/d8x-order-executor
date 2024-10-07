@@ -664,12 +664,12 @@ export default class Executor {
           digest: digest,
           time: new Date(Date.now()).toISOString(),
         });
-        this.bots[botIdx].busy = false;
         await sleep(10_000);
+        this.bots[botIdx].busy = false; // release bot
         ordr = await this.bots[botIdx].api.getOrderById(symbol, digest);
         if (ordr !== undefined && ordr.quantity > 0) {
           // check one last time before declaring an error
-          const receipt = await executeWithTimeout(tx.wait(), 10_000);
+          const receipt = await executeWithTimeout(tx.wait(), 1_000);
           if (receipt?.status !== 1) {
             return BotStatus.Error;
           } else {
