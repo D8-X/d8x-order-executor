@@ -13,12 +13,11 @@ import {
   BUY_SIDE,
   ORDER_TYPE_LIMIT,
   ZERO_ORDER_ID,
-  sleep,
   SELL_SIDE,
   IdxPriceInfo,
 } from "@d8x/perpetuals-sdk";
 import { Redis } from "ioredis";
-import { constructRedis, executeWithTimeout } from "../utils";
+import { constructRedis, executeWithTimeout, sleep } from "../utils";
 import {
   BrokerOrderMsg,
   ExecuteOrderCommand,
