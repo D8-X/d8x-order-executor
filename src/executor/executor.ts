@@ -664,14 +664,28 @@ export default class Executor {
           digest: digest,
           time: new Date(Date.now()).toISOString(),
         });
-        await sleep(10_000);
         this.bots[botIdx].busy = false;
+        await sleep(10_000);
         ordr = await this.bots[botIdx].api.getOrderById(symbol, digest);
         if (ordr !== undefined && ordr.quantity > 0) {
-          if (!this.trash.has(digest)) {
-            this.locked.delete(digest);
+          // check one last time before declaring an error
+          const receipt = await executeWithTimeout(tx.wait(), 10_000);
+          if (receipt?.status !== 1) {
+            return BotStatus.Error;
+          } else {
+            console.log({
+              info: "could not confirm tx status - unlocking order",
+              symbol: symbol,
+              executor: addr,
+              digest: digest,
+              hash: tx.hash,
+              time: new Date(Date.now()).toISOString(),
+            });
+            if (!this.trash.has(digest)) {
+              this.locked.delete(digest);
+            }
+            return BotStatus.PartialError;
           }
-          return BotStatus.Error;
         }
       }
       this.bots[botIdx].busy = false;
