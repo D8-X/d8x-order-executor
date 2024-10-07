@@ -589,7 +589,8 @@ export default class Executor {
           return BotStatus.PartialError;
         case error.includes("dpcy not fulfilled") ||
           error.includes("trigger cond not met") ||
-          error.includes("price exceeds limit"):
+          error.includes("price exceeds limit") ||
+          error.includes("could not replace existing tx"): // <- for zkevm: txns may get stuck in the node
           // false positive: order can be tried again later
           // so just unlock it after waiting
           this.bots[botIdx].busy = false;
