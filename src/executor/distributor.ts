@@ -581,7 +581,7 @@ export default class Distributor {
         10_000
       )
     );
-    console.log(`found ${numOpenOrders} orders.`);
+    console.log(`found ${numOpenOrders} open ${symbol} orders.`);
 
     // fetch orders
     const promises = [];

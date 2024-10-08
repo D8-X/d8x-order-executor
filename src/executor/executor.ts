@@ -605,7 +605,11 @@ export default class Executor {
 
     // confirm execution
     try {
-      const receipt = await executeWithTimeout(tx.wait(), 30_000, "timeout");
+      const receipt = await executeWithTimeout(
+        tx.wait(),
+        30_000,
+        "fetch tx receipt: timeout"
+      );
       if (!receipt) {
         throw new Error("null receipt");
       }
@@ -740,10 +744,7 @@ export default class Executor {
       }
     }
     // send txns
-    const results = await executeWithTimeout(
-      Promise.allSettled(executed),
-      30_000
-    );
+    const results = await Promise.allSettled(executed);
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
       if (result.status === "fulfilled") {
