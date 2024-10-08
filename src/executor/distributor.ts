@@ -321,6 +321,10 @@ export default class Distributor {
               order
             );
             await this.updatePriceCurve(symbol);
+            if (!this.openPositions.get(symbol)?.has(trader)) {
+              // new trader, refresh
+              await this.refreshAccount(symbol, trader);
+            }
             this.checkOrders(symbol);
             break;
           }
@@ -684,6 +688,25 @@ export default class Distributor {
     // console.log(orderBundles);
     await this.updatePriceCurve(symbol);
     await this.refreshAccounts(symbol);
+  }
+
+  private async refreshAccount(symbol: string, traderAddr: string) {
+    const perpId = this.md.getPerpIdFromSymbol(symbol)!;
+    const proxy = this.md.getReadOnlyProxyInstance();
+    const account = await proxy.getMarginAccount(perpId, traderAddr);
+    const position: Position = {
+      perpetualId: perpId,
+      address: traderAddr,
+      positionBC: ABK64x64ToFloat(account.fPositionBC),
+      cashCC: ABK64x64ToFloat(account.fCashCC),
+      lockedInQC: ABK64x64ToFloat(account.fLockedInValueQC),
+      unpaidFundingCC: 0,
+    };
+    position.unpaidFundingCC =
+      position.positionBC *
+      (this.unitAccumulatedFunding.get(symbol)! -
+        ABK64x64ToFloat(account.fUnitAccumulatedFundingStart));
+    this.updatePosition(position);
   }
 
   private async refreshAccounts(symbol: string) {
