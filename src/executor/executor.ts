@@ -482,6 +482,10 @@ export default class Executor {
         digest: digest,
         time: new Date(Date.now()).toISOString(),
       });
+      this.bots[botIdx].busy = false;
+      if (!this.trash.has(digest)) {
+        this.locked.delete(digest);
+      }
       return BotStatus.PartialError;
     }
 
@@ -507,11 +511,11 @@ export default class Executor {
         {
           // gasLimit: this.config.gasLimit, // no gas limit (sdk handles it)
           gasPrice: feeData.gasPrice
-            ? (feeData.gasPrice * 110n) / 100n
+            ? (feeData.gasPrice * 120n) / 100n
             : undefined,
           maxFeePerGas:
             !feeData.gasPrice && feeData.maxFeePerGas // don't send both at the same time
-              ? (feeData.maxFeePerGas * 110n) / 100n
+              ? (feeData.maxFeePerGas * 120n) / 100n
               : undefined,
           // rpcURL: p.connection.url, // TODO
           maxGasLimit: this.config.gasLimit,
@@ -675,6 +679,17 @@ export default class Executor {
           // check one last time before declaring an error
           const receipt = await executeWithTimeout(tx.wait(), 1_000);
           if (receipt?.status !== 1) {
+            console.log({
+              info: "confirmed that tx failed",
+              symbol: symbol,
+              executor: addr,
+              digest: digest,
+              hash: tx.hash,
+              time: new Date(Date.now()).toISOString(),
+            });
+            if (!this.trash.has(digest)) {
+              this.locked.delete(digest);
+            }
             return BotStatus.Error;
           } else {
             console.log({
