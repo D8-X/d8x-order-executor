@@ -440,8 +440,9 @@ export default class Distributor {
   private async updatePriceCurve(symbol: string) {
     const blockLatency = 2;
     if (
-      (this.priceCurveUpdatedAtBlock.get(symbol) ?? 0) - this.blockNumber <=
-      blockLatency
+      this.priceCurveUpdatedAtBlock.has(symbol) &&
+      this.priceCurveUpdatedAtBlock.get(symbol)! >=
+        this.blockNumber + blockLatency
     ) {
       // price curve already updated at most X blocks ago
       return;
