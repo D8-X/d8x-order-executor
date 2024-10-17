@@ -510,6 +510,7 @@ export default class Distributor {
     reason?: string,
     trader?: string
   ) {
+    this.executor.recordExecutedOrder(digest);
     if (!this.openOrders.get(symbol)?.has(digest)) {
       // nothing to remove
       return;

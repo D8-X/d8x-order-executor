@@ -872,4 +872,10 @@ export default class Executor {
     this.lastUsedRpcIndex = (this.lastUsedRpcIndex + 1) % this.providers.length;
     return this.providers[this.lastUsedRpcIndex];
   }
+
+  public recordExecutedOrder(digest: string) {
+    if (!this.recentlyExecutedOrders.has(digest)) {
+      this.recentlyExecutedOrders.set(digest, new Date());
+    }
+  }
 }
