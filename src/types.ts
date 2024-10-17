@@ -25,6 +25,7 @@ export interface OrderBundle {
   digest: string;
   order?: Order;
   type: OrderType;
+  isPredictionMarket: boolean;
 }
 
 export interface RedisConfig {

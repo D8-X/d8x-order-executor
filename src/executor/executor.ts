@@ -473,7 +473,7 @@ export default class Executor {
     const savedOrder = this.distributor?.getOrder(symbol, digest);
     if (
       !!savedOrder &&
-      !this.distributor?.isExecutableIfOnChain(savedOrder, px.pxS2S3)
+      !this.distributor?.isExecutableIfOnChain(savedOrder, px.pxS2S3[0])
     ) {
       // prices moved - retreat
       console.log({
@@ -482,6 +482,10 @@ export default class Executor {
         digest: digest,
         time: new Date(Date.now()).toISOString(),
       });
+      this.bots[botIdx].busy = false;
+      if (!this.trash.has(digest)) {
+        this.locked.delete(digest);
+      }
       return BotStatus.PartialError;
     }
 
@@ -507,11 +511,11 @@ export default class Executor {
         {
           // gasLimit: this.config.gasLimit, // no gas limit (sdk handles it)
           gasPrice: feeData.gasPrice
-            ? (feeData.gasPrice * 110n) / 100n
+            ? (feeData.gasPrice * 120n) / 100n
             : undefined,
           maxFeePerGas:
             !feeData.gasPrice && feeData.maxFeePerGas // don't send both at the same time
-              ? (feeData.maxFeePerGas * 110n) / 100n
+              ? (feeData.maxFeePerGas * 120n) / 100n
               : undefined,
           // rpcURL: p.connection.url, // TODO
           maxGasLimit: this.config.gasLimit,
@@ -589,11 +593,12 @@ export default class Executor {
           return BotStatus.PartialError;
         case error.includes("dpcy not fulfilled") ||
           error.includes("trigger cond not met") ||
-          error.includes("price exceeds limit"):
+          error.includes("price exceeds limit") ||
+          error.includes("could not replace existing tx"): // <- for zkevm: txns may get stuck in the node
           // false positive: order can be tried again later
-          // so just unlock it after a second (so pxs move)
+          // so just unlock it after waiting
           this.bots[botIdx].busy = false;
-          await sleep(1_000);
+          await sleep(10_000);
           this.locked.delete(digest);
           return BotStatus.PartialError;
         default:
@@ -604,7 +609,11 @@ export default class Executor {
 
     // confirm execution
     try {
-      const receipt = await executeWithTimeout(tx.wait(), 10_000, "timeout");
+      const receipt = await executeWithTimeout(
+        tx.wait(),
+        30_000,
+        "fetch tx receipt: timeout"
+      );
       if (!receipt) {
         throw new Error("null receipt");
       }
@@ -664,13 +673,38 @@ export default class Executor {
           time: new Date(Date.now()).toISOString(),
         });
         await sleep(10_000);
-        this.bots[botIdx].busy = false;
+        this.bots[botIdx].busy = false; // release bot
         ordr = await this.bots[botIdx].api.getOrderById(symbol, digest);
         if (ordr !== undefined && ordr.quantity > 0) {
-          if (!this.trash.has(digest)) {
-            this.locked.delete(digest);
+          // check one last time before declaring an error
+          const receipt = await executeWithTimeout(tx.wait(), 1_000);
+          if (receipt?.status !== 1) {
+            console.log({
+              info: "confirmed that tx failed",
+              symbol: symbol,
+              executor: addr,
+              digest: digest,
+              hash: tx.hash,
+              time: new Date(Date.now()).toISOString(),
+            });
+            if (!this.trash.has(digest)) {
+              this.locked.delete(digest);
+            }
+            return BotStatus.Error;
+          } else {
+            console.log({
+              info: "could not confirm tx status - unlocking order",
+              symbol: symbol,
+              executor: addr,
+              digest: digest,
+              hash: tx.hash,
+              time: new Date(Date.now()).toISOString(),
+            });
+            if (!this.trash.has(digest)) {
+              this.locked.delete(digest);
+            }
+            return BotStatus.PartialError;
           }
-          return BotStatus.Error;
         }
       }
       this.bots[botIdx].busy = false;
@@ -725,10 +759,7 @@ export default class Executor {
       }
     }
     // send txns
-    const results = await executeWithTimeout(
-      Promise.allSettled(executed),
-      30_000
-    );
+    const results = await Promise.allSettled(executed);
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
       if (result.status === "fulfilled") {

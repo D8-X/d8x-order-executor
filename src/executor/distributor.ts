@@ -13,11 +13,11 @@ import {
   BUY_SIDE,
   ORDER_TYPE_LIMIT,
   ZERO_ORDER_ID,
-  sleep,
   SELL_SIDE,
+  IdxPriceInfo,
 } from "@d8x/perpetuals-sdk";
 import { Redis } from "ioredis";
-import { constructRedis } from "../utils";
+import { constructRedis, executeWithTimeout, sleep } from "../utils";
 import {
   BrokerOrderMsg,
   ExecuteOrderCommand,
@@ -55,10 +55,7 @@ export default class Distributor {
   private openPositions: Map<string, Map<string, Position>> = new Map(); // symbol => (trader => Position)
   public openOrders: Map<string, Map<string, OrderBundle>> = new Map(); // symbol => (digest => order bundle)
   private brokerOrders: Map<string, Map<string, number>> = new Map(); // symbol => (digest => received ts)
-  private pxSubmission: Map<
-    string,
-    { idxPrices: number[]; mktClosed: boolean[] }
-  > = new Map(); // symbol => px submission
+  private pxSubmission: Map<string, IdxPriceInfo> = new Map(); // symbol => px submission
   private markPremium: Map<string, number> = new Map();
   private midPremium: Map<string, number> = new Map();
   private unitAccumulatedFunding: Map<string, number> = new Map();
@@ -135,10 +132,12 @@ export default class Distributor {
     this.symbols = info.pools
       .filter(({ isRunning }) => isRunning)
       .map((pool) =>
-        pool.perpetuals.map(
-          (perpetual) =>
-            `${perpetual.baseCurrency}-${perpetual.quoteCurrency}-${pool.poolSymbol}`
-        )
+        pool.perpetuals
+          .filter(({ state }) => state === "NORMAL")
+          .map(
+            (perpetual) =>
+              `${perpetual.baseCurrency}-${perpetual.quoteCurrency}-${pool.poolSymbol}`
+          )
       )
       .flat();
     console.log({ symbols: this.symbols });
@@ -322,6 +321,10 @@ export default class Distributor {
               order
             );
             await this.updatePriceCurve(symbol);
+            if (!this.openPositions.get(symbol)?.has(trader)) {
+              // new trader, refresh
+              await this.refreshAccount(symbol, trader);
+            }
             this.checkOrders(symbol);
             break;
           }
@@ -437,8 +440,9 @@ export default class Distributor {
   private async updatePriceCurve(symbol: string) {
     const blockLatency = 2;
     if (
-      (this.priceCurveUpdatedAtBlock.get(symbol) ?? 0) - this.blockNumber >=
-      blockLatency
+      this.priceCurveUpdatedAtBlock.has(symbol) &&
+      this.priceCurveUpdatedAtBlock.get(symbol)! >=
+        this.blockNumber + blockLatency
     ) {
       // price curve already updated at most X blocks ago
       return;
@@ -447,15 +451,20 @@ export default class Distributor {
     const prem = this.tradePremium.get(symbol)!;
     for (const i of [0, 1]) {
       const side = [BUY_SIDE, SELL_SIDE][i];
-      const pxS2S3 = this.pxSubmission.get(symbol)?.idxPrices! as [
-        number,
-        number
-      ];
+      const pxS2S3 = this.pxSubmission.get(symbol)!;
+      if (pxS2S3.s2MktClosed || pxS2S3.s3MktClosed) {
+        // mkt is closed
+        return;
+      }
       const tradeSize = this.getOrderAverage(symbol, side);
       if (tradeSize) {
         // empirical
         const p = await this.md.getPerpetualPrice(symbol, tradeSize, pxS2S3);
-        prem[i] = p / pxS2S3[0] - 1;
+        if (this.md.isPredictionMarket(symbol)) {
+          prem[i] = p - pxS2S3.s2;
+        } else {
+          prem[i] = p / pxS2S3.s2 - 1;
+        }
       } else {
         // default to mid premium +/- 5 bps buffer
         prem[i] =
@@ -482,6 +491,7 @@ export default class Distributor {
         order: order,
         symbol: symbol,
         type: type,
+        isPredictionMarket: this.md.isPredictionMarket(symbol),
       });
       console.log({
         info: "order added",
@@ -558,7 +568,8 @@ export default class Distributor {
       });
       return;
     }
-    const chunkSize1 = 2 ** 4; // for orders
+    console.log(`refreshing open orders for symbol ${symbol}...`);
+    const chunkSize1 = 2 ** 6; // for orders
     const rpcProviders = this.config.rpcWatch.map(
       (url) => new JsonRpcProvider(url)
     );
@@ -568,8 +579,14 @@ export default class Distributor {
     let tsStart = Date.now();
 
     const numOpenOrders = Number(
-      await this.md.getOrderBookContract(symbol)!.orderCount()
+      await executeWithTimeout(
+        this.md
+          .getOrderBookContract(symbol, rpcProviders[providerIdx])!
+          .orderCount(),
+        10_000
+      )
     );
+    console.log(`found ${numOpenOrders} open ${symbol} orders.`);
 
     // fetch orders
     const promises = [];
@@ -588,8 +605,9 @@ export default class Distributor {
     const orderBundles: Map<string, OrderBundle> = new Map();
     for (let i = 0; i < promises.length; i += rpcProviders.length) {
       try {
-        const chunks = await Promise.allSettled(
-          promises.slice(i, i + rpcProviders.length)
+        const chunks = await executeWithTimeout(
+          Promise.allSettled(promises.slice(i, i + rpcProviders.length)),
+          10_000
         );
         for (const result of chunks) {
           if (result.status === "fulfilled") {
@@ -602,6 +620,7 @@ export default class Distributor {
                 symbol: symbol,
                 trader: orders[j].traderAddr,
                 digest: orderHashes[j],
+                isPredictionMarket: this.md.isPredictionMarket(symbol),
                 order: this.md!.smartContractOrderToOrder({
                   brokerAddr: orders[j].brokerAddr,
                   brokerFeeTbps: orders[j].brokerFeeTbps,
@@ -621,6 +640,10 @@ export default class Distributor {
                 type: ORDER_TYPE_MARKET as OrderType,
               };
               bundle.type = bundle.order.type as OrderType;
+              bundle.order.parentChildOrderIds = [
+                orders[j].parentChildDigest1,
+                orders[j].parentChildDigest2,
+              ];
               orderBundles.set(orderHashes[j], bundle);
             }
           }
@@ -663,11 +686,32 @@ export default class Distributor {
       waited: `${Date.now() - tsStart} ms`,
     });
     // }
-
+    // console.log(orderBundles);
+    await this.updatePriceCurve(symbol);
     await this.refreshAccounts(symbol);
   }
 
+  private async refreshAccount(symbol: string, traderAddr: string) {
+    const perpId = this.md.getPerpIdFromSymbol(symbol)!;
+    const proxy = this.md.getReadOnlyProxyInstance();
+    const account = await proxy.getMarginAccount(perpId, traderAddr);
+    const position: Position = {
+      perpetualId: perpId,
+      address: traderAddr,
+      positionBC: ABK64x64ToFloat(account.fPositionBC),
+      cashCC: ABK64x64ToFloat(account.fCashCC),
+      lockedInQC: ABK64x64ToFloat(account.fLockedInValueQC),
+      unpaidFundingCC: 0,
+    };
+    position.unpaidFundingCC =
+      position.positionBC *
+      (this.unitAccumulatedFunding.get(symbol)! -
+        ABK64x64ToFloat(account.fUnitAccumulatedFundingStart));
+    this.updatePosition(position);
+  }
+
   private async refreshAccounts(symbol: string) {
+    console.log(`refreshing accounts for symbol ${symbol}...`);
     const chunkSize2 = 2 ** 4; // for margin accounts
     const perpId = this.md.getPerpIdFromSymbol(symbol)!;
     const proxy = this.md.getReadOnlyProxyInstance();
@@ -708,8 +752,9 @@ export default class Distributor {
     for (let i = 0; i < promises2.length; i += rpcProviders.length) {
       try {
         const addressChunkBin = addressChunks.slice(i, i + rpcProviders.length);
-        const accountChunk = await Promise.allSettled(
-          promises2.slice(i, i + rpcProviders.length)
+        const accountChunk = await executeWithTimeout(
+          Promise.allSettled(promises2.slice(i, i + rpcProviders.length)),
+          10_000
         );
         accountChunk.map((results, j) => {
           if (results.status === "fulfilled") {
@@ -775,6 +820,7 @@ export default class Distributor {
     this.requireReady();
     const orders = this.openOrders.get(symbol)!;
     if (orders.size == 0) {
+      // console.log(`no open orders for symbol ${symbol}`);
       return;
     }
 
@@ -786,7 +832,8 @@ export default class Distributor {
     }
 
     const curPx = this.pxSubmission.get(symbol)!;
-    if (curPx.mktClosed.some((x) => x)) {
+    if (curPx.s2MktClosed || curPx.s3MktClosed) {
+      // console.log(`${symbol} market is closed`);
       return;
     }
 
@@ -806,12 +853,11 @@ export default class Distributor {
         continue;
       }
 
-      const isExecOnChain = this.isExecutableIfOnChain(
-        orderBundle,
-        curPx.idxPrices as [number, number | undefined]
-      );
+      const isExecOnChain = this.isExecutableIfOnChain(orderBundle, curPx.s2);
       if (isExecOnChain) {
         await this.sendCommand(command);
+      } else {
+        // console.log("Not executable:", { orderBundle, curPx });
       }
       if (
         orderBundle.order == undefined &&
@@ -857,13 +903,20 @@ export default class Distributor {
    * @param pxS2S3 spot prices [S2, S3]
    * @returns
    */
-  public isExecutableIfOnChain(
-    order: OrderBundle,
-    pxS2S3: [number, number | undefined]
-  ) {
+  public isExecutableIfOnChain(order: OrderBundle, indexPrice: number) {
+    // console.log(order);
     if (order.order == undefined) {
       // broker order: if it's market and on chain, it's executable, nothing to check
       return order.type == ORDER_TYPE_MARKET;
+    }
+
+    if (
+      order.isPredictionMarket &&
+      order.type !== ORDER_TYPE_MARKET &&
+      !order.order?.reduceOnly
+    ) {
+      // prediction markets are spot only (non-market orders can only be closing)
+      return false;
     }
     // exec ts
     if (order.order.executionTimestamp > Date.now() / 1_000) {
@@ -911,7 +964,9 @@ export default class Distributor {
       }
     }
 
-    const markPrice = pxS2S3[0] * (1 + this.markPremium.get(order.symbol)!);
+    const markPrice = order.isPredictionMarket
+      ? indexPrice + this.markPremium.get(order.symbol)!
+      : indexPrice * (1 + this.markPremium.get(order.symbol)!);
     // const midPrice = pxS2S3[0] * (1 + this.midPremium.get(order.symbol)!);
     const limitPrice = order.order.limitPrice;
     const triggerPrice = order.order.stopPrice;
@@ -925,8 +980,11 @@ export default class Distributor {
     const sideIdx = [BUY_SIDE, SELL_SIDE].findIndex(
       (side) => side === order.order!.side
     );
-    const tradePrice =
-      pxS2S3[0] * (1 + this.tradePremium.get(order.symbol)![sideIdx] * scale);
+    let tradePrice: number;
+    tradePrice = order.isPredictionMarket
+      ? indexPrice + this.tradePremium.get(order.symbol)![sideIdx] * scale
+      : indexPrice *
+        (1 + this.tradePremium.get(order.symbol)![sideIdx] * scale);
 
     let execute = false;
 
@@ -968,17 +1026,21 @@ export default class Distributor {
       default:
         break;
     }
-    if (execute) {
-      console.log({
-        side: order.order.side,
-        indexPrice: pxS2S3[0],
-        tradePrice,
-        limitPrice,
-        markPrice,
-        triggerPrice,
-        timestamp: new Date(Date.now()).toISOString(),
-      });
-    }
+    // if (execute) {
+    //   console.log({
+    //     side: order.order.side,
+    //     indexPrice,
+    //     tradePrice,
+    //     limitPrice,
+    //     markPrice,
+    //     triggerPrice,
+    //     size: order.order.quantity,
+    //     refSize,
+    //     scale,
+    //     tradePrem: this.tradePremium.get(order.symbol)![sideIdx],
+    //     timestamp: new Date(Date.now()).toISOString(),
+    //   });
+    // }
     return execute;
   }
 
