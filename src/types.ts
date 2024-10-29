@@ -62,6 +62,8 @@ export interface ExecutorConfig {
   minimumBalanceETH?: number;
   // config source to override sdk default
   configSource?: string;
+  // oracle network to override default
+  priceFeedConfigNetwork?: string;
 }
 
 export interface BrokerWSErrorData {

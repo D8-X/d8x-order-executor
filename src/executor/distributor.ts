@@ -89,6 +89,9 @@ export default class Distributor {
   constructor(config: ExecutorConfig, private executor: Executor) {
     this.config = config;
     const sdkConfig = PerpetualDataHandler.readSDKConfig(config.sdkConfig);
+    if (config.priceFeedConfigNetwork !== undefined) {
+      sdkConfig.priceFeedConfigNetwork = config.priceFeedConfigNetwork;
+    }
     if (config.configSource !== undefined) {
       sdkConfig.configSource = config.configSource;
     }

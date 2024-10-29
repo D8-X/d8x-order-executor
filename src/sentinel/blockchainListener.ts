@@ -74,6 +74,9 @@ export default class BlockhainListener {
     if (process.env.CHAIN_ID !== undefined) {
       sdkConfig.chainId = parseInt(process.env.CHAIN_ID);
     }
+    if (config.priceFeedConfigNetwork !== undefined) {
+      sdkConfig.priceFeedConfigNetwork = config.priceFeedConfigNetwork;
+    }
     if (config.configSource !== undefined) {
       sdkConfig.configSource = config.configSource;
     }
