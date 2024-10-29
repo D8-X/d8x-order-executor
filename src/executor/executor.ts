@@ -3,10 +3,6 @@ import {
   OrderExecutorTool,
   Order,
   ZERO_ORDER_ID,
-  ORDER_TYPE_MARKET,
-  SmartContractOrder,
-  ZERO_ADDRESS,
-  LimitOrderBook,
 } from "@d8x/perpetuals-sdk";
 import { Redis } from "ioredis";
 import { constructRedis, executeWithTimeout, sleep } from "../utils";
@@ -20,7 +16,6 @@ import { ExecutorMetrics } from "./metrics";
 import { getTxRevertReason, sendTxRevertedMessage } from "./reverts";
 import Distributor from "./distributor";
 import {
-  ContractTransactionResponse,
   formatUnits,
   JsonRpcProvider,
   parseUnits,
@@ -89,7 +84,9 @@ export default class Executor {
     if (process.env.CHAIN_ID !== undefined) {
       sdkConfig.chainId = parseInt(process.env.CHAIN_ID);
     }
-
+    if (config.configSource !== undefined) {
+      sdkConfig.configSource = config.configSource;
+    }
     // Use price feed endpoints from user specified config
     if (this.config.priceFeedEndpoints.length > 0) {
       sdkConfig.priceFeedEndpoints = this.config.priceFeedEndpoints;

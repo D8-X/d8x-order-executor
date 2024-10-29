@@ -37,7 +37,6 @@ import {
   IPerpetualOrder,
   PerpStorage,
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
-import { IClientOrder } from "@d8x/perpetuals-sdk/dist/esm/contracts/LimitOrderBook";
 import Executor from "./executor";
 import { JsonRpcProvider } from "ethers";
 
@@ -45,7 +44,6 @@ export default class Distributor {
   // objects
   private md: MarketData;
   private redisSubClient: Redis;
-  private redisPubClient: Redis;
   public providers: JsonRpcProvider[];
 
   // state
@@ -90,14 +88,15 @@ export default class Distributor {
 
   constructor(config: ExecutorConfig, private executor: Executor) {
     this.config = config;
+    const sdkConfig = PerpetualDataHandler.readSDKConfig(config.sdkConfig);
+    if (config.configSource !== undefined) {
+      sdkConfig.configSource = config.configSource;
+    }
     this.redisSubClient = constructRedis("commanderSubClient");
-    this.redisPubClient = constructRedis("commanderPubClient");
     this.providers = this.config.rpcWatch.map(
       (url) => new JsonRpcProvider(url)
     );
-    this.md = new MarketData(
-      PerpetualDataHandler.readSDKConfig(config.sdkConfig)
-    );
+    this.md = new MarketData(sdkConfig);
   }
 
   /**
