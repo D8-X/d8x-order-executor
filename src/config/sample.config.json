@@ -95,7 +95,7 @@
   {
     "sdkConfig": "europaTestnet",
     "bots": 2,
-    "rewardsAddress": "0xA131CF69D5456142E96A92583E11bb7c123eaa26",
+    "rewardsAddress": "",
     "brokerWS": [],
     "rpcExec": ["https://testnet.skalenodes.com/v1/juicy-low-small-testnet"],
     "rpcWatch": ["https://testnet.skalenodes.com/v1/juicy-low-small-testnet"],
@@ -121,5 +121,28 @@
         "writeEndpoints": ["https://odin.d8x.xyz"]
       }
     ]
+  },
+  {
+    "sdkConfig": "bartio",
+    "bots": 3,
+    "rewardsAddress": "",
+    "brokerWS": [],
+    "rpcExec": ["https://bartio.rpc.berachain.com/"],
+    "rpcWatch": ["https://bartio.rpc.berachain.com/"],
+    "rpcListenHttp": ["https://bartio.rpc.berachain.com/"],
+    "rpcListenWs": [],
+    "waitForBlockSeconds": 30,
+    "healthCheckSeconds": 100,
+    "refreshOrdersIntervalSecondsMax": 2000,
+    "refreshOrdersIntervalSecondsMin": 10,
+    "executeIntervalSecondsMax": 60,
+    "executeIntervalSecondsMin": 5,
+    "refreshOrdersSecondsMax": 28800,
+    "fetchPricesIntervalSecondsMin": 10,
+    "brokerReconnectIntervalMaxSeconds": 28800,
+    "maxGasPriceGWei": 1000,
+    "gasLimit": 1500000,
+    "priceFeedEndpoints": [],
+    "priceFeedConfigNetwork": "odin"
   }
 ]
