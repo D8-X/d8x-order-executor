@@ -471,7 +471,7 @@ export default class Executor {
       // bot can continue
       this.bots[botIdx].busy = false;
       // order stays locked for another second
-      await sleep(1_000);
+      // await sleep(1_000);
       if (!this.trash.has(digest)) {
         this.locked.delete(digest);
       }

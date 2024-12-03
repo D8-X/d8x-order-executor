@@ -144,6 +144,6 @@
     "gasLimit": 1500000,
     "priceFeedEndpoints": [],
     "priceFeedConfigNetwork": "odin",
-    "gasPriceBuffer": 200
+    "gasPriceBuffer": 2
   }
 ]
