@@ -143,6 +143,7 @@
     "maxGasPriceGWei": 1000,
     "gasLimit": 1500000,
     "priceFeedEndpoints": [],
-    "priceFeedConfigNetwork": "odin"
+    "priceFeedConfigNetwork": "odin",
+    "gasPriceBuffer": 200
   }
 ]

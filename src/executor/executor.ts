@@ -41,6 +41,7 @@ export default class Executor {
   private originalGasLimit: number;
   private gasLimitIncreaseFactor = 1.25;
   protected gasLimitIncreaseCounter: number = 0;
+  private gasPriceBuffer: bigint = 120n;
 
   // state
   private q: Set<ExecuteOrderCommand> = new Set();
@@ -102,6 +103,14 @@ export default class Executor {
         "No price feed endpoints specified in config. Using default endpoints from SDK.",
         sdkConfig.priceFeedEndpoints
       );
+    }
+
+    if (this.config.gasPriceBuffer) {
+      if (this.config.gasPriceBuffer > 0) {
+        this.gasPriceBuffer = BigInt(this.config.gasPriceBuffer * 100);
+      } else {
+        throw new Error("Invalid gas price buffer");
+      }
     }
 
     this.bots = this.privateKey.map((pk) => ({
@@ -498,6 +507,9 @@ export default class Executor {
       oracleTimestamp: oracleTS,
       time: new Date(Date.now()).toISOString(),
     });
+
+    this.timesTried.set(digest, (this.timesTried.get(digest) ?? 0) + 1);
+
     let tx: TransactionResponse;
     try {
       const p = this.getNextRpc();
@@ -511,11 +523,11 @@ export default class Executor {
         {
           // gasLimit: this.config.gasLimit, // no gas limit (sdk handles it)
           gasPrice: feeData.gasPrice
-            ? (feeData.gasPrice * 120n) / 100n
+            ? (feeData.gasPrice * this.gasPriceBuffer) / 100n
             : undefined,
           maxFeePerGas:
             !feeData.gasPrice && feeData.maxFeePerGas // don't send both at the same time
-              ? (feeData.maxFeePerGas * 120n) / 100n
+              ? (feeData.maxFeePerGas * this.gasPriceBuffer) / 100n
               : undefined,
           // rpcURL: p.connection.url, // TODO
           maxGasLimit: this.config.gasLimit,
@@ -596,7 +608,10 @@ export default class Executor {
           error.includes("price exceeds limit") ||
           error.includes("could not replace existing tx"): // <- for zkevm: txns may get stuck in the node
           // false positive: order can be tried again later
-          // so just unlock it after waiting
+          // so just unlock it after waiting (unless it's a repeat offender)
+          if (this.timesTried.get(digest)! > 10) {
+            throw e;
+          }
           this.bots[botIdx].busy = false;
           await sleep(10_000);
           this.locked.delete(digest);
