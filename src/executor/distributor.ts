@@ -553,9 +553,10 @@ export default class Distributor {
    */
   public async refreshAllOpenOrders() {
     this.lastRefreshOfAllOpenOrders = new Date();
-    await Promise.allSettled(
-      this.symbols.map((symbol) => this.refreshOpenOrders(symbol))
-    );
+    // in serial to avoid rate limits
+    for (const symbol of this.symbols) {
+      await this.refreshOpenOrders(symbol);
+    }
   }
 
   public async refreshOpenOrders(symbol: string) {
