@@ -549,7 +549,7 @@ export default class Executor {
             !feeData.gasPrice && feeData.maxFeePerGas // don't send both at the same time
               ? (feeData.maxFeePerGas * this.gasPriceBuffer) / 100n
               : undefined,
-          // rpcURL: p.connection.url, // TODO
+          rpcURL: p._getConnection().url,
           maxGasLimit: this.config.gasLimit,
         }
       );
