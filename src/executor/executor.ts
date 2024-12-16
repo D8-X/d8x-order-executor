@@ -28,7 +28,7 @@ const RECENT_ORDER_TIME_S = 2 * 60;
 
 export default class Executor {
   // objects
-  private providers: JsonRpcProvider[];
+  private providers: JsonRpcProvider[] = [];
   private bots: { api: OrderExecutorTool; busy: boolean }[];
   private redisSubClient: Redis;
 
@@ -78,9 +78,9 @@ export default class Executor {
     this.config = config;
     this.originalGasLimit = this.config.gasLimit;
     this.redisSubClient = constructRedis("executorSubClient");
-    this.providers = this.config.rpcExec.map(
-      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
-    );
+    // this.providers = this.config.rpcExec.map(
+    //   (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
+    // );
 
     const sdkConfig = PerpetualDataHandler.readSDKConfig(this.config.sdkConfig);
     // Chain id supplied from env. For testing purposes (hardhat network)
@@ -125,35 +125,47 @@ export default class Executor {
    * An error is thrown if none of the providers works.
    */
   public async initialize() {
-    // Create a proxy instance to access the blockchain
-    let success = false;
-    let i = Math.floor(Math.random() * this.providers.length);
-    let tried = 0;
     // try all providers until one works, reverts otherwise
     // console.log(`${new Date(Date.now()).toISOString()}: initializing ...`);
-    while (
-      !success &&
-      i < this.providers.length &&
-      tried <= this.providers.length
-    ) {
-      i = (i + 1) % this.providers.length;
-      tried++;
-      const results = await Promise.allSettled(
-        // createProxyInstance attaches the given provider to the object instance
-        this.bots.map((bot) => bot.api.createProxyInstance(this.providers[i]))
-      );
-      success = results.every((r) => r.status === "fulfilled");
-      if (!success) {
-        console.log(`Connection to ${this.config.rpcExec[i]} failed:`);
-        console.log(
-          results.map((r) => {
-            if (r.status === "rejected") console.log(r.reason);
-          })
+    this.providers = this.config.rpcExec.map(
+      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
+    );
+    for (let botIdx = 0; botIdx < this.bots.length; botIdx++) {
+      // Create a proxy instance to access the blockchain
+      let success = false;
+      let i = Math.floor(Math.random() * this.config.rpcExec.length);
+      let tried = 0;
+      while (
+        !success &&
+        i < this.providers.length &&
+        tried <= this.providers.length
+      ) {
+        i = (i + 1) % this.providers.length;
+        tried++;
+        const results = await Promise.allSettled(
+          // createProxyInstance attaches the given provider to the object instance
+          [this.bots[botIdx].api.createProxyInstance(this.providers[i])]
         );
+        success = results.every((r) => r.status === "fulfilled");
+        if (!success) {
+          console.log(`Connection to ${this.config.rpcExec[i]} failed:`);
+          console.log(
+            results.map((r) => {
+              if (r.status === "rejected") console.log(r.reason);
+            })
+          );
+        }
       }
-    }
-    if (!success) {
-      throw new Error("critical: all RPCs are down");
+      if (!success) {
+        throw new Error("critical: all RPCs are down");
+      } else {
+        console.log({
+          info: "initialized",
+          bot: botIdx,
+          rpcUrl: this.config.rpcExec[i],
+          time: new Date(Date.now()).toISOString(),
+        });
+      }
     }
 
     // Subscribe to relayed events
@@ -172,11 +184,6 @@ export default class Executor {
         }
       }
     );
-    console.log({
-      info: "initialized",
-      rpcUrl: this.config.rpcExec[i],
-      time: new Date(Date.now()).toISOString(),
-    });
   }
 
   // Add given msg to execution queue. Should be called directly from
