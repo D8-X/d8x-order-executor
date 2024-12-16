@@ -251,10 +251,10 @@ export default class Distributor {
         await this.refreshAllOpenOrders();
       }, 10_000);
 
-      setInterval(() => {
+      setInterval(async () => {
         for (const symbol of this.symbols) {
           if (this.openOrders.get(symbol)?.size ?? 0 > 0) {
-            this.checkOrders(symbol);
+            await this.checkOrders(symbol);
           }
         }
       }, 500);
@@ -264,7 +264,7 @@ export default class Distributor {
           case "block": {
             this.blockNumber = +msg;
             for (const symbol of this.symbols) {
-              this.checkOrders(symbol);
+              await this.checkOrders(symbol);
             }
             if (
               Date.now() - Math.min(...this.lastRefreshTime.values()) >
@@ -327,7 +327,7 @@ export default class Distributor {
               // new trader, refresh
               await this.refreshAccount(symbol, trader);
             }
-            this.checkOrders(symbol);
+            await this.checkOrders(symbol);
             break;
           }
 
@@ -379,7 +379,7 @@ export default class Distributor {
 
             this.addOrder(symbol, traderAddr, digest, type, undefined);
             this.brokerOrders.get(symbol)!.set(digest, Date.now());
-            this.checkOrders(symbol);
+            await this.checkOrders(symbol);
             break;
           }
 
