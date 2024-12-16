@@ -97,7 +97,7 @@ export default class Distributor {
     }
     this.redisSubClient = constructRedis("commanderSubClient");
     this.providers = this.config.rpcWatch.map(
-      (url) => new JsonRpcProvider(url)
+      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
     );
     this.md = new MarketData(sdkConfig);
   }
@@ -574,7 +574,7 @@ export default class Distributor {
     console.log(`refreshing open orders for symbol ${symbol}...`);
     const chunkSize1 = 2 ** 6; // for orders
     const rpcProviders = this.config.rpcWatch.map(
-      (url) => new JsonRpcProvider(url)
+      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
     );
     let providerIdx = Math.floor(Math.random() * rpcProviders.length);
     this.lastRefreshTime.set(symbol, Date.now());
@@ -719,7 +719,7 @@ export default class Distributor {
     const perpId = this.md.getPerpIdFromSymbol(symbol)!;
     const proxy = this.md.getReadOnlyProxyInstance();
     const rpcProviders = this.config.rpcWatch.map(
-      (url) => new JsonRpcProvider(url)
+      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
     );
     let providerIdx = Math.floor(Math.random() * rpcProviders.length);
     this.lastRefreshTime.set(symbol, Date.now());

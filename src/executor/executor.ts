@@ -78,7 +78,9 @@ export default class Executor {
     this.config = config;
     this.originalGasLimit = this.config.gasLimit;
     this.redisSubClient = constructRedis("executorSubClient");
-    this.providers = this.config.rpcExec.map((url) => new JsonRpcProvider(url));
+    this.providers = this.config.rpcExec.map(
+      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
+    );
 
     const sdkConfig = PerpetualDataHandler.readSDKConfig(this.config.sdkConfig);
     // Chain id supplied from env. For testing purposes (hardhat network)
