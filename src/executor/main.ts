@@ -29,6 +29,7 @@ async function start() {
   );
 
   const executor = new Executor(treasuryPK, pk, cfg);
+  await executor.initialize();
 
   try {
     await executor.fundWallets(addr);
@@ -37,7 +38,6 @@ async function start() {
     await sleep(60_000);
     process.exit(1);
   }
-  await executor.initialize();
 
   const obj = new Distributor(cfg, executor);
   await obj.initialize();

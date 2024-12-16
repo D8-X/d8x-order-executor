@@ -49,6 +49,7 @@ export default class Executor {
   private lastCall: number = 0;
   private timesTried: Map<string, number> = new Map();
   private trash: Set<string> = new Set();
+  public ready: boolean = false;
 
   protected metrics: ExecutorMetrics;
 
@@ -168,6 +169,8 @@ export default class Executor {
       }
     }
 
+    this.ready = true;
+
     // Subscribe to relayed events
     await this.redisSubClient.subscribe(
       "block",
@@ -264,6 +267,12 @@ export default class Executor {
         }
       });
     });
+  }
+
+  private requireReady() {
+    if (!this.ready) {
+      throw new Error("not ready: await distributor.initialize()");
+    }
   }
 
   // For a recent (less than RECENT_ORDER_TIME_S from submission ts) child
@@ -390,7 +399,7 @@ export default class Executor {
     digest: string
   ) {
     digest = digest.toLowerCase();
-    if (this.bots[botIdx].busy || this.locked.has(digest)) {
+    if (this.bots[botIdx].busy || this.locked.has(digest) || !this.ready) {
       return this.trash.has(digest) ? BotStatus.Ready : BotStatus.Busy;
     }
     // lock
@@ -807,6 +816,7 @@ export default class Executor {
   }
 
   public async fundWallets(addressArray: string[]) {
+    this.requireReady();
     const provider =
       this.providers[Math.floor(Math.random() * this.providers.length)];
     const treasury = new Wallet(this.treasury, provider);
