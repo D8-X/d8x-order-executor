@@ -136,6 +136,7 @@ export default class Executor {
       let success = false;
       let i = Math.floor(Math.random() * this.config.rpcExec.length);
       let tried = 0;
+      console.log(`Initializing bot ${botIdx}`);
       while (
         !success &&
         i < this.providers.length &&
@@ -143,6 +144,7 @@ export default class Executor {
       ) {
         i = (i + 1) % this.providers.length;
         tried++;
+        console.log(`Trying RPC:`, this.config.rpcExec[i]);
         const results = await Promise.allSettled(
           // createProxyInstance attaches the given provider to the object instance
           [this.bots[botIdx].api.createProxyInstance(this.providers[i])]
