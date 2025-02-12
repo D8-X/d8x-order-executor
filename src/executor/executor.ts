@@ -3,10 +3,6 @@ import {
   OrderExecutorTool,
   Order,
   ZERO_ORDER_ID,
-  ORDER_TYPE_MARKET,
-  SmartContractOrder,
-  ZERO_ADDRESS,
-  LimitOrderBook,
 } from "@d8x/perpetuals-sdk";
 import { Redis } from "ioredis";
 import { constructRedis, executeWithTimeout, sleep } from "../utils";
@@ -20,7 +16,6 @@ import { ExecutorMetrics } from "./metrics";
 import { getTxRevertReason, sendTxRevertedMessage } from "./reverts";
 import Distributor from "./distributor";
 import {
-  ContractTransactionResponse,
   formatUnits,
   JsonRpcProvider,
   parseUnits,
@@ -33,7 +28,7 @@ const RECENT_ORDER_TIME_S = 2 * 60;
 
 export default class Executor {
   // objects
-  private providers: JsonRpcProvider[];
+  private providers: JsonRpcProvider[] = [];
   private bots: { api: OrderExecutorTool; busy: boolean }[];
   private redisSubClient: Redis;
 
@@ -46,6 +41,7 @@ export default class Executor {
   private originalGasLimit: number;
   private gasLimitIncreaseFactor = 1.25;
   protected gasLimitIncreaseCounter: number = 0;
+  private gasPriceBuffer: bigint = 120n;
 
   // state
   private q: Set<ExecuteOrderCommand> = new Set();
@@ -53,6 +49,7 @@ export default class Executor {
   private lastCall: number = 0;
   private timesTried: Map<string, number> = new Map();
   private trash: Set<string> = new Set();
+  public ready: boolean = false;
 
   protected metrics: ExecutorMetrics;
 
@@ -82,14 +79,21 @@ export default class Executor {
     this.config = config;
     this.originalGasLimit = this.config.gasLimit;
     this.redisSubClient = constructRedis("executorSubClient");
-    this.providers = this.config.rpcExec.map((url) => new JsonRpcProvider(url));
+    // this.providers = this.config.rpcExec.map(
+    //   (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
+    // );
 
     const sdkConfig = PerpetualDataHandler.readSDKConfig(this.config.sdkConfig);
     // Chain id supplied from env. For testing purposes (hardhat network)
     if (process.env.CHAIN_ID !== undefined) {
       sdkConfig.chainId = parseInt(process.env.CHAIN_ID);
     }
-
+    if (config.priceFeedConfigNetwork !== undefined) {
+      sdkConfig.priceFeedConfigNetwork = config.priceFeedConfigNetwork;
+    }
+    if (config.configSource !== undefined) {
+      sdkConfig.configSource = config.configSource;
+    }
     // Use price feed endpoints from user specified config
     if (this.config.priceFeedEndpoints.length > 0) {
       sdkConfig.priceFeedEndpoints = this.config.priceFeedEndpoints;
@@ -104,6 +108,14 @@ export default class Executor {
       );
     }
 
+    if (this.config.gasPriceBuffer) {
+      if (this.config.gasPriceBuffer > 0) {
+        this.gasPriceBuffer = BigInt(this.config.gasPriceBuffer * 100);
+      } else {
+        throw new Error("Invalid gas price buffer");
+      }
+    }
+
     this.bots = this.privateKey.map((pk) => ({
       api: new OrderExecutorTool(sdkConfig, pk),
       busy: false,
@@ -114,36 +126,52 @@ export default class Executor {
    * An error is thrown if none of the providers works.
    */
   public async initialize() {
-    // Create a proxy instance to access the blockchain
-    let success = false;
-    let i = Math.floor(Math.random() * this.providers.length);
-    let tried = 0;
     // try all providers until one works, reverts otherwise
     // console.log(`${new Date(Date.now()).toISOString()}: initializing ...`);
-    while (
-      !success &&
-      i < this.providers.length &&
-      tried <= this.providers.length
-    ) {
-      i = (i + 1) % this.providers.length;
-      tried++;
-      const results = await Promise.allSettled(
-        // createProxyInstance attaches the given provider to the object instance
-        this.bots.map((bot) => bot.api.createProxyInstance(this.providers[i]))
-      );
-      success = results.every((r) => r.status === "fulfilled");
-      if (!success) {
-        console.log(`Connection to ${this.config.rpcExec[i]} failed:`);
-        console.log(
-          results.map((r) => {
-            if (r.status === "rejected") console.log(r.reason);
-          })
+    this.providers = this.config.rpcExec.map(
+      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
+    );
+    for (let botIdx = 0; botIdx < this.bots.length; botIdx++) {
+      // Create a proxy instance to access the blockchain
+      let success = false;
+      let i = Math.floor(Math.random() * this.config.rpcExec.length);
+      let tried = 0;
+      console.log(`Initializing bot ${botIdx}`);
+      while (
+        !success &&
+        i < this.providers.length &&
+        tried <= this.providers.length
+      ) {
+        i = (i + 1) % this.providers.length;
+        tried++;
+        console.log(`Trying RPC:`, this.config.rpcExec[i]);
+        const results = await Promise.allSettled(
+          // createProxyInstance attaches the given provider to the object instance
+          [this.bots[botIdx].api.createProxyInstance(this.providers[i])]
         );
+        success = results.every((r) => r.status === "fulfilled");
+        if (!success) {
+          console.log(`Connection to ${this.config.rpcExec[i]} failed:`);
+          console.log(
+            results.map((r) => {
+              if (r.status === "rejected") console.log(r.reason);
+            })
+          );
+        }
+      }
+      if (!success) {
+        throw new Error("critical: all RPCs are down");
+      } else {
+        console.log({
+          info: "initialized",
+          bot: botIdx,
+          rpcUrl: this.config.rpcExec[i],
+          time: new Date(Date.now()).toISOString(),
+        });
       }
     }
-    if (!success) {
-      throw new Error("critical: all RPCs are down");
-    }
+
+    this.ready = true;
 
     // Subscribe to relayed events
     await this.redisSubClient.subscribe(
@@ -161,11 +189,6 @@ export default class Executor {
         }
       }
     );
-    console.log({
-      info: "initialized",
-      rpcUrl: this.config.rpcExec[i],
-      time: new Date(Date.now()).toISOString(),
-    });
   }
 
   // Add given msg to execution queue. Should be called directly from
@@ -246,6 +269,12 @@ export default class Executor {
         }
       });
     });
+  }
+
+  private requireReady() {
+    if (!this.ready) {
+      throw new Error("not ready: await distributor.initialize()");
+    }
   }
 
   // For a recent (less than RECENT_ORDER_TIME_S from submission ts) child
@@ -372,7 +401,7 @@ export default class Executor {
     digest: string
   ) {
     digest = digest.toLowerCase();
-    if (this.bots[botIdx].busy || this.locked.has(digest)) {
+    if (this.bots[botIdx].busy || this.locked.has(digest) || !this.ready) {
       return this.trash.has(digest) ? BotStatus.Ready : BotStatus.Busy;
     }
     // lock
@@ -462,7 +491,7 @@ export default class Executor {
       // bot can continue
       this.bots[botIdx].busy = false;
       // order stays locked for another second
-      await sleep(1_000);
+      // await sleep(1_000);
       if (!this.trash.has(digest)) {
         this.locked.delete(digest);
       }
@@ -498,6 +527,9 @@ export default class Executor {
       oracleTimestamp: oracleTS,
       time: new Date(Date.now()).toISOString(),
     });
+
+    this.timesTried.set(digest, (this.timesTried.get(digest) ?? 0) + 1);
+
     let tx: TransactionResponse;
     try {
       const p = this.getNextRpc();
@@ -511,13 +543,13 @@ export default class Executor {
         {
           // gasLimit: this.config.gasLimit, // no gas limit (sdk handles it)
           gasPrice: feeData.gasPrice
-            ? (feeData.gasPrice * 120n) / 100n
+            ? (feeData.gasPrice * this.gasPriceBuffer) / 100n
             : undefined,
           maxFeePerGas:
             !feeData.gasPrice && feeData.maxFeePerGas // don't send both at the same time
-              ? (feeData.maxFeePerGas * 120n) / 100n
+              ? (feeData.maxFeePerGas * this.gasPriceBuffer) / 100n
               : undefined,
-          // rpcURL: p.connection.url, // TODO
+          rpcURL: p._getConnection().url,
           maxGasLimit: this.config.gasLimit,
         }
       );
@@ -596,7 +628,10 @@ export default class Executor {
           error.includes("price exceeds limit") ||
           error.includes("could not replace existing tx"): // <- for zkevm: txns may get stuck in the node
           // false positive: order can be tried again later
-          // so just unlock it after waiting
+          // so just unlock it after waiting (unless it's a repeat offender)
+          if (this.timesTried.get(digest)! > 10) {
+            throw e;
+          }
           this.bots[botIdx].busy = false;
           await sleep(10_000);
           this.locked.delete(digest);
@@ -783,6 +818,7 @@ export default class Executor {
   }
 
   public async fundWallets(addressArray: string[]) {
+    this.requireReady();
     const provider =
       this.providers[Math.floor(Math.random() * this.providers.length)];
     const treasury = new Wallet(this.treasury, provider);
@@ -871,5 +907,11 @@ export default class Executor {
   public getNextRpc() {
     this.lastUsedRpcIndex = (this.lastUsedRpcIndex + 1) % this.providers.length;
     return this.providers[this.lastUsedRpcIndex];
+  }
+
+  public recordExecutedOrder(digest: string) {
+    if (!this.recentlyExecutedOrders.has(digest)) {
+      this.recentlyExecutedOrders.set(digest, new Date());
+    }
   }
 }

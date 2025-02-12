@@ -37,7 +37,6 @@ import {
   IPerpetualOrder,
   PerpStorage,
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
-import { IClientOrder } from "@d8x/perpetuals-sdk/dist/esm/contracts/LimitOrderBook";
 import Executor from "./executor";
 import { JsonRpcProvider } from "ethers";
 
@@ -45,7 +44,6 @@ export default class Distributor {
   // objects
   private md: MarketData;
   private redisSubClient: Redis;
-  private redisPubClient: Redis;
   public providers: JsonRpcProvider[];
 
   // state
@@ -90,14 +88,18 @@ export default class Distributor {
 
   constructor(config: ExecutorConfig, private executor: Executor) {
     this.config = config;
+    const sdkConfig = PerpetualDataHandler.readSDKConfig(config.sdkConfig);
+    if (config.priceFeedConfigNetwork !== undefined) {
+      sdkConfig.priceFeedConfigNetwork = config.priceFeedConfigNetwork;
+    }
+    if (config.configSource !== undefined) {
+      sdkConfig.configSource = config.configSource;
+    }
     this.redisSubClient = constructRedis("commanderSubClient");
-    this.redisPubClient = constructRedis("commanderPubClient");
     this.providers = this.config.rpcWatch.map(
-      (url) => new JsonRpcProvider(url)
+      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
     );
-    this.md = new MarketData(
-      PerpetualDataHandler.readSDKConfig(config.sdkConfig)
-    );
+    this.md = new MarketData(sdkConfig);
   }
 
   /**
@@ -249,10 +251,10 @@ export default class Distributor {
         await this.refreshAllOpenOrders();
       }, 10_000);
 
-      setInterval(() => {
+      setInterval(async () => {
         for (const symbol of this.symbols) {
           if (this.openOrders.get(symbol)?.size ?? 0 > 0) {
-            this.checkOrders(symbol);
+            await this.checkOrders(symbol);
           }
         }
       }, 500);
@@ -262,7 +264,7 @@ export default class Distributor {
           case "block": {
             this.blockNumber = +msg;
             for (const symbol of this.symbols) {
-              this.checkOrders(symbol);
+              await this.checkOrders(symbol);
             }
             if (
               Date.now() - Math.min(...this.lastRefreshTime.values()) >
@@ -325,7 +327,7 @@ export default class Distributor {
               // new trader, refresh
               await this.refreshAccount(symbol, trader);
             }
-            this.checkOrders(symbol);
+            await this.checkOrders(symbol);
             break;
           }
 
@@ -377,7 +379,7 @@ export default class Distributor {
 
             this.addOrder(symbol, traderAddr, digest, type, undefined);
             this.brokerOrders.get(symbol)!.set(digest, Date.now());
-            this.checkOrders(symbol);
+            await this.checkOrders(symbol);
             break;
           }
 
@@ -510,6 +512,7 @@ export default class Distributor {
     reason?: string,
     trader?: string
   ) {
+    this.executor.recordExecutedOrder(digest);
     if (!this.openOrders.get(symbol)?.has(digest)) {
       // nothing to remove
       return;
@@ -550,9 +553,10 @@ export default class Distributor {
    */
   public async refreshAllOpenOrders() {
     this.lastRefreshOfAllOpenOrders = new Date();
-    await Promise.allSettled(
-      this.symbols.map((symbol) => this.refreshOpenOrders(symbol))
-    );
+    // in serial to avoid rate limits
+    for (const symbol of this.symbols) {
+      await this.refreshOpenOrders(symbol);
+    }
   }
 
   public async refreshOpenOrders(symbol: string) {
@@ -571,7 +575,7 @@ export default class Distributor {
     console.log(`refreshing open orders for symbol ${symbol}...`);
     const chunkSize1 = 2 ** 6; // for orders
     const rpcProviders = this.config.rpcWatch.map(
-      (url) => new JsonRpcProvider(url)
+      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
     );
     let providerIdx = Math.floor(Math.random() * rpcProviders.length);
     this.lastRefreshTime.set(symbol, Date.now());
@@ -716,7 +720,7 @@ export default class Distributor {
     const perpId = this.md.getPerpIdFromSymbol(symbol)!;
     const proxy = this.md.getReadOnlyProxyInstance();
     const rpcProviders = this.config.rpcWatch.map(
-      (url) => new JsonRpcProvider(url)
+      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
     );
     let providerIdx = Math.floor(Math.random() * rpcProviders.length);
     this.lastRefreshTime.set(symbol, Date.now());

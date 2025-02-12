@@ -74,6 +74,12 @@ export default class BlockhainListener {
     if (process.env.CHAIN_ID !== undefined) {
       sdkConfig.chainId = parseInt(process.env.CHAIN_ID);
     }
+    if (config.priceFeedConfigNetwork !== undefined) {
+      sdkConfig.priceFeedConfigNetwork = config.priceFeedConfigNetwork;
+    }
+    if (config.configSource !== undefined) {
+      sdkConfig.configSource = config.configSource;
+    }
     this.md = new MarketData(sdkConfig);
     this.redisPubClient = constructRedis("sentinelPubClient");
     this.httpProvider = new JsonRpcProvider(

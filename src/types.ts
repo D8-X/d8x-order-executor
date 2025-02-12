@@ -55,12 +55,17 @@ export interface ExecutorConfig {
   maxGasPriceGWei: number;
   gasLimit: number;
   priceFeedEndpoints: [{ type: "pyth" | "odin"; endpoints: string[] }];
-
   // How much gas to send to each bot when funding them in ETH. If not defined,
   // gasLimit*5 approach is used.
   fundGasAmountETH?: number;
   // What is the minimum balance in ETH that a bot must have to be funded
   minimumBalanceETH?: number;
+  // config source to override sdk default
+  configSource?: string;
+  // oracle network to override default
+  priceFeedConfigNetwork?: string;
+  // override default config (defaults to 1.2x RPC gas px), multiplier (e.g. 1.5 means 1.5x the gas price)
+  gasPriceBuffer?: number;
 }
 
 export interface BrokerWSErrorData {
