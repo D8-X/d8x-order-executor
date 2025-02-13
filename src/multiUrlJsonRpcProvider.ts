@@ -15,7 +15,8 @@ export interface MultiUrlProvider {
   resetErrorNumber(): void;
 }
 
-export interface MultiUrlJsonRpcProviderOptions extends JsonRpcApiProviderOptions {
+export interface MultiUrlJsonRpcProviderOptions
+  extends JsonRpcApiProviderOptions {
   // Switch to different rpc on each send call. Defaults to false. Optimal when
   // using a lot of free rpcs. If set to true, the rpc will switch on each send.
   switchRpcOnEachRequest?: boolean;
@@ -39,7 +40,10 @@ export interface MultiUrlJsonRpcProviderOptions extends JsonRpcApiProviderOption
  *
  * @see JsonRpcApiProvider for more details
  */
-export class MultiUrlJsonRpcProvider extends JsonRpcApiProvider implements MultiUrlProvider {
+export class MultiUrlJsonRpcProvider
+  extends JsonRpcApiProvider
+  implements MultiUrlProvider
+{
   private currentConnection: FetchRequest;
   private options: MultiUrlJsonRpcProviderOptions;
   private rpcUrls: string[] = [];
@@ -47,7 +51,11 @@ export class MultiUrlJsonRpcProvider extends JsonRpcApiProvider implements Multi
   // Resets when a request is successful
   private currentNumberOfErrors: number = 0;
 
-  constructor(rpcUrls: string[], network?: Networkish, options?: MultiUrlJsonRpcProviderOptions) {
+  constructor(
+    rpcUrls: string[],
+    network?: Networkish,
+    options?: MultiUrlJsonRpcProviderOptions
+  ) {
     if (rpcUrls.length <= 0) {
       throw new Error("at least one rpc url must be provided");
     }
@@ -74,7 +82,10 @@ export class MultiUrlJsonRpcProvider extends JsonRpcApiProvider implements Multi
     return this.currentConnection.clone();
   }
 
-  async send(method: string, params: Array<any> | Record<string, any>): Promise<any> {
+  async send(
+    method: string,
+    params: Array<any> | Record<string, any>
+  ): Promise<any> {
     await this._start();
     return await super.send(method, params);
   }
@@ -97,7 +108,8 @@ export class MultiUrlJsonRpcProvider extends JsonRpcApiProvider implements Multi
    * Simply switch to the next rpc in the list.
    */
   public switchRpc() {
-    this.currentRpcUrlIndex = (this.currentRpcUrlIndex + 1) % this.rpcUrls.length;
+    this.currentRpcUrlIndex =
+      (this.currentRpcUrlIndex + 1) % this.rpcUrls.length;
     this.currentConnection = new FetchRequest(this.getCurrentRpcUrl());
 
     if (this.options.logRpcSwitches) {
@@ -114,7 +126,9 @@ export class MultiUrlJsonRpcProvider extends JsonRpcApiProvider implements Multi
    * @param payload
    * @returns
    */
-  async _send(payload: JsonRpcPayload | Array<JsonRpcPayload>): Promise<Array<JsonRpcResult>> {
+  async _send(
+    payload: JsonRpcPayload | Array<JsonRpcPayload>
+  ): Promise<Array<JsonRpcResult>> {
     if (this.options.switchRpcOnEachRequest) {
       this.switchRpc();
     }
@@ -142,13 +156,18 @@ export class MultiUrlJsonRpcProvider extends JsonRpcApiProvider implements Multi
       }
     } catch (err) {
       if (this.options.logErrors) {
-        console.error(`[(${new Date().toISOString()}) MultiUrlJsonRpcProvider@${currentRpcUrl}] request error: `, err);
+        console.error(
+          `[(${new Date().toISOString()}) MultiUrlJsonRpcProvider@${currentRpcUrl}] request error: `,
+          err
+        );
       }
       this.switchRpcOnError();
 
       // When max number of errors is reached - throw.
       if (this.currentNumberOfErrors >= this.options.maxRetries!) {
-        console.error(`[(${new Date().toISOString()}) MultiUrlJsonRpcProvider@${currentRpcUrl}] Max retries reached`);
+        console.error(
+          `[(${new Date().toISOString()}) MultiUrlJsonRpcProvider@${currentRpcUrl}] Max retries reached`
+        );
         throw err;
       }
 
@@ -169,7 +188,7 @@ export class MultiUrlJsonRpcProvider extends JsonRpcApiProvider implements Multi
         );
       }
       this.switchRpcOnError();
-      return this._send(payload);
+      // return this._send(payload);
     }
 
     // Request was sent successfuly, reset errors counter
