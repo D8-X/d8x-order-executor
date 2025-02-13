@@ -39,12 +39,13 @@ import {
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
 import Executor from "./executor";
 import { JsonRpcProvider } from "ethers";
+import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
 
 export default class Distributor {
   // objects
   private md: MarketData;
   private redisSubClient: Redis;
-  public providers: JsonRpcProvider[];
+  public providers: MultiUrlJsonRpcProvider[];
 
   // state
   private blockNumber = 0;
@@ -96,10 +97,20 @@ export default class Distributor {
       sdkConfig.configSource = config.configSource;
     }
     this.redisSubClient = constructRedis("commanderSubClient");
-    this.providers = this.config.rpcWatch.map(
-      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
-    );
+    // this.providers = this.config.rpcWatch.map(
+    //   (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
+    // );
     this.md = new MarketData(sdkConfig);
+    this.providers = [
+      new MultiUrlJsonRpcProvider(this.config.rpcWatch, this.md.network, {
+        timeoutSeconds: 25,
+        logErrors: true,
+        logRpcSwitches: true,
+        // Distributor uses free rpcs, make sure to switch on each call.
+        switchRpcOnEachRequest: true,
+        staticNetwork: true,
+      }),
+    ];
   }
 
   /**

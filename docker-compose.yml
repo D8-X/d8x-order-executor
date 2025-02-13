@@ -1,6 +1,4 @@
 # sudo docker compose up --build -d
-version: "3.8"
-
 name: d8x
 
 services:
@@ -13,7 +11,7 @@ services:
     command: redis-server --save 20 1 --loglevel warning --requirepass ${REDIS_PASSWORD}
 
   # Listen to block and events, and stream on redis
-  sentinel:
+  sentinel-bartio:
     build:
       context: .
       dockerfile: ./src/sentinel/Dockerfile
@@ -23,14 +21,37 @@ services:
       REDIS_HOST: cache
       REDIS_PORT: ${REDIS_PORT}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
-      SDK_CONFIG: ${SDK_CONFIG}
+      REDIS_ID: 0
+      SDK_CONFIG: bartio
     restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1k"
+        max-file: "3"
+
+  sentinel-bera:
+    build:
+      context: .
+      dockerfile: ./src/sentinel/Dockerfile
+    depends_on:
+      - cache
+    environment:
+      REDIS_HOST: cache
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_ID: 1
+      SDK_CONFIG: bera
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100k"
+        max-file: "10"
 
   # Executor: fetches and distributes executable orders and submits transactions
   # to the blockchain
-  executor:
-    ports:
-      - 127.0.0.1:9001:9001
+  executor-bartio:
     depends_on:
       - cache
     build:
@@ -40,11 +61,39 @@ services:
       REDIS_HOST: cache
       REDIS_PORT: ${REDIS_PORT}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
-      SDK_CONFIG: ${SDK_CONFIG}
+      REDIS_ID: 0
+      SDK_CONFIG: bartio
       SEED_PHRASE: ${SEED_PHRASE}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
       SERVER_IP: ${PROMETHEUS_SERVER_IP}
     restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1k"
+        max-file: "3"
+
+  executor-bera:
+    depends_on:
+      - cache
+    build:
+      context: .
+      dockerfile: ./src/executor/Dockerfile
+    environment:
+      REDIS_HOST: cache
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_ID: 1
+      SDK_CONFIG: bera
+      SEED_PHRASE: ${SEED_PHRASE}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+      SERVER_IP: ${PROMETHEUS_SERVER_IP}
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100k"
+        max-file: "10"
 
   # Prometheus with alertmanager
   prometheus:
@@ -80,7 +129,6 @@ services:
         target: /etc/alertmanager/slack_api_url.txt
       - source: alertmanager_yaml
         target: /etc/alertmanager/alertmanager.yml
-
 volumes:
   prometheus_data:
 configs:

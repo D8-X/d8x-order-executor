@@ -18,17 +18,19 @@ import Distributor from "./distributor";
 import {
   formatUnits,
   JsonRpcProvider,
+  Network,
   parseUnits,
   TransactionResponse,
   Wallet,
 } from "ethers";
+import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
 
 // How much back in time we consider order to be recent. Currently 2 minutes.
 const RECENT_ORDER_TIME_S = 2 * 60;
 
 export default class Executor {
   // objects
-  private providers: JsonRpcProvider[] = [];
+  private providers: MultiUrlJsonRpcProvider[] = [];
   private bots: { api: OrderExecutorTool; busy: boolean }[];
   private redisSubClient: Redis;
 
@@ -79,11 +81,24 @@ export default class Executor {
     this.config = config;
     this.originalGasLimit = this.config.gasLimit;
     this.redisSubClient = constructRedis("executorSubClient");
-    // this.providers = this.config.rpcExec.map(
-    //   (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
-    // );
 
     const sdkConfig = PerpetualDataHandler.readSDKConfig(this.config.sdkConfig);
+    this.providers = [
+      new MultiUrlJsonRpcProvider(
+        this.config.rpcExec,
+        new Network(sdkConfig.name || "", sdkConfig.chainId),
+        {
+          timeoutSeconds: 25,
+          logErrors: true,
+          logRpcSwitches: true,
+          staticNetwork: true,
+          maxRetries: this.config.rpcExec.length * 3,
+          // do not switch rpc on each request with premium rpcExec rpcs.
+          switchRpcOnEachRequest: false,
+        }
+      ),
+    ];
+
     // Chain id supplied from env. For testing purposes (hardhat network)
     if (process.env.CHAIN_ID !== undefined) {
       sdkConfig.chainId = parseInt(process.env.CHAIN_ID);
@@ -128,47 +143,34 @@ export default class Executor {
   public async initialize() {
     // try all providers until one works, reverts otherwise
     // console.log(`${new Date(Date.now()).toISOString()}: initializing ...`);
-    this.providers = this.config.rpcExec.map(
-      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
-    );
-    for (let botIdx = 0; botIdx < this.bots.length; botIdx++) {
-      // Create a proxy instance to access the blockchain
-      let success = false;
-      let i = Math.floor(Math.random() * this.config.rpcExec.length);
-      let tried = 0;
-      console.log(`Initializing bot ${botIdx}`);
-      while (
-        !success &&
-        i < this.providers.length &&
-        tried <= this.providers.length
-      ) {
-        i = (i + 1) % this.providers.length;
-        tried++;
-        console.log(`Trying RPC:`, this.config.rpcExec[i]);
-        const results = await Promise.allSettled(
-          // createProxyInstance attaches the given provider to the object instance
-          [this.bots[botIdx].api.createProxyInstance(this.providers[i])]
-        );
-        success = results.every((r) => r.status === "fulfilled");
-        if (!success) {
-          console.log(`Connection to ${this.config.rpcExec[i]} failed:`);
-          console.log(
-            results.map((r) => {
-              if (r.status === "rejected") console.log(r.reason);
-            })
-          );
-        }
-      }
-      if (!success) {
-        throw new Error("critical: all RPCs are down");
-      } else {
-        console.log({
-          info: "initialized",
-          bot: botIdx,
-          rpcUrl: this.config.rpcExec[i],
-          time: new Date(Date.now()).toISOString(),
-        });
-      }
+    let success = false;
+    let i = Math.floor(Math.random() * this.providers.length);
+    let tried = 0;
+    // try all providers until one works, reverts otherwise
+    // console.log(`${new Date(Date.now()).toISOString()}: initializing ...`);
+    while (
+      !success &&
+      i < this.providers.length &&
+      tried <= this.providers.length
+    ) {
+      console.log(`trying provider ${i} ... `);
+      const results = await Promise.allSettled(
+        // createProxyInstance attaches the given provider to the object instance
+        this.bots.map((liq) => liq.api.createProxyInstance(this.providers[i]))
+      );
+
+      success = results.every((r) => r.status === "fulfilled");
+      i = (i + 1) % this.providers.length;
+      tried++;
+    }
+    if (!success) {
+      throw new Error("critical: all RPCs are down");
+    } else {
+      console.log({
+        info: "initialized",
+        rpcUrl: this.config.rpcExec[i],
+        time: new Date(Date.now()).toISOString(),
+      });
     }
 
     this.ready = true;
