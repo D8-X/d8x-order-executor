@@ -169,5 +169,49 @@
     "priceFeedEndpoints": [],
     "priceFeedConfigNetwork": "odin",
     "gasPriceBuffer": 2
+  },
+  {
+    "sdkConfig": "base",
+    "bots": 1,
+    "rewardsAddress": "",
+    "brokerWS": [],
+    "rpcExec": [
+      "https://base.llamarpc.com",
+      "https://mainnet.base.org",
+      "https://base.blockpi.network/v1/rpc/public",
+      "https://base-rpc.publicnode.com",
+      "https://base.gateway.tenderly.co"
+    ],
+    "rpcWatch": [
+      "https://base.llamarpc.com",
+      "https://mainnet.base.org",
+      "https://base.blockpi.network/v1/rpc/public",
+      "https://base-rpc.publicnode.com",
+      "https://base.gateway.tenderly.co"
+    ],
+    "rpcListenHttp": [
+      "https://base.llamarpc.com",
+      "https://mainnet.base.org",
+      "https://base.blockpi.network/v1/rpc/public",
+      "https://base-rpc.publicnode.com",
+      "https://base.gateway.tenderly.co"
+    ],
+    "rpcListenWs": [
+      "wss://base-rpc.publicnode.com",
+      "wss://base.callstaticrpc.com",
+      "wss://base.gateway.tenderly.co"
+    ],
+    "waitForBlockSeconds": 30,
+    "healthCheckSeconds": 100,
+    "refreshOrdersIntervalSecondsMax": 2000,
+    "refreshOrdersIntervalSecondsMin": 10,
+    "executeIntervalSecondsMax": 60,
+    "executeIntervalSecondsMin": 5,
+    "refreshOrdersSecondsMax": 28800,
+    "fetchPricesIntervalSecondsMin": 10,
+    "brokerReconnectIntervalMaxSeconds": 28800,
+    "maxGasPriceGWei": 1000,
+    "gasLimit": 1500000,
+    "priceFeedEndpoints": []
   }
 ]
