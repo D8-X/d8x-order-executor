@@ -33,6 +33,7 @@ export default class Executor {
   private providers: MultiUrlJsonRpcProvider[] = [];
   private bots: { api: OrderExecutorTool; busy: boolean }[];
   private redisSubClient: Redis;
+  private redisPubClient: Redis;
 
   // parameters
   private treasury: string;
@@ -81,6 +82,7 @@ export default class Executor {
     this.config = config;
     this.originalGasLimit = this.config.gasLimit;
     this.redisSubClient = constructRedis("executorSubClient");
+    this.redisPubClient = constructRedis("executorPubClient");
 
     const sdkConfig = PerpetualDataHandler.readSDKConfig(this.config.sdkConfig);
     this.providers = [
@@ -632,6 +634,7 @@ export default class Executor {
           // false positive: order can be tried again later
           // so just unlock it after waiting (unless it's a repeat offender)
           if (this.timesTried.get(digest)! > 10) {
+            this.redisPubClient.publish("Restart", "false positives");
             throw e;
           }
           this.bots[botIdx].busy = false;
