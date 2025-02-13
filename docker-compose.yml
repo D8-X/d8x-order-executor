@@ -49,6 +49,25 @@ services:
         max-size: "100k"
         max-file: "10"
 
+  sentinel-arbitrum:
+    build:
+      context: .
+      dockerfile: ./src/sentinel/Dockerfile
+    depends_on:
+      - cache
+    environment:
+      REDIS_HOST: cache
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_ID: 2
+      SDK_CONFIG: arbitrum
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100k"
+        max-file: "10"
+
   # Executor: fetches and distributes executable orders and submits transactions
   # to the blockchain
   executor-bartio:
@@ -65,13 +84,35 @@ services:
       SDK_CONFIG: bartio
       SEED_PHRASE: ${SEED_PHRASE}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-      SERVER_IP: ${PROMETHEUS_SERVER_IP}
+      # SERVER_IP: ${PROMETHEUS_SERVER_IP} # not monitored
     restart: always
     logging:
       driver: "json-file"
       options:
         max-size: "1k"
         max-file: "3"
+
+  executor-arbitrum:
+    depends_on:
+      - cache
+    build:
+      context: .
+      dockerfile: ./src/executor/Dockerfile
+    environment:
+      REDIS_HOST: cache
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_ID: 2
+      SDK_CONFIG: arbitrum
+      SEED_PHRASE: ${SEED_PHRASE}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+      SERVER_IP: ${PROMETHEUS_SERVER_IP}
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100k"
+        max-file: "10"
 
   executor-bera:
     depends_on:
