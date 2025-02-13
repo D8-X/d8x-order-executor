@@ -416,6 +416,7 @@ export default class Distributor {
             break;
 
           case "Restart": {
+            console.log("Restarting upong signal received...");
             process.exit(0);
           }
         }
