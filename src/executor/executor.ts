@@ -532,7 +532,8 @@ export default class Executor {
       time: new Date(Date.now()).toISOString(),
     });
 
-    this.timesTried.set(digest, (this.timesTried.get(digest) ?? 0) + 1);
+    const tried = (this.timesTried.get(digest) ?? 0) + 1;
+    this.timesTried.set(digest, tried);
 
     let tx: TransactionResponse;
     try {
@@ -634,8 +635,17 @@ export default class Executor {
           // false positive: order can be tried again later
           // so just unlock it after waiting (unless it's a repeat offender)
           if (this.timesTried.get(digest)! > 10) {
+            console.log({
+              info: "restart",
+              reason: "too many false positives",
+              tried: this.timesTried.get(digest),
+              symbol: symbol,
+              executor: addr,
+              digest: digest,
+              time: new Date(Date.now()).toISOString(),
+            });
             this.redisPubClient.publish("Restart", "false positives");
-            throw e;
+            process.exit(1);
           }
           this.bots[botIdx].busy = false;
           await sleep(10_000);
