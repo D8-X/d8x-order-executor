@@ -480,9 +480,31 @@ export default class Executor {
     }
 
     // check oracles
-    const px = await this.bots[botIdx].api.fetchPriceSubmissionInfoForPerpetual(
-      symbol
-    );
+    const { px, error } = await this.bots[botIdx].api
+      .fetchPriceSubmissionInfoForPerpetual(symbol)
+      .then((px) => ({ px, error: "" }))
+      .catch(async (e) => {
+        return { px: undefined, error: e?.toString() };
+      });
+
+    if (!px) {
+      // oracle problem
+      console.log({
+        reason: "oracle error",
+        symbol: symbol,
+        error: error?.toString(),
+        time: new Date(Date.now()).toISOString(),
+      });
+      // bot can continue
+      this.bots[botIdx].busy = false;
+      // order stays locked for another second
+      await sleep(1_000);
+      if (!this.trash.has(digest)) {
+        this.locked.delete(digest);
+      }
+      return BotStatus.PartialError;
+    }
+
     const oracleTS = Math.min(...px.submission.timestamps);
     if (oracleTS < onChainTS) {
       // let oracle cache expire before trying
@@ -494,8 +516,11 @@ export default class Executor {
       });
       // bot can continue
       this.bots[botIdx].busy = false;
+      // trigger a restart if it keeps happening
+      const tried = (this.timesTried.get(digest) ?? 0) + 1;
+      this.timesTried.set(digest, tried);
       // order stays locked for another second
-      // await sleep(1_000);
+      await sleep(1_000);
       if (!this.trash.has(digest)) {
         this.locked.delete(digest);
       }
