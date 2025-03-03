@@ -11,25 +11,6 @@ services:
     command: redis-server --save 20 1 --loglevel warning --requirepass ${REDIS_PASSWORD}
 
   # Listen to block and events, and stream on redis
-  sentinel-bartio:
-    build:
-      context: .
-      dockerfile: ./src/sentinel/Dockerfile
-    depends_on:
-      - cache
-    environment:
-      REDIS_HOST: cache
-      REDIS_PORT: ${REDIS_PORT}
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REDIS_ID: 0
-      SDK_CONFIG: bartio
-    restart: always
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "1k"
-        max-file: "3"
-
   sentinel-bera:
     build:
       context: .
@@ -108,28 +89,6 @@ services:
 
   # Executor: fetches and distributes executable orders and submits transactions
   # to the blockchain
-  executor-bartio:
-    depends_on:
-      - cache
-    build:
-      context: .
-      dockerfile: ./src/executor/Dockerfile
-    environment:
-      REDIS_HOST: cache
-      REDIS_PORT: ${REDIS_PORT}
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REDIS_ID: 0
-      SDK_CONFIG: bartio
-      SEED_PHRASE: ${SEED_PHRASE}
-      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-      # SERVER_IP: ${PROMETHEUS_SERVER_IP} # not monitored
-    restart: always
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "1k"
-        max-file: "3"
-
   executor-bera:
     depends_on:
       - cache
