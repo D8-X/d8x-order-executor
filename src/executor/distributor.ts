@@ -69,6 +69,7 @@ export default class Distributor {
   private isQuote: Map<string, boolean> = new Map();
   private symbols: string[] = [];
   private maintenanceRate: Map<string, number> = new Map();
+  private chainId: number;
 
   // constants
 
@@ -96,6 +97,7 @@ export default class Distributor {
     if (config.configSource !== undefined) {
       sdkConfig.configSource = config.configSource;
     }
+    this.chainId = sdkConfig.chainId;
     this.redisSubClient = constructRedis("commanderSubClient");
     // this.providers = this.config.rpcWatch.map(
     //   (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
@@ -295,8 +297,11 @@ export default class Distributor {
           }
 
           case "UpdateMarginAccountEvent": {
-            const { traderAddr, perpetualId }: UpdateMarginAccountMsg =
+            const { chainId, traderAddr, perpetualId }: UpdateMarginAccountMsg =
               JSON.parse(msg);
+            if (chainId !== this.chainId) {
+              break;
+            }
             const account = await (
               this.md.getReadOnlyProxyInstance() as unknown as IPerpetualManager
             ).getMarginAccount(perpetualId, traderAddr);
@@ -312,8 +317,15 @@ export default class Distributor {
           }
 
           case "UpdateMarkPriceEvent": {
-            const { symbol, markPremium, midPremium }: UpdateMarkPriceMsg =
-              JSON.parse(msg);
+            const {
+              chainId,
+              symbol,
+              markPremium,
+              midPremium,
+            }: UpdateMarkPriceMsg = JSON.parse(msg);
+            if (chainId !== this.chainId) {
+              break;
+            }
             this.markPremium.set(symbol, markPremium);
             this.midPremium.set(symbol, midPremium);
             break;
@@ -321,11 +333,15 @@ export default class Distributor {
 
           case "PerpetualLimitOrderCreatedEvent": {
             const {
+              chainId,
               symbol,
               digest,
               trader,
               order,
             }: PerpetualLimitOrderCreatedMsg = JSON.parse(msg);
+            if (chainId !== this.chainId) {
+              break;
+            }
             this.addOrder(
               symbol,
               trader,
@@ -343,15 +359,21 @@ export default class Distributor {
           }
 
           case "PerpetualLimitOrderCancelledEvent": {
-            const { symbol, digest }: PerpetualLimitOrderCancelledMsg =
+            const { chainId, symbol, digest }: PerpetualLimitOrderCancelledMsg =
               JSON.parse(msg);
+            if (chainId !== this.chainId) {
+              break;
+            }
             this.removeOrder(symbol, digest, "removing cancelled order");
             break;
           }
 
           case "TradeEvent": {
-            const { perpetualId, symbol, digest, trader }: TradeMsg =
+            const { chainId, perpetualId, symbol, digest, trader }: TradeMsg =
               JSON.parse(msg);
+            if (chainId !== this.chainId) {
+              break;
+            }
             this.removeOrder(symbol, digest, "removing executed order", trader);
             const unitAccumulatedFundingCC = ABK64x64ToFloat(
               (
@@ -366,8 +388,16 @@ export default class Distributor {
           }
 
           case "ExecutionFailedEvent": {
-            const { symbol, digest, trader, reason }: ExecutionFailedMsg =
-              JSON.parse(msg);
+            const {
+              chainId,
+              symbol,
+              digest,
+              trader,
+              reason,
+            }: ExecutionFailedMsg = JSON.parse(msg);
+            if (chainId !== this.chainId) {
+              break;
+            }
             if (reason != "cancel delay required") {
               this.removeOrder(symbol, digest, reason, trader);
             }
@@ -375,8 +405,16 @@ export default class Distributor {
           }
 
           case "BrokerOrderCreatedEvent": {
-            const { symbol, traderAddr, digest, type }: BrokerOrderMsg =
-              JSON.parse(msg);
+            const {
+              chainId,
+              symbol,
+              traderAddr,
+              digest,
+              type,
+            }: BrokerOrderMsg = JSON.parse(msg);
+            if (chainId !== this.chainId) {
+              break;
+            }
             // introduce delay of less than 1 block for broker orders
             console.log({
               info: "delaying broker order",

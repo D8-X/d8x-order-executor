@@ -90,6 +90,7 @@ export interface BrokerWSMessage {
 }
 
 export interface RedisMsg {
+  chainId: number;
   block: number;
   hash: string;
   id: string;
@@ -102,6 +103,7 @@ export type OrderType =
   | typeof ORDER_TYPE_STOP_MARKET;
 
 export interface BrokerOrderMsg {
+  chainId: number;
   symbol: string;
   perpetualId: number;
   traderAddr: string;

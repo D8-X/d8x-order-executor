@@ -55,6 +55,7 @@ export default class BlockhainListener {
   private config: ExecutorConfig;
   // Network is initialized in start() method
   private network!: Network;
+  private chainId: number;
 
   // Single instance of multiurl http provider.
   private httpProvider: MultiUrlJsonRpcProvider;
@@ -91,6 +92,7 @@ export default class BlockhainListener {
     this.md = new MarketData(
       PerpetualDataHandler.readSDKConfig(this.config.sdkConfig)
     );
+    this.chainId = Number(this.md.chainId);
     this.redisPubClient = constructRedis("sentinelPubClient");
     this.httpProvider = new MultiUrlJsonRpcProvider(
       this.config.rpcListenHttp,
@@ -441,6 +443,7 @@ export default class BlockhainListener {
           } = parsedEvent.args as unknown as LiquidateEvent.OutputObject;
           const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
+            chainId: this.chainId,
             perpetualId: Number(perpetualId),
             symbol: symbol,
             traderAddr: trader,
@@ -465,6 +468,7 @@ export default class BlockhainListener {
           } = parsedEvent.args as unknown as TradeEvent.OutputObject;
           const order = this.md!.smartContractOrderToOrder(scOrder);
           msg = {
+            chainId: this.chainId,
             perpetualId: Number(perpetualId),
             trader: trader,
             digest: orderDigest,
@@ -483,6 +487,7 @@ export default class BlockhainListener {
             parsedEvent.args as unknown as UpdateMarginAccountEvent.OutputObject;
           const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
+            chainId: this.chainId,
             perpetualId: Number(perpetualId),
             symbol: symbol,
             traderAddr: trader,
@@ -503,6 +508,7 @@ export default class BlockhainListener {
           } = parsedEvent.args as unknown as UpdateMarkPriceEvent.OutputObject;
           const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
+            chainId: this.chainId,
             perpetualId: Number(perpetualId),
             symbol: symbol,
             midPremium: ABK64x64ToFloat(fMidPricePremium),
@@ -520,6 +526,7 @@ export default class BlockhainListener {
             parsedEvent.args as unknown as PerpetualLimitOrderCancelledEvent.OutputObject;
           const symbol = this.md!.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
+            chainId: this.chainId,
             symbol: symbol,
             perpetualId: Number(perpetualId),
             digest: orderHash,
@@ -552,6 +559,7 @@ export default class BlockhainListener {
             parsedEvent.args as unknown as ExecutionFailedEvent.OutputObject;
           const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
+            chainId: this.chainId,
             perpetualId: Number(perpetualId),
             symbol: symbol,
             trader: trader,
@@ -568,6 +576,7 @@ export default class BlockhainListener {
           const { perpetualId, trader, brokerAddr, order, digest } =
             parsedEvent.args as unknown as PerpetualLimitOrderCreatedEvent.OutputObject;
           msg = {
+            chainId: this.chainId,
             symbol: this.md!.getSymbolFromPerpId(Number(perpetualId))!,
             perpetualId: Number(perpetualId),
             trader: trader,
