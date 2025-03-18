@@ -515,12 +515,12 @@ export default class Distributor {
         if (this.md.isPredictionMarket(symbol)) {
           prem[i] = p - pxS2S3.s2;
         } else {
-          prem[i] = p / pxS2S3.s2 - 1;
+          prem[i] = p / pxS2S3.s2 - 1 + (side === BUY_SIDE ? 1e4 : -1e4);
         }
       } else {
         // default to mid premium +/- 5 bps buffer
         prem[i] =
-          this.midPremium.get(symbol)! + (side === BUY_SIDE ? 1e5 : -1e5);
+          this.midPremium.get(symbol)! + 5 * (side === BUY_SIDE ? 1e4 : -1e4);
       }
     }
     this.tradePremium.set(symbol, prem);
