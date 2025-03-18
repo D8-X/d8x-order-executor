@@ -660,7 +660,7 @@ export default class Executor {
           error.includes("could not replace existing tx"): // <- for zkevm: txns may get stuck in the node
           // false positive: order can be tried again later
           // so just unlock it after waiting (unless it's a repeat offender)
-          if (this.timesTried.get(digest)! > 10) {
+          if (this.timesTried.get(digest)! > 20) {
             console.log({
               info: "restart",
               reason: "too many false positives",
@@ -674,8 +674,11 @@ export default class Executor {
             process.exit(1);
           }
           this.bots[botIdx].busy = false;
-          await sleep(10_000);
-          this.locked.delete(digest);
+          sleep(10_000).then(() => {
+            if (!this.trash.has(digest)) {
+              this.locked.delete(digest);
+            }
+          });
           return BotStatus.PartialError;
         default:
           // something else, prob rpc
