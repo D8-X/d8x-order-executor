@@ -656,6 +656,7 @@ export default class Executor {
         case error.includes("dpcy not fulfilled") ||
           error.includes("trigger cond not met") ||
           error.includes("price exceeds limit") ||
+          error.includes("0xf4d678b8") || // another form of price exceeds limit
           error.includes("could not replace existing tx"): // <- for zkevm: txns may get stuck in the node
           // false positive: order can be tried again later
           // so just unlock it after waiting (unless it's a repeat offender)
