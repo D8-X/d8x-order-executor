@@ -12,7 +12,7 @@ export const sendTxRevertedMessage = async (
   const revertMsg = await revertReason;
 
   // Skip reverts which should be ignored
-  const whiteList = ["order not found"];
+  const whiteList = ["order not found", ""];
   for (const msg of whiteList) {
     if (revertMsg.toLowerCase().includes(msg.toLowerCase())) {
       return;

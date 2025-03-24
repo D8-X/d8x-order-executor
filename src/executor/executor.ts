@@ -593,7 +593,8 @@ export default class Executor {
         orderBook: tx.to,
         executor: tx.from,
         digest: digest,
-        gasLimit: `${formatUnits(tx.gasLimit, "wei")} wei`,
+        gasLimit: `${formatUnits(tx.gasLimit, "wei")} gas`,
+        gasPrice: `${formatUnits(tx.gasPrice)} wei`,
         hash: tx.hash,
         time: new Date(Date.now()).toISOString(),
       });
@@ -690,7 +691,7 @@ export default class Executor {
     try {
       const receipt = await executeWithTimeout(
         tx.wait(),
-        30_000,
+        60_000,
         "fetch tx receipt: timeout"
       );
       if (!receipt) {
