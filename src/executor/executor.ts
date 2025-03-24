@@ -565,6 +565,7 @@ export default class Executor {
       const p = this.getNextRpc();
 
       const feeData = await p.getFeeData();
+      console.log({ feeData });
       tx = await this.bots[botIdx].api.executeOrders(
         symbol,
         [digest],
