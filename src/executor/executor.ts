@@ -594,7 +594,7 @@ export default class Executor {
         executor: tx.from,
         digest: digest,
         gasLimit: `${formatUnits(tx.gasLimit, "wei")} gas`,
-        gasPrice: `${formatUnits(tx.gasPrice)} wei`,
+        gasPrice: tx.gasPrice ? `${formatUnits(tx.gasPrice)} wei` : "unknown",
         hash: tx.hash,
         time: new Date(Date.now()).toISOString(),
       });
