@@ -753,40 +753,44 @@ export default class Executor {
           digest: digest,
           time: new Date(Date.now()).toISOString(),
         });
-        await sleep(10_000);
-        this.bots[botIdx].busy = false; // release bot
-        ordr = await this.bots[botIdx].api.getOrderById(symbol, digest);
-        if (ordr !== undefined && ordr.quantity > 0) {
-          // check one last time before declaring an error
-          const receipt = await executeWithTimeout(tx.wait(), 1_000);
-          if (receipt?.status !== 1) {
-            console.log({
-              info: "confirmed that tx failed",
-              symbol: symbol,
-              executor: addr,
-              digest: digest,
-              hash: tx.hash,
-              time: new Date(Date.now()).toISOString(),
-            });
-            if (!this.trash.has(digest)) {
-              this.locked.delete(digest);
+        // finish later, something is off
+        sleep(10_000).then(async () => {
+          this.bots[botIdx].busy = false; // release bot
+
+          ordr = await this.bots[botIdx].api.getOrderById(symbol, digest);
+          if (ordr !== undefined && ordr.quantity > 0) {
+            // check one last time before declaring an error
+            const receipt = await executeWithTimeout(tx.wait(), 1_000);
+            if (receipt?.status !== 1) {
+              console.log({
+                info: "confirmed that tx failed",
+                symbol: symbol,
+                executor: addr,
+                digest: digest,
+                hash: tx.hash,
+                time: new Date(Date.now()).toISOString(),
+              });
+              if (!this.trash.has(digest)) {
+                this.locked.delete(digest);
+              }
+              // return BotStatus.Error;
+            } else {
+              console.log({
+                info: "could not confirm tx status - unlocking order",
+                symbol: symbol,
+                executor: addr,
+                digest: digest,
+                hash: tx.hash,
+                time: new Date(Date.now()).toISOString(),
+              });
+              if (!this.trash.has(digest)) {
+                this.locked.delete(digest);
+              }
+              // return BotStatus.PartialError;
             }
-            return BotStatus.Error;
-          } else {
-            console.log({
-              info: "could not confirm tx status - unlocking order",
-              symbol: symbol,
-              executor: addr,
-              digest: digest,
-              hash: tx.hash,
-              time: new Date(Date.now()).toISOString(),
-            });
-            if (!this.trash.has(digest)) {
-              this.locked.delete(digest);
-            }
-            return BotStatus.PartialError;
           }
-        }
+        });
+        return BotStatus.PartialError;
       }
       this.bots[botIdx].busy = false;
       // order is gone, relock to be safe
