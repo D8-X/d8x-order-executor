@@ -573,15 +573,15 @@ export default class Executor {
         px.submission,
         {
           // gasLimit: this.config.gasLimit, // no gas limit (sdk handles it)
-          gasPrice: feeData.gasPrice
-            ? (feeData.gasPrice * this.gasPriceBuffer) / 100n
-            : undefined,
-          maxFeePerGas:
-            !feeData.gasPrice && feeData.maxFeePerGas // don't send both at the same time
-              ? (feeData.maxFeePerGas * this.gasPriceBuffer) / 100n
-              : undefined,
+          // gasPrice: feeData.gasPrice
+          //   ? (feeData.gasPrice * this.gasPriceBuffer) / 100n
+          //   : undefined,
+          // maxFeePerGas:
+          //   !feeData.gasPrice && feeData.maxFeePerGas // don't send both at the same time
+          //     ? (feeData.maxFeePerGas * this.gasPriceBuffer) / 100n
+          //     : undefined,
           rpcURL: p._getConnection().url,
-          maxGasLimit: this.config.gasLimit,
+          // maxGasLimit: this.config.gasLimit,
         }
       );
       // Mark order as executed here once the transaction was sent to the
