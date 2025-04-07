@@ -597,6 +597,12 @@ export default class Executor {
         digest: digest,
         gasLimit: `${formatUnits(tx.gasLimit, "wei")} gas`,
         gasPrice: tx.gasPrice ? `${formatUnits(tx.gasPrice)} wei` : "unknown",
+        maxFeePerGas: tx.maxFeePerGas
+          ? `${formatUnits(tx.maxFeePerGas)} wei`
+          : "unknown",
+        maxPriorityFeePerGas: tx.maxPriorityFeePerGas
+          ? `${formatUnits(tx.maxPriorityFeePerGas)} wei`
+          : "unknown",
         hash: tx.hash,
         time: new Date(Date.now()).toISOString(),
       });
