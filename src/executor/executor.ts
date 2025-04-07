@@ -45,7 +45,8 @@ export default class Executor {
   private originalGasLimit: number;
   private gasLimitIncreaseFactor = 1.25;
   protected gasLimitIncreaseCounter: number = 0;
-  private gasPriceBuffer: bigint = 120n;
+  private maxFeePerGasBuffer: bigint = 120n;
+  private maxPriorityFeeBuffer: bigint = 120n;
 
   // state
   private q: Set<ExecuteOrderCommand> = new Set();
@@ -127,13 +128,17 @@ export default class Executor {
     }
 
     if (this.config.gasPriceMultiplier) {
-      if (this.config.gasPriceMultiplier > 0.1) {
+      if (this.config.gasPriceMultiplier > 1) {
         // we only keep 2 digits
-        this.gasPriceBuffer = BigInt(
+        // base fee: full multiplier
+        this.maxFeePerGasBuffer = BigInt(
           Math.round(this.config.gasPriceMultiplier * 100)
         );
+        // tip: 10% of multiplier
+        this.maxPriorityFeeBuffer = BigInt(
+          Math.max(100, Math.round(this.config.gasPriceMultiplier * 10))
+        );
       } else {
-        // more than 10% only
         throw new Error("Invalid gas price buffer");
       }
     }
@@ -975,16 +980,17 @@ export default class Executor {
         if (maxFeePerGas) {
           return {
             gasPrice: null,
-            // total can be high if needed
-            maxFeePerGas: (maxFeePerGas * this.gasPriceBuffer) / 100n,
-            // tip multiplier is 10% of total (10*denom)
+            maxFeePerGas: (maxFeePerGas * this.maxFeePerGasBuffer) / 100n,
             maxPriorityFeePerGas:
-              ((maxPriorityFeePerGas ?? maxFeePerGas) * this.gasPriceBuffer) /
-              1000n,
+              ((maxPriorityFeePerGas ?? maxFeePerGas) *
+                this.maxPriorityFeeBuffer) /
+              100n,
           };
         } else {
           return {
-            gasPrice,
+            gasPrice: gasPrice
+              ? (gasPrice * this.maxFeePerGasBuffer) / 100n
+              : null,
             maxFeePerGas: null,
             maxPriorityFeePerGas: null,
           };
