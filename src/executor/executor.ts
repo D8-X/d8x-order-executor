@@ -20,6 +20,7 @@ import {
   JsonRpcProvider,
   Network,
   parseUnits,
+  Provider,
   TransactionResponse,
   Wallet,
 } from "ethers";
@@ -125,9 +126,9 @@ export default class Executor {
       );
     }
 
-    if (this.config.gasPriceBuffer) {
-      if (this.config.gasPriceBuffer > 0) {
-        this.gasPriceBuffer = BigInt(this.config.gasPriceBuffer * 100);
+    if (this.config.gasPriceBufferPct) {
+      if (this.config.gasPriceBufferPct > 0) {
+        this.gasPriceBuffer = BigInt(this.config.gasPriceBufferPct * 100);
       } else {
         throw new Error("Invalid gas price buffer");
       }
@@ -563,9 +564,8 @@ export default class Executor {
     let tx: TransactionResponse;
     try {
       const p = this.getNextRpc();
+      const feeData = await this.getFeeData(p);
 
-      const feeData = await p.getFeeData();
-      console.log({ feeData });
       tx = await this.bots[botIdx].api.executeOrders(
         symbol,
         [digest],
@@ -964,5 +964,29 @@ export default class Executor {
     if (!this.recentlyExecutedOrders.has(digest)) {
       this.recentlyExecutedOrders.set(digest, new Date());
     }
+  }
+
+  public async getFeeData(p: Provider) {
+    return await p
+      .getFeeData()
+      .then(({ gasPrice, maxFeePerGas, maxPriorityFeePerGas }) => {
+        if (maxFeePerGas) {
+          return {
+            gasPrice: null,
+            maxFeePerGas: (maxFeePerGas * this.gasPriceBuffer) / 100n,
+            maxPriorityFeePerGas:
+              ((maxPriorityFeePerGas ?? maxFeePerGas) *
+                this.gasPriceBuffer *
+                10n) /
+              100n,
+          };
+        } else {
+          return {
+            gasPrice,
+            maxFeePerGas: null,
+            maxPriorityFeePerGas: null,
+          };
+        }
+      });
   }
 }
