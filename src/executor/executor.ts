@@ -572,14 +572,6 @@ export default class Executor {
         this.config.rewardsAddress,
         px.submission,
         {
-          // gasLimit: this.config.gasLimit, // no gas limit (sdk handles it)
-          // gasPrice: feeData.gasPrice
-          //   ? (feeData.gasPrice * this.gasPriceBuffer) / 100n
-          //   : undefined,
-          // maxFeePerGas:
-          //   !feeData.gasPrice && feeData.maxFeePerGas // don't send both at the same time
-          //     ? (feeData.maxFeePerGas * this.gasPriceBuffer) / 100n
-          //     : undefined,
           ...feeData,
           rpcURL: p._getConnection().url,
           // maxGasLimit: this.config.gasLimit,
@@ -596,13 +588,13 @@ export default class Executor {
         executor: tx.from,
         digest: digest,
         gasLimit: `${formatUnits(tx.gasLimit, "wei")} gas`,
-        gasPrice: tx.gasPrice ? `${formatUnits(tx.gasPrice)} wei` : "unknown",
+        gasPrice: tx.gasPrice ? `${formatUnits(tx.gasPrice)} wei` : undefined,
         maxFeePerGas: tx.maxFeePerGas
           ? `${formatUnits(tx.maxFeePerGas)} wei`
-          : "unknown",
+          : undefined,
         maxPriorityFeePerGas: tx.maxPriorityFeePerGas
           ? `${formatUnits(tx.maxPriorityFeePerGas)} wei`
-          : "unknown",
+          : undefined,
         hash: tx.hash,
         time: new Date(Date.now()).toISOString(),
       });
