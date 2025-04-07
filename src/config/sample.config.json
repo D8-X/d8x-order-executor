@@ -144,7 +144,7 @@
     "gasLimit": 1500000,
     "priceFeedEndpoints": [],
     "priceFeedConfigNetwork": "odin",
-    "gasPriceBufferPct": 2
+    "gasPriceMultiplier": 2
   },
   {
     "sdkConfig": "bera",
@@ -168,7 +168,7 @@
     "gasLimit": 1500000,
     "priceFeedEndpoints": [],
     "priceFeedConfigNetwork": "odin",
-    "gasPriceBufferPct": 2
+    "gasPriceMultiplier": 2
   },
   {
     "sdkConfig": "base",

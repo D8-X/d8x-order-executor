@@ -126,10 +126,14 @@ export default class Executor {
       );
     }
 
-    if (this.config.gasPriceBufferPct) {
-      if (this.config.gasPriceBufferPct > 0) {
-        this.gasPriceBuffer = BigInt(this.config.gasPriceBufferPct * 100);
+    if (this.config.gasPriceMultiplier) {
+      if (this.config.gasPriceMultiplier > 0.1) {
+        // we only keep 2 digits
+        this.gasPriceBuffer = BigInt(
+          Math.round(this.config.gasPriceMultiplier * 100)
+        );
       } else {
+        // more than 10% only
         throw new Error("Invalid gas price buffer");
       }
     }
@@ -971,12 +975,12 @@ export default class Executor {
         if (maxFeePerGas) {
           return {
             gasPrice: null,
+            // total can be high if needed
             maxFeePerGas: (maxFeePerGas * this.gasPriceBuffer) / 100n,
+            // tip multiplier is 10% of total (10*denom)
             maxPriorityFeePerGas:
-              ((maxPriorityFeePerGas ?? maxFeePerGas) *
-                this.gasPriceBuffer *
-                10n) /
-              100n,
+              ((maxPriorityFeePerGas ?? maxFeePerGas) * this.gasPriceBuffer) /
+              1000n,
           };
         } else {
           return {

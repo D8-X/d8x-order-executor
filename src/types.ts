@@ -65,7 +65,7 @@ export interface ExecutorConfig {
   // oracle network to override default
   priceFeedConfigNetwork?: string;
   // override default config (defaults to 1.2x RPC gas px), multiplier (e.g. 1.5 means 1.5x the gas price)
-  gasPriceBufferPct?: number;
+  gasPriceMultiplier?: number;
 }
 
 export interface BrokerWSErrorData {
