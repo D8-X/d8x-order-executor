@@ -32,7 +32,7 @@ const RECENT_ORDER_TIME_S = 2 * 60;
 export default class Executor {
   // objects
   private providers: MultiUrlJsonRpcProvider[] = [];
-  private bots: { api: OrderExecutorTool; busy: boolean }[];
+  private bots: { api: OrderExecutorTool; busy: boolean; rpc: string }[];
   private redisSubClient: Redis;
   private redisPubClient: Redis;
 
@@ -146,6 +146,7 @@ export default class Executor {
     this.bots = this.privateKey.map((pk) => ({
       api: new OrderExecutorTool(sdkConfig, pk),
       busy: false,
+      rpc: "",
     }));
   }
   /**
@@ -156,23 +157,24 @@ export default class Executor {
     // try all providers until one works, reverts otherwise
     // console.log(`${new Date(Date.now()).toISOString()}: initializing ...`);
     let success = false;
-    let i = Math.floor(Math.random() * this.providers.length);
+    const providers = this.providers;
+    const rpcs = this.config.rpcExec;
+    let i = Math.floor(Math.random() * providers.length);
     let tried = 0;
     // try all providers until one works, reverts otherwise
     // console.log(`${new Date(Date.now()).toISOString()}: initializing ...`);
-    while (
-      !success &&
-      i < this.providers.length &&
-      tried <= this.providers.length
-    ) {
+    while (!success && i < providers.length && tried <= providers.length) {
       console.log(`trying provider ${i} ... `);
       const results = await Promise.allSettled(
         // createProxyInstance attaches the given provider to the object instance
-        this.bots.map((liq) => liq.api.createProxyInstance(this.providers[i]))
+        this.bots.map((liq) => {
+          liq.rpc = rpcs[i];
+          return liq.api.createProxyInstance(providers[i]);
+        })
       );
 
       success = results.every((r) => r.status === "fulfilled");
-      i = (i + 1) % this.providers.length;
+      i = (i + 1) % providers.length;
       tried++;
     }
     if (!success) {
@@ -180,7 +182,7 @@ export default class Executor {
     } else {
       console.log({
         info: "initialized",
-        rpcUrl: this.config.rpcExec[i],
+        rpcUrl: rpcs[i],
         time: new Date(Date.now()).toISOString(),
       });
     }
@@ -438,13 +440,23 @@ export default class Executor {
         digest,
         this.bots[botIdx].api
       );
-      console.log({
-        info: "order fetched from blockchain",
-        symbol,
-        digest,
-        time: new Date(Date.now()).toISOString(),
-        onChainOrder,
-      });
+      if (onChainOrder) {
+        console.log({
+          info: "order fetched from blockchain",
+          symbol,
+          digest,
+          time: new Date(Date.now()).toISOString(),
+          onChainOrder,
+        });
+      } else {
+        console.log({
+          info: "failed to fetch order",
+          symbol,
+          digest,
+          rpc: this.bots[botIdx].rpc,
+          time: new Date(Date.now()).toISOString(),
+        });
+      }
     } else {
       console.log({
         info: "order found in distributor",
@@ -456,7 +468,7 @@ export default class Executor {
     }
 
     const onChainTS = (() => {
-      if (onChainOrder != undefined && onChainOrder.quantity > 0) {
+      if (onChainOrder != undefined) {
         return onChainOrder.submittedTimestamp;
       }
     })();
