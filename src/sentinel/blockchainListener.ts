@@ -593,12 +593,14 @@ export default class BlockhainListener {
           // Include parent/child order dependency ids. Order dependency is
           // not included in PerpetualLimitOrderCreated event but is needed
           // for the dependency checks in distributor and executor.
-          const orderDependency = await executeWithTimeout(
-            this.getOrderDependenciesHttp(event.address, digest),
-            10_000
-          );
-          const [id1, id2] = [orderDependency[0], orderDependency[1]];
-          msg.order.parentChildOrderIds = [id1, id2];
+          try {
+            const orderDependency = await executeWithTimeout(
+              this.getOrderDependenciesHttp(event.address, digest),
+              10_000
+            );
+            const [id1, id2] = [orderDependency[0], orderDependency[1]];
+            msg.order.parentChildOrderIds = [id1, id2];
+          } catch {}
         }
         break;
 
