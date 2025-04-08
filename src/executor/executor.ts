@@ -433,7 +433,7 @@ export default class Executor {
         ?.get(digest)?.order;
     }
 
-    if (!onChainOrder) {
+    if (!onChainOrder || !onChainOrder.parentChildOrderIds) {
       // fetch order from sc, including the dependencies
       onChainOrder = await this.getOrderByIdWithDependencies(
         symbol,
