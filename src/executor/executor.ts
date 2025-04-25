@@ -904,8 +904,14 @@ export default class Executor {
         "ether"
       );
     } else {
-      const { gasPrice: gasPriceWei } = await provider.getFeeData();
-      if (!gasPriceWei) {
+      const { gasPrice, maxFeePerGas, maxPriorityFeePerGas } =
+        await provider.getFeeData();
+      let gasPriceWei: bigint | undefined;
+      if (maxFeePerGas && maxPriorityFeePerGas) {
+        gasPriceWei = maxFeePerGas + maxPriorityFeePerGas;
+      } else if (gasPrice) {
+        gasPriceWei = gasPrice;
+      } else {
         throw new Error("Unable to fetch fee data");
       }
       minBalance = gasPriceWei * (BigInt(this.config.gasLimit) * 5n);
