@@ -423,7 +423,10 @@ export default class Distributor {
               time: new Date(Date.now()).toISOString(),
             });
             await sleep(
-              this.blockTimeMS * this.brokerOrderBlockSizeDelayFactor
+              Math.min(
+                500,
+                this.blockTimeMS * this.brokerOrderBlockSizeDelayFactor
+              )
             );
 
             this.addOrder(symbol, traderAddr, digest, type, undefined);
