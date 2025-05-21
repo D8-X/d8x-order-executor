@@ -524,11 +524,7 @@ export default class Executor {
         return { px: undefined, error: e?.toString() };
       });
 
-    if (
-      !px ||
-      px.submission.priceFeedVaas.length < 1 ||
-      px.submission.priceFeedVaas[0] == "0x"
-    ) {
+    if (!px) {
       // oracle problem
       console.log({
         reason: "oracle error",
@@ -538,10 +534,31 @@ export default class Executor {
       });
       // bot can continue
       this.bots[botIdx].busy = false;
+      // order stays locked for another second
+      sleep(1_000).then(() => {
+        this._unlock(digest);
+      });
+      return BotStatus.PartialError;
+    }
+
+    if (
+      px.submission.priceFeedVaas.length < 1 ||
+      px.submission.priceFeedVaas[0] == "0x"
+    ) {
+      // odin problem?
+      console.log({
+        reason: "no vaa(s)",
+        symbol: symbol,
+        digest: digest,
+        time: new Date(Date.now()).toISOString(),
+      });
+      // bot can continue
+      this.bots[botIdx].busy = false;
+      // trigger a restart if it keeps happening
       const tried = (this.timesTried.get(digest) ?? 0) + 1;
       this.timesTried.set(digest, tried);
       // order stays locked for another second
-      sleep(1_000).then(() => {
+      sleep(30_000).then(() => {
         this._unlock(digest);
       });
       return BotStatus.PartialError;
