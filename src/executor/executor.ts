@@ -403,6 +403,16 @@ export default class Executor {
     return order;
   }
 
+  private _lock(digest: string) {
+    this.locked.add(digest);
+  }
+
+  private _unlock(digest: string) {
+    if (!this.trash.has(digest)) {
+      this.locked.delete(digest);
+    }
+  }
+
   /**
    * Executes an order using a given bot.
    * @param botIdx Index of wallet used
@@ -419,7 +429,10 @@ export default class Executor {
     digest = digest.toLowerCase();
     if (this.bots[botIdx].busy || this.locked.has(digest) || !this.ready) {
       console.log({
-        info: "busy",
+        info:
+          this.bots[botIdx].busy || !this.ready
+            ? "bot unavailable"
+            : "order locked",
         symbol,
         digest,
         time: new Date(Date.now()).toISOString(),
@@ -428,7 +441,7 @@ export default class Executor {
     }
     // lock
     this.bots[botIdx].busy = true;
-    this.locked.add(digest);
+    this._lock(digest);
 
     // If this order came from event, we might already have its info in the
     // distributor. Attempt to get it from there first.
@@ -487,9 +500,7 @@ export default class Executor {
         time: new Date(Date.now()).toISOString(),
       });
       this.bots[botIdx].busy = false;
-      if (!this.trash.has(digest)) {
-        this.locked.delete(digest);
-      }
+      this._unlock(digest);
       return BotStatus.PartialError;
     }
 
@@ -501,9 +512,7 @@ export default class Executor {
         time: new Date(Date.now()).toISOString(),
       });
       this.bots[botIdx].busy = false;
-      if (!this.trash.has(digest)) {
-        this.locked.delete(digest);
-      }
+      this._unlock(digest);
       return BotStatus.PartialError;
     }
 
@@ -533,9 +542,7 @@ export default class Executor {
       this.timesTried.set(digest, tried);
       // order stays locked for another second
       sleep(1_000).then(() => {
-        if (!this.trash.has(digest)) {
-          this.locked.delete(digest);
-        }
+        this._unlock(digest);
       });
       return BotStatus.PartialError;
     }
@@ -555,10 +562,9 @@ export default class Executor {
       const tried = (this.timesTried.get(digest) ?? 0) + 1;
       this.timesTried.set(digest, tried);
       // order stays locked for another second
-      await sleep(1_000);
-      if (!this.trash.has(digest)) {
-        this.locked.delete(digest);
-      }
+      sleep(1_000).then(() => {
+        this._unlock(digest);
+      });
       return BotStatus.PartialError;
     }
 
@@ -576,9 +582,7 @@ export default class Executor {
         time: new Date(Date.now()).toISOString(),
       });
       this.bots[botIdx].busy = false;
-      if (!this.trash.has(digest)) {
-        this.locked.delete(digest);
-      }
+      this._unlock(digest);
       return BotStatus.PartialError;
     }
 
@@ -857,7 +861,7 @@ export default class Executor {
 
     this.lastCall = Date.now();
     let attempts = 0;
-    const q = [...this.q];
+    const q = [...this.q].sort(() => Math.random() - 0.5);
     const responses = { busy: 0, partial: 0, error: 0, ok: 0 };
     const executed: Promise<BotStatus>[] = [];
     for (const msg of q) {
