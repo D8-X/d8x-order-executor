@@ -418,6 +418,12 @@ export default class Executor {
   ) {
     digest = digest.toLowerCase();
     if (this.bots[botIdx].busy || this.locked.has(digest) || !this.ready) {
+      console.log({
+        info: "busy",
+        symbol,
+        digest,
+        time: new Date(Date.now()).toISOString(),
+      });
       return this.trash.has(digest) ? BotStatus.Ready : BotStatus.Busy;
     }
     // lock
@@ -523,6 +529,8 @@ export default class Executor {
       });
       // bot can continue
       this.bots[botIdx].busy = false;
+      const tried = (this.timesTried.get(digest) ?? 0) + 1;
+      this.timesTried.set(digest, tried);
       // order stays locked for another second
       sleep(1_000).then(() => {
         if (!this.trash.has(digest)) {
