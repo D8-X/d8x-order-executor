@@ -509,7 +509,11 @@ export default class Executor {
         return { px: undefined, error: e?.toString() };
       });
 
-    if (!px) {
+    if (
+      !px ||
+      px.submission.priceFeedVaas.length < 1 ||
+      px.submission.priceFeedVaas[0] == "0x"
+    ) {
       // oracle problem
       console.log({
         reason: "oracle error",
