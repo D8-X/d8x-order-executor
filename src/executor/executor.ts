@@ -987,9 +987,13 @@ export default class Executor {
             to: addr,
             transferAmount: formatUnits(transferAmount),
           });
+          const { maxFeePerGas, maxPriorityFeePerGas } =
+            await provider.getFeeData();
           const tx = await treasury.sendTransaction({
             to: addr,
             value: transferAmount,
+            maxFeePerGas,
+            maxPriorityFeePerGas,
           });
           await tx.wait();
           console.log({
