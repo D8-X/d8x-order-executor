@@ -617,8 +617,9 @@ export default class Distributor {
       Date.now() - (this.lastRefreshTime.get(symbol) ?? 0) <
       this.config.refreshOrdersIntervalSecondsMin * 1_000
     ) {
-      console.log("[refreshOpenOrders]", {
+      console.log({
         symbol: symbol,
+        orders: this.openOrders.get(symbol)?.size,
         time: new Date(Date.now()).toISOString(),
         nextRefresh: new Date(
           (this.lastRefreshTime.get(symbol) ?? 0) +
