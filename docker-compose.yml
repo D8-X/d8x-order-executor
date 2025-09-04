@@ -30,24 +30,24 @@ services:
         max-size: "100k"
         max-file: "10"
 
-  sentinel-arbitrum:
-    build:
-      context: .
-      dockerfile: ./src/sentinel/Dockerfile
-    depends_on:
-      - cache
-    environment:
-      REDIS_HOST: cache
-      REDIS_PORT: ${REDIS_PORT}
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REDIS_ID: 2
-      SDK_CONFIG: arbitrum
-    restart: always
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100k"
-        max-file: "10"
+  # sentinel-arbitrum:
+  #   build:
+  #     context: .
+  #     dockerfile: ./src/sentinel/Dockerfile
+  #   depends_on:
+  #     - cache
+  #   environment:
+  #     REDIS_HOST: cache
+  #     REDIS_PORT: ${REDIS_PORT}
+  #     REDIS_PASSWORD: ${REDIS_PASSWORD}
+  #     REDIS_ID: 2
+  #     SDK_CONFIG: arbitrum
+  #   restart: always
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "100k"
+  #       max-file: "10"
 
   # sentinel-zkevm:
   #   build:
@@ -68,24 +68,24 @@ services:
   #       max-size: "100k"
   #       max-file: "10"
 
-  sentinel-base:
-    build:
-      context: .
-      dockerfile: ./src/sentinel/Dockerfile
-    depends_on:
-      - cache
-    environment:
-      REDIS_HOST: cache
-      REDIS_PORT: ${REDIS_PORT}
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REDIS_ID: 4
-      SDK_CONFIG: base
-    restart: always
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100k"
-        max-file: "10"
+  # sentinel-base:
+  #   build:
+  #     context: .
+  #     dockerfile: ./src/sentinel/Dockerfile
+  #   depends_on:
+  #     - cache
+  #   environment:
+  #     REDIS_HOST: cache
+  #     REDIS_PORT: ${REDIS_PORT}
+  #     REDIS_PASSWORD: ${REDIS_PASSWORD}
+  #     REDIS_ID: 4
+  #     SDK_CONFIG: base
+  #   restart: always
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "100k"
+  #       max-file: "10"
 
   # Executor: fetches and distributes executable orders and submits transactions
   # to the blockchain
@@ -112,27 +112,27 @@ services:
         max-size: "100k"
         max-file: "10"
 
-  executor-arbitrum:
-    depends_on:
-      - cache
-    build:
-      context: .
-      dockerfile: ./src/executor/Dockerfile
-    environment:
-      REDIS_HOST: cache
-      REDIS_PORT: ${REDIS_PORT}
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REDIS_ID: 2
-      SDK_CONFIG: arbitrum
-      SEED_PHRASE: ${SEED_PHRASE}
-      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-      SERVER_IP: ${PROMETHEUS_SERVER_IP}
-    restart: always
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100k"
-        max-file: "10"
+  # executor-arbitrum:
+  #   depends_on:
+  #     - cache
+  #   build:
+  #     context: .
+  #     dockerfile: ./src/executor/Dockerfile
+  #   environment:
+  #     REDIS_HOST: cache
+  #     REDIS_PORT: ${REDIS_PORT}
+  #     REDIS_PASSWORD: ${REDIS_PASSWORD}
+  #     REDIS_ID: 2
+  #     SDK_CONFIG: arbitrum
+  #     SEED_PHRASE: ${SEED_PHRASE}
+  #     SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+  #     SERVER_IP: ${PROMETHEUS_SERVER_IP}
+  #   restart: always
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "100k"
+  #       max-file: "10"
 
   # executor-zkevm:
   #   depends_on:
@@ -156,27 +156,27 @@ services:
   #       max-size: "100k"
   #       max-file: "10"
 
-  executor-base:
-    depends_on:
-      - cache
-    build:
-      context: .
-      dockerfile: ./src/executor/Dockerfile
-    environment:
-      REDIS_HOST: cache
-      REDIS_PORT: ${REDIS_PORT}
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REDIS_ID: 4
-      SDK_CONFIG: base
-      SEED_PHRASE: ${SEED_PHRASE}
-      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-      SERVER_IP: ${PROMETHEUS_SERVER_IP}
-    restart: always
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100k"
-        max-file: "10"
+  # executor-base:
+  #   depends_on:
+  #     - cache
+  #   build:
+  #     context: .
+  #     dockerfile: ./src/executor/Dockerfile
+  #   environment:
+  #     REDIS_HOST: cache
+  #     REDIS_PORT: ${REDIS_PORT}
+  #     REDIS_PASSWORD: ${REDIS_PASSWORD}
+  #     REDIS_ID: 4
+  #     SDK_CONFIG: base
+  #     SEED_PHRASE: ${SEED_PHRASE}
+  #     SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+  #     SERVER_IP: ${PROMETHEUS_SERVER_IP}
+  #   restart: always
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "100k"
+  #       max-file: "10"
 
   # Prometheus with alertmanager
   prometheus:
