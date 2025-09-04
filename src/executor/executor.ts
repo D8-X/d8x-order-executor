@@ -1,30 +1,29 @@
 import {
-  PerpetualDataHandler,
-  OrderExecutorTool,
   Order,
+  OrderExecutorTool,
+  PerpetualDataHandler,
   ZERO_ORDER_ID,
 } from "@d8x/perpetuals-sdk";
-import { Redis } from "ioredis";
-import { constructRedis, executeWithTimeout, sleep } from "../utils";
-import {
-  BotStatus,
-  ExecutorConfig,
-  TradeMsg,
-  ExecuteOrderCommand,
-} from "../types";
-import { ExecutorMetrics } from "./metrics";
-import { getTxRevertReason, sendTxRevertedMessage } from "./reverts";
-import Distributor from "./distributor";
 import {
   formatUnits,
-  JsonRpcProvider,
   Network,
   parseUnits,
   Provider,
   TransactionResponse,
   Wallet,
 } from "ethers";
+import { Redis } from "ioredis";
 import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
+import {
+  BotStatus,
+  ExecuteOrderCommand,
+  ExecutorConfig,
+  TradeMsg,
+} from "../types";
+import { constructRedis, executeWithTimeout, sleep } from "../utils";
+import Distributor from "./distributor";
+import { ExecutorMetrics } from "./metrics";
+import { getTxRevertReason, sendTxRevertedMessage } from "./reverts";
 
 // How much back in time we consider order to be recent. Currently 2 minutes.
 const RECENT_ORDER_TIME_S = 2 * 60;
@@ -133,7 +132,7 @@ export default class Executor {
         // base fee: full multiplier
         this.maxFeePerGasBuffer = BigInt(
           Math.round(this.config.gasPriceMultiplier * 100)
-        );
+        ); // e.g.  150n <=> 1.5x
         // tip: 10% of multiplier
         this.maxPriorityFeeBuffer = BigInt(
           Math.max(100, Math.round(this.config.gasPriceMultiplier * 10))
@@ -939,7 +938,7 @@ export default class Executor {
       );
     } else {
       const { gasPrice, maxFeePerGas, maxPriorityFeePerGas } =
-        await provider.getFeeData();
+        await this.getFeeData(provider);
       let gasPriceWei: bigint | undefined;
       if (maxFeePerGas && maxPriorityFeePerGas) {
         gasPriceWei = maxFeePerGas + maxPriorityFeePerGas;
@@ -948,7 +947,7 @@ export default class Executor {
       } else {
         throw new Error("Unable to fetch fee data");
       }
-      minBalance = gasPriceWei * (BigInt(this.config.gasLimit) * 5n);
+      minBalance = gasPriceWei * (BigInt(this.config.gasLimit) * 10n); // min: 10 orders, fund amount: 100 orders = 10x min
     }
 
     if (this.config.fundGasAmountETH && this.config.fundGasAmountETH > 0) {
@@ -959,9 +958,7 @@ export default class Executor {
       info: "running fundWallets",
       minBalance: formatUnits(minBalance),
       fundAmount:
-        fundAmount == 0n
-          ? "minBalance * 2 - bot balance"
-          : formatUnits(fundAmount),
+        fundAmount == 0n ? "10 * minBalance" : formatUnits(fundAmount),
       time: new Date(Date.now()).toISOString(),
     });
 
@@ -979,8 +976,7 @@ export default class Executor {
       });
       if (botBalance < minBalance) {
         // transfer twice the min so it doesn't transfer every time
-        const transferAmount =
-          fundAmount == 0n ? minBalance * 2n - botBalance : fundAmount;
+        const transferAmount = fundAmount == 0n ? minBalance * 10n : fundAmount;
         if (transferAmount < treasuryBalance) {
           console.log({
             info: "transferring funds...",
