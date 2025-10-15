@@ -213,5 +213,54 @@
     "maxGasPriceGWei": 1000,
     "gasLimit": 1500000,
     "priceFeedEndpoints": []
+  },
+  {
+    "sdkConfig": "base_sepolia",
+    "bots": 2,
+    "rewardsAddress": "0xB45Ec65E25FC0146e92582798Be2853BA4DD97e7",
+    "brokerWS": ["wss://broker-84532.d8x.xyz/ws"],
+    "rpcExec": [
+      "https://sepolia.base.org",
+      "https://base-sepolia-rpc.publicnode.com",
+      "https://base-sepolia.gateway.tenderly.co",
+      "https://base-sepolia.drpc.org",
+      "https://base-sepolia-public.nodies.app",
+      "https://base-sepolia.therpc.io",
+      "https://base-sepolia.api.onfinality.io/public"
+    ],
+    "rpcWatch": [
+      "https://sepolia.base.org",
+      "https://base-sepolia-rpc.publicnode.com",
+      "https://base-sepolia.gateway.tenderly.co",
+      "https://base-sepolia.drpc.org",
+      "https://base-sepolia-public.nodies.app",
+      "https://base-sepolia.therpc.io",
+      "https://base-sepolia.api.onfinality.io/public"
+    ],
+    "rpcListenHttp": [
+      "https://sepolia.base.org",
+      "https://base-sepolia-rpc.publicnode.com",
+      "https://base-sepolia.gateway.tenderly.co",
+      "https://base-sepolia.drpc.org",
+      "https://base-sepolia-public.nodies.app",
+      "https://base-sepolia.therpc.io",
+      "https://base-sepolia.api.onfinality.io/public"
+    ],
+    "rpcListenWs": [
+      "wss://base-sepolia-rpc.publicnode.com",
+      "wss://base-sepolia.drpc.org"
+    ],
+    "waitForBlockSeconds": 30,
+    "healthCheckSeconds": 100,
+    "refreshOrdersIntervalSecondsMax": 2000,
+    "refreshOrdersIntervalSecondsMin": 10,
+    "executeIntervalSecondsMax": 60,
+    "executeIntervalSecondsMin": 5,
+    "refreshOrdersSecondsMax": 28800,
+    "fetchPricesIntervalSecondsMin": 10,
+    "brokerReconnectIntervalMaxSeconds": 28800,
+    "maxGasPriceGWei": 1000,
+    "gasLimit": 1500000,
+    "priceFeedEndpoints": []
   }
 ]
