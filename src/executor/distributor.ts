@@ -1,23 +1,29 @@
 import {
-  MarketData,
-  PerpetualDataHandler,
   ABK64x64ToFloat,
+  BUY_SIDE,
   COLLATERAL_CURRENCY_QUOTE,
+  IdxPriceInfo,
+  MarketData,
+  Multicall3,
   Multicall3__factory,
   MULTICALL_ADDRESS,
-  Multicall3,
   Order,
+  ORDER_TYPE_LIMIT,
   ORDER_TYPE_MARKET,
   ORDER_TYPE_STOP_LIMIT,
   ORDER_TYPE_STOP_MARKET,
-  BUY_SIDE,
-  ORDER_TYPE_LIMIT,
-  ZERO_ORDER_ID,
+  PerpetualDataHandler,
   SELL_SIDE,
-  IdxPriceInfo,
+  ZERO_ORDER_ID,
 } from "@d8x/perpetuals-sdk";
+import {
+  IPerpetualManager,
+  IPerpetualOrder,
+  PerpStorage,
+} from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
+import { JsonRpcProvider } from "ethers";
 import { Redis } from "ioredis";
-import { constructRedis, executeWithTimeout, sleep } from "../utils";
+import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
 import {
   BrokerOrderMsg,
   ExecuteOrderCommand,
@@ -32,14 +38,8 @@ import {
   UpdateMarginAccountMsg,
   UpdateMarkPriceMsg,
 } from "../types";
-import {
-  IPerpetualManager,
-  IPerpetualOrder,
-  PerpStorage,
-} from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
+import { constructRedis, executeWithTimeout, sleep } from "../utils";
 import Executor from "./executor";
-import { JsonRpcProvider } from "ethers";
-import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
 
 export default class Distributor {
   // objects
@@ -144,7 +144,7 @@ export default class Distributor {
     const info = await this.md.exchangeInfo();
     console.log(JSON.stringify(info, undefined, "  "));
 
-    this.symbols = info.pools
+    const symbols = info.pools
       .filter(({ isRunning }) => isRunning)
       .map((pool) =>
         pool.perpetuals
@@ -155,9 +155,9 @@ export default class Distributor {
           )
       )
       .flat();
-    console.log({ symbols: this.symbols });
+    console.log({ symbols });
 
-    for (const symbol of this.symbols) {
+    for (const symbol of symbols) {
       // static info
       this.maintenanceRate.set(
         symbol,
@@ -168,39 +168,47 @@ export default class Distributor {
         this.md.getPerpetualStaticInfo(symbol).collateralCurrencyType ==
           COLLATERAL_CURRENCY_QUOTE
       );
-      // price info
-      this.pxSubmission.set(
-        symbol,
-        await this.md.fetchPricesForPerpetual(symbol)
-      );
-      // mark premium, accumulated funding per BC unit
-      const perpState = await this.md
-        .getReadOnlyProxyInstance()
-        .getPerpetual(this.md.getPerpIdFromSymbol(symbol));
-      this.markPremium.set(
-        symbol,
-        ABK64x64ToFloat(perpState.currentMarkPremiumRate.fPrice)
-      );
-      // mid premium = mark premium only at initialization time, will be updated with events
-      this.midPremium.set(
-        symbol,
-        ABK64x64ToFloat(perpState.currentMarkPremiumRate.fPrice)
-      );
 
-      this.unitAccumulatedFunding.set(
-        symbol,
-        ABK64x64ToFloat(perpState.fUnitAccumulatedFunding)
-      );
-      this.tradePremium.set(symbol, [
-        this.midPremium.get(symbol)! + 5e-4,
-        this.midPremium.get(symbol)! - 5e-4,
-      ]);
-      // "preallocate" trader set
-      this.openPositions.set(symbol, new Map());
-      this.openOrders.set(symbol, new Map());
-      this.brokerOrders.set(symbol, new Map());
-      // dummy values
-      this.lastRefreshTime.set(symbol, 0);
+      try {
+        // price info
+        this.pxSubmission.set(
+          symbol,
+          await this.md.fetchPricesForPerpetual(symbol)
+        );
+        // mark premium, accumulated funding per BC unit
+        const perpState = await this.md
+          .getReadOnlyProxyInstance()
+          .getPerpetual(this.md.getPerpIdFromSymbol(symbol));
+        this.markPremium.set(
+          symbol,
+          ABK64x64ToFloat(perpState.currentMarkPremiumRate.fPrice)
+        );
+        // mid premium = mark premium only at initialization time, will be updated with events
+        this.midPremium.set(
+          symbol,
+          ABK64x64ToFloat(perpState.currentMarkPremiumRate.fPrice)
+        );
+
+        this.unitAccumulatedFunding.set(
+          symbol,
+          ABK64x64ToFloat(perpState.fUnitAccumulatedFunding)
+        );
+
+        this.tradePremium.set(symbol, [
+          this.midPremium.get(symbol)! + 5e-4,
+          this.midPremium.get(symbol)! - 5e-4,
+        ]);
+        // "preallocate" trader set
+        this.openPositions.set(symbol, new Map());
+        this.openOrders.set(symbol, new Map());
+        this.brokerOrders.set(symbol, new Map());
+        // dummy values
+        this.lastRefreshTime.set(symbol, 0);
+        this.symbols.push(symbol);
+      } catch (e) {
+        // symbol is ignored if cannot fetch data about it
+        console.log(`Could not fetch data for symbol ${symbol}`);
+      }
     }
 
     // Subscribe to blockchain events
