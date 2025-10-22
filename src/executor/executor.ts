@@ -563,27 +563,24 @@ export default class Executor {
       return BotStatus.PartialError;
     }
 
-    // don't check oracle timestamp - only that it's working
-    // const oracleTS = Math.min(...px.submission.timestamps);
-    // if (oracleTS < onChainTS) {
-    //   // let oracle cache expire before trying
-    //   console.log({
-    //     reason: "outdated off-chain oracle(s)",
-    //     symbol: symbol,
-    //     digest: digest,
-    //     time: new Date(Date.now()).toISOString(),
-    //   });
-    //   // bot can continue
-    //   this.bots[botIdx].busy = false;
-    //   // trigger a restart if it keeps happening
-    //   const tried = (this.timesTried.get(digest) ?? 0) + 1;
-    //   this.timesTried.set(digest, tried);
-    //   // order stays locked for another second
-    //   sleep(1_000).then(() => {
-    //     this._unlock(digest);
-    //   });
-    //   return BotStatus.PartialError;
-    // }
+    const oracleTS = Math.min(...px.submission.timestamps);
+    if (oracleTS < onChainTS) {
+      // let oracle cache expire before trying
+      console.log({
+        reason: "outdated off-chain oracle(s)",
+        symbol: symbol,
+        digest: digest,
+        time: new Date(Date.now()).toISOString(),
+      });
+      // bot can continue
+      this.bots[botIdx].busy = false;
+      // trigger a restart if it keeps happening
+      const tried = (this.timesTried.get(digest) ?? 0) + 1;
+      this.timesTried.set(digest, tried);
+      // unlock for immediate retry
+      this._unlock(digest);
+      return BotStatus.PartialError;
+    }
 
     // last check in case signal was old
     const savedOrder = this.distributor?.getOrder(symbol, digest);
