@@ -6,34 +6,20 @@ import {
   PerpetualDataHandler,
 } from "@d8x/perpetuals-sdk";
 import { Redis } from "ioredis";
-import SturdyWebSocket from "sturdy-websocket";
-import Websocket from "ws";
 import {
-  LiquidateMsg,
+  ExecutionFailedMsg,
   ExecutorConfig,
-  UpdateMarginAccountMsg,
-  UpdateMarkPriceMsg,
-  TradeMsg,
+  LiquidateMsg,
   PerpetualLimitOrderCancelledMsg,
   PerpetualLimitOrderCreatedMsg,
-  ExecutionFailedMsg,
   RedisMsg,
+  TradeMsg,
+  UpdateMarginAccountMsg,
+  UpdateMarkPriceMsg,
 } from "../types";
 import { constructRedis, executeWithTimeout, sleep } from "../utils";
 
 import {
-  JsonRpcProvider,
-  Log,
-  LogDescription,
-  Network,
-  Result,
-  SocketProvider,
-  WebSocketProvider,
-} from "ethers";
-import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
-import { MultiUrlWebSocketProvider } from "../multiUrlWebsocketProvider";
-import {
-  IPerpetualManagerInterface,
   IPerpetualOrder,
   LiquidateEvent,
   PerpetualLimitOrderCancelledEvent,
@@ -45,6 +31,9 @@ import {
   ExecutionFailedEvent,
   PerpetualLimitOrderCreatedEvent,
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/LimitOrderBook";
+import { Log, LogDescription, Network, Result } from "ethers";
+import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
+import { MultiUrlWebSocketProvider } from "../multiUrlWebsocketProvider";
 
 enum ListeningMode {
   Polling = "Polling",
@@ -384,6 +373,8 @@ export default class BlockhainListener {
           "UpdateMarkPrice",
           "PerpetualLimitOrderCancelled",
           "TransferAddressTo",
+          "SetEmergencyState",
+          "SetNormalState",
         ].map(
           (eventName) =>
             this.proxyInterface.encodeFilterTopics(eventName, [])[0] as string
@@ -425,10 +416,14 @@ export default class BlockhainListener {
     // handle different events
     switch (parsedEvent.name) {
       case "TransferAddressTo":
+      case "SetEmergencyState":
+      case "SetNormalState":
         this.redisPubClient.publish("Restart", parsedEvent.args[0]);
         this.unsubscribe();
         // force restart
-        process.exit(0);
+        sleep(1_000).then(() => {
+          process.exit(0);
+        });
 
       case "Liquidate":
         {
