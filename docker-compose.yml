@@ -11,24 +11,24 @@ services:
     command: redis-server --save 20 1 --loglevel warning --requirepass ${REDIS_PASSWORD}
 
   # Listen to block and events, and stream on redis
-  sentinel-bera:
-    build:
-      context: .
-      dockerfile: ./src/sentinel/Dockerfile
-    depends_on:
-      - cache
-    environment:
-      REDIS_HOST: cache
-      REDIS_PORT: ${REDIS_PORT}
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REDIS_ID: 1
-      SDK_CONFIG: bera
-    restart: always
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100k"
-        max-file: "10"
+  # sentinel-bera:
+  #   build:
+  #     context: .
+  #     dockerfile: ./src/sentinel/Dockerfile
+  #   depends_on:
+  #     - cache
+  #   environment:
+  #     REDIS_HOST: cache
+  #     REDIS_PORT: ${REDIS_PORT}
+  #     REDIS_PASSWORD: ${REDIS_PASSWORD}
+  #     REDIS_ID: 1
+  #     SDK_CONFIG: bera
+  #   restart: always
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "100k"
+  #       max-file: "10"
 
   # sentinel-arbitrum:
   #   build:
@@ -89,28 +89,28 @@ services:
 
   # Executor: fetches and distributes executable orders and submits transactions
   # to the blockchain
-  executor-bera:
-    depends_on:
-      - cache
-      - sentinel-bera
-    build:
-      context: .
-      dockerfile: ./src/executor/Dockerfile
-    environment:
-      REDIS_HOST: cache
-      REDIS_PORT: ${REDIS_PORT}
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REDIS_ID: 1
-      SDK_CONFIG: bera
-      SEED_PHRASE: ${SEED_PHRASE}
-      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-      SERVER_IP: ${PROMETHEUS_SERVER_IP}
-    restart: always
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100k"
-        max-file: "10"
+  # executor-bera:
+  #   depends_on:
+  #     - cache
+  #     - sentinel-bera
+  #   build:
+  #     context: .
+  #     dockerfile: ./src/executor/Dockerfile
+  #   environment:
+  #     REDIS_HOST: cache
+  #     REDIS_PORT: ${REDIS_PORT}
+  #     REDIS_PASSWORD: ${REDIS_PASSWORD}
+  #     REDIS_ID: 1
+  #     SDK_CONFIG: bera
+  #     SEED_PHRASE: ${SEED_PHRASE}
+  #     SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+  #     SERVER_IP: ${PROMETHEUS_SERVER_IP}
+  #   restart: always
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "100k"
+  #       max-file: "10"
 
   # executor-arbitrum:
   #   depends_on:
