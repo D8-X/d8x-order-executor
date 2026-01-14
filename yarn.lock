@@ -14,10 +14,10 @@
   dependencies:
     "@jridgewell/trace-mapping" "0.3.9"
 
-"@d8x/perpetuals-sdk@^2.7.3":
-  version "2.7.3"
-  resolved "https://registry.yarnpkg.com/@d8x/perpetuals-sdk/-/perpetuals-sdk-2.7.3.tgz#29ba13027816597406f0bb5e0add0c5464a6192a"
-  integrity sha512-Cj8QfaxplckHUl4KrV5Zujv9mmhxSXrVbWmlEF/vc9l0nz6r+eHL+x2M45r72C3CqYCEifbcHY5Ghrqy7Gb4tg==
+"@d8x/perpetuals-sdk@^2.7.5":
+  version "2.7.5"
+  resolved "https://registry.yarnpkg.com/@d8x/perpetuals-sdk/-/perpetuals-sdk-2.7.5.tgz#2fbec41832cde2aa517da73a478d723d182c207e"
+  integrity sha512-9GMoXCHIfXjB52giFwGhV03ayb80jgBCUnf5gB2djL17ER64i5JqyhOCw4B4ec257/2lOoqfYXk5cVQdfDITrg==
   dependencies:
     "@typechain/ethers-v6" "^0.5.1"
     buffer "6.0.3"
