@@ -1,23 +1,29 @@
 import {
-  MarketData,
-  PerpetualDataHandler,
   ABK64x64ToFloat,
+  BUY_SIDE,
   COLLATERAL_CURRENCY_QUOTE,
+  IdxPriceInfo,
+  MarketData,
+  Multicall3,
   Multicall3__factory,
   MULTICALL_ADDRESS,
-  Multicall3,
   Order,
+  ORDER_TYPE_LIMIT,
   ORDER_TYPE_MARKET,
   ORDER_TYPE_STOP_LIMIT,
   ORDER_TYPE_STOP_MARKET,
-  BUY_SIDE,
-  ORDER_TYPE_LIMIT,
-  ZERO_ORDER_ID,
+  PerpetualDataHandler,
   SELL_SIDE,
-  IdxPriceInfo,
+  ZERO_ORDER_ID,
 } from "@d8x/perpetuals-sdk";
+import {
+  IPerpetualManager,
+  IPerpetualOrder,
+  PerpStorage,
+} from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
+import { JsonRpcProvider } from "ethers";
 import { Redis } from "ioredis";
-import { constructRedis, executeWithTimeout, sleep } from "../utils";
+import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
 import {
   BrokerOrderMsg,
   ExecuteOrderCommand,
@@ -32,19 +38,14 @@ import {
   UpdateMarginAccountMsg,
   UpdateMarkPriceMsg,
 } from "../types";
-import {
-  IPerpetualManager,
-  IPerpetualOrder,
-  PerpStorage,
-} from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
+import { constructRedis, executeWithTimeout, sleep } from "../utils";
 import Executor from "./executor";
-import { JsonRpcProvider } from "ethers";
 
 export default class Distributor {
   // objects
   private md: MarketData;
   private redisSubClient: Redis;
-  public providers: JsonRpcProvider[];
+  public providers: MultiUrlJsonRpcProvider[];
 
   // state
   private blockNumber = 0;
@@ -68,6 +69,7 @@ export default class Distributor {
   private isQuote: Map<string, boolean> = new Map();
   private symbols: string[] = [];
   private maintenanceRate: Map<string, number> = new Map();
+  private chainId: number;
 
   // constants
 
@@ -95,11 +97,22 @@ export default class Distributor {
     if (config.configSource !== undefined) {
       sdkConfig.configSource = config.configSource;
     }
+    this.chainId = sdkConfig.chainId;
     this.redisSubClient = constructRedis("commanderSubClient");
-    this.providers = this.config.rpcWatch.map(
-      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
-    );
+    // this.providers = this.config.rpcWatch.map(
+    //   (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
+    // );
     this.md = new MarketData(sdkConfig);
+    this.providers = [
+      new MultiUrlJsonRpcProvider(this.config.rpcWatch, this.md.network, {
+        timeoutSeconds: 25,
+        logErrors: true,
+        logRpcSwitches: true,
+        // Distributor uses free rpcs, make sure to switch on each call.
+        switchRpcOnEachRequest: true,
+        staticNetwork: true,
+      }),
+    ];
   }
 
   /**
@@ -131,7 +144,7 @@ export default class Distributor {
     const info = await this.md.exchangeInfo();
     console.log(JSON.stringify(info, undefined, "  "));
 
-    this.symbols = info.pools
+    const symbols = info.pools
       .filter(({ isRunning }) => isRunning)
       .map((pool) =>
         pool.perpetuals
@@ -142,9 +155,9 @@ export default class Distributor {
           )
       )
       .flat();
-    console.log({ symbols: this.symbols });
+    console.log({ symbols });
 
-    for (const symbol of this.symbols) {
+    for (const symbol of symbols) {
       // static info
       this.maintenanceRate.set(
         symbol,
@@ -155,39 +168,47 @@ export default class Distributor {
         this.md.getPerpetualStaticInfo(symbol).collateralCurrencyType ==
           COLLATERAL_CURRENCY_QUOTE
       );
-      // price info
-      this.pxSubmission.set(
-        symbol,
-        await this.md.fetchPricesForPerpetual(symbol)
-      );
-      // mark premium, accumulated funding per BC unit
-      const perpState = await this.md
-        .getReadOnlyProxyInstance()
-        .getPerpetual(this.md.getPerpIdFromSymbol(symbol));
-      this.markPremium.set(
-        symbol,
-        ABK64x64ToFloat(perpState.currentMarkPremiumRate.fPrice)
-      );
-      // mid premium = mark premium only at initialization time, will be updated with events
-      this.midPremium.set(
-        symbol,
-        ABK64x64ToFloat(perpState.currentMarkPremiumRate.fPrice)
-      );
 
-      this.unitAccumulatedFunding.set(
-        symbol,
-        ABK64x64ToFloat(perpState.fUnitAccumulatedFunding)
-      );
-      this.tradePremium.set(symbol, [
-        this.midPremium.get(symbol)! + 5e-4,
-        this.midPremium.get(symbol)! - 5e-4,
-      ]);
-      // "preallocate" trader set
-      this.openPositions.set(symbol, new Map());
-      this.openOrders.set(symbol, new Map());
-      this.brokerOrders.set(symbol, new Map());
-      // dummy values
-      this.lastRefreshTime.set(symbol, 0);
+      try {
+        // price info
+        this.pxSubmission.set(
+          symbol,
+          await this.md.fetchPricesForPerpetual(symbol)
+        );
+        // mark premium, accumulated funding per BC unit
+        const perpState = await this.md
+          .getReadOnlyProxyInstance()
+          .getPerpetual(this.md.getPerpIdFromSymbol(symbol));
+        this.markPremium.set(
+          symbol,
+          ABK64x64ToFloat(perpState.currentMarkPremiumRate.fPrice)
+        );
+        // mid premium = mark premium only at initialization time, will be updated with events
+        this.midPremium.set(
+          symbol,
+          ABK64x64ToFloat(perpState.currentMarkPremiumRate.fPrice)
+        );
+
+        this.unitAccumulatedFunding.set(
+          symbol,
+          ABK64x64ToFloat(perpState.fUnitAccumulatedFunding)
+        );
+
+        this.tradePremium.set(symbol, [
+          this.midPremium.get(symbol)! + 5e-4,
+          this.midPremium.get(symbol)! - 5e-4,
+        ]);
+        // "preallocate" trader set
+        this.openPositions.set(symbol, new Map());
+        this.openOrders.set(symbol, new Map());
+        this.brokerOrders.set(symbol, new Map());
+        // dummy values
+        this.lastRefreshTime.set(symbol, 0);
+        this.symbols.push(symbol);
+      } catch (e) {
+        // symbol is ignored if cannot fetch data about it
+        console.log(`Could not fetch data for symbol ${symbol}`);
+      }
     }
 
     // Subscribe to blockchain events
@@ -284,8 +305,11 @@ export default class Distributor {
           }
 
           case "UpdateMarginAccountEvent": {
-            const { traderAddr, perpetualId }: UpdateMarginAccountMsg =
+            const { chainId, traderAddr, perpetualId }: UpdateMarginAccountMsg =
               JSON.parse(msg);
+            if (chainId !== this.chainId) {
+              break;
+            }
             const account = await (
               this.md.getReadOnlyProxyInstance() as unknown as IPerpetualManager
             ).getMarginAccount(perpetualId, traderAddr);
@@ -301,8 +325,15 @@ export default class Distributor {
           }
 
           case "UpdateMarkPriceEvent": {
-            const { symbol, markPremium, midPremium }: UpdateMarkPriceMsg =
-              JSON.parse(msg);
+            const {
+              chainId,
+              symbol,
+              markPremium,
+              midPremium,
+            }: UpdateMarkPriceMsg = JSON.parse(msg);
+            if (chainId !== this.chainId) {
+              break;
+            }
             this.markPremium.set(symbol, markPremium);
             this.midPremium.set(symbol, midPremium);
             break;
@@ -310,11 +341,15 @@ export default class Distributor {
 
           case "PerpetualLimitOrderCreatedEvent": {
             const {
+              chainId,
               symbol,
               digest,
               trader,
               order,
             }: PerpetualLimitOrderCreatedMsg = JSON.parse(msg);
+            if (chainId !== this.chainId) {
+              break;
+            }
             this.addOrder(
               symbol,
               trader,
@@ -332,15 +367,21 @@ export default class Distributor {
           }
 
           case "PerpetualLimitOrderCancelledEvent": {
-            const { symbol, digest }: PerpetualLimitOrderCancelledMsg =
+            const { chainId, symbol, digest }: PerpetualLimitOrderCancelledMsg =
               JSON.parse(msg);
+            if (chainId !== this.chainId) {
+              break;
+            }
             this.removeOrder(symbol, digest, "removing cancelled order");
             break;
           }
 
           case "TradeEvent": {
-            const { perpetualId, symbol, digest, trader }: TradeMsg =
+            const { chainId, perpetualId, symbol, digest, trader }: TradeMsg =
               JSON.parse(msg);
+            if (chainId !== this.chainId) {
+              break;
+            }
             this.removeOrder(symbol, digest, "removing executed order", trader);
             const unitAccumulatedFundingCC = ABK64x64ToFloat(
               (
@@ -355,8 +396,16 @@ export default class Distributor {
           }
 
           case "ExecutionFailedEvent": {
-            const { symbol, digest, trader, reason }: ExecutionFailedMsg =
-              JSON.parse(msg);
+            const {
+              chainId,
+              symbol,
+              digest,
+              trader,
+              reason,
+            }: ExecutionFailedMsg = JSON.parse(msg);
+            if (chainId !== this.chainId) {
+              break;
+            }
             if (reason != "cancel delay required") {
               this.removeOrder(symbol, digest, reason, trader);
             }
@@ -364,8 +413,16 @@ export default class Distributor {
           }
 
           case "BrokerOrderCreatedEvent": {
-            const { symbol, traderAddr, digest, type }: BrokerOrderMsg =
-              JSON.parse(msg);
+            const {
+              chainId,
+              symbol,
+              traderAddr,
+              digest,
+              type,
+            }: BrokerOrderMsg = JSON.parse(msg);
+            if (chainId !== this.chainId) {
+              break;
+            }
             // introduce delay of less than 1 block for broker orders
             console.log({
               info: "delaying broker order",
@@ -374,7 +431,10 @@ export default class Distributor {
               time: new Date(Date.now()).toISOString(),
             });
             await sleep(
-              this.blockTimeMS * this.brokerOrderBlockSizeDelayFactor
+              Math.min(
+                500,
+                this.blockTimeMS * this.brokerOrderBlockSizeDelayFactor
+              )
             );
 
             this.addOrder(symbol, traderAddr, digest, type, undefined);
@@ -405,6 +465,7 @@ export default class Distributor {
             break;
 
           case "Restart": {
+            console.log("Restarting upong signal received...");
             process.exit(0);
           }
         }
@@ -465,12 +526,11 @@ export default class Distributor {
         if (this.md.isPredictionMarket(symbol)) {
           prem[i] = p - pxS2S3.s2;
         } else {
-          prem[i] = p / pxS2S3.s2 - 1;
+          prem[i] = p / pxS2S3.s2 - 1; // + 10 * (side === BUY_SIDE ? 1e-4 : -1e-4);
         }
       } else {
-        // default to mid premium +/- 5 bps buffer
-        prem[i] =
-          this.midPremium.get(symbol)! + (side === BUY_SIDE ? 1e5 : -1e5);
+        // default to mid premium +/- 1 pct buffer
+        prem[i] = this.midPremium.get(symbol)!; // + 100 * (side === BUY_SIDE ? 1e-4 : -1e-4);
       }
     }
     this.tradePremium.set(symbol, prem);
@@ -565,10 +625,14 @@ export default class Distributor {
       Date.now() - (this.lastRefreshTime.get(symbol) ?? 0) <
       this.config.refreshOrdersIntervalSecondsMin * 1_000
     ) {
-      console.log("[refreshOpenOrders] called too soon", {
+      console.log({
         symbol: symbol,
+        orders: this.openOrders.get(symbol)?.size,
         time: new Date(Date.now()).toISOString(),
-        lastRefresh: new Date(this.lastRefreshTime.get(symbol) ?? 0),
+        nextRefresh: new Date(
+          (this.lastRefreshTime.get(symbol) ?? 0) +
+            this.config.refreshOrdersIntervalSecondsMin * 1_000
+        ),
       });
       return;
     }

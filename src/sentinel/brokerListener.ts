@@ -25,15 +25,15 @@ export default class BackendListener {
 
   // state
   private perpIds: bigint[] = [];
-  private chainId: number | undefined = undefined;
+  private chainId: number;
   private lastRpcIndex = { http: -1, ws: -1 };
 
   constructor(config: ExecutorConfig, wsIndex: number) {
     this.config = config;
     this.wsIndex = wsIndex;
-    this.md = new MarketData(
-      PerpetualDataHandler.readSDKConfig(this.config.sdkConfig)
-    );
+    const sdkConfig = PerpetualDataHandler.readSDKConfig(this.config.sdkConfig);
+    this.md = new MarketData(sdkConfig);
+    this.chainId = sdkConfig.chainId;
     this.redisPubClient = constructRedis("BlockchainListener");
     this.httpProvider = new JsonRpcProvider(
       this.chooseHttpRpc(),
@@ -167,6 +167,7 @@ export default class BackendListener {
             orderId,
           } = msg.data as BrokerWSUpdateData;
           const eventMsg: BrokerOrderMsg = {
+            chainId: this.chainId,
             symbol: this.md!.getSymbolFromPerpId(+perpId)!,
             perpetualId: +perpId,
             traderAddr: traderAddr,

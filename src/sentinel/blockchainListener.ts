@@ -4,11 +4,8 @@ import {
   LimitOrderBook__factory,
   MarketData,
   PerpetualDataHandler,
-  ZERO_ORDER_ID,
 } from "@d8x/perpetuals-sdk";
 import { Redis } from "ioredis";
-import SturdyWebSocket from "sturdy-websocket";
-import Websocket from "ws";
 import {
   ExecutionFailedMsg,
   ExecutorConfig,
@@ -21,16 +18,8 @@ import {
   UpdateMarkPriceMsg,
 } from "../types";
 import { constructRedis, executeWithTimeout, sleep } from "../utils";
-import {
-  JsonRpcProvider,
-  Log,
-  LogDescription,
-  Result,
-  WebSocketProvider,
-} from "ethers";
 
 import {
-  IPerpetualManagerInterface,
   IPerpetualOrder,
   LiquidateEvent,
   PerpetualLimitOrderCancelledEvent,
@@ -40,68 +29,86 @@ import {
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
 import {
   ExecutionFailedEvent,
-  LimitOrderBookInterface,
   PerpetualLimitOrderCreatedEvent,
 } from "@d8x/perpetuals-sdk/dist/esm/contracts/LimitOrderBook";
+import { Log, LogDescription, Network, Result } from "ethers";
+import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
+import { MultiUrlWebSocketProvider } from "../multiUrlWebsocketProvider";
 
 enum ListeningMode {
-  Polling = "HTTP",
-  Events = "Websocket",
+  Polling = "Polling",
+  Events = "Events",
 }
 
 export default class BlockhainListener {
   private config: ExecutorConfig;
-  private orderBooks: Set<string> = new Set();
+  // Network is initialized in start() method
+  private network!: Network;
+  private chainId: number;
 
-  // objects
-  private httpProvider: JsonRpcProvider;
-  private listeningProvider: JsonRpcProvider | WebSocketProvider | undefined;
+  // Single instance of multiurl http provider.
+  private httpProvider: MultiUrlJsonRpcProvider;
+  // Single instance of multiurl ws provider. When switching listener, we will
+  // simply switch to next rpc url in the list.
+  private multiUrlWsProvider!: MultiUrlWebSocketProvider;
+  private listeningProvider:
+    | MultiUrlJsonRpcProvider
+    | MultiUrlWebSocketProvider
+    | undefined;
   private redisPubClient: Redis;
   private md: MarketData;
-  private proxyInterface: IPerpetualManagerInterface;
-  private orderBookInterface: LimitOrderBookInterface;
 
   // state
   private blockNumber: number | undefined;
   private mode: ListeningMode = ListeningMode.Events;
   private lastBlockReceivedAt: number;
   private lastRpcIndex = { http: -1, ws: -1 };
+  private switchingRPC = false;
+
+  private proxyInterface = IPerpetualManager__factory.createInterface();
+  private orderBookInterface = LimitOrderBook__factory.createInterface();
+
+  private orderBooks: Set<string> = new Set();
 
   constructor(config: ExecutorConfig) {
+    if (config.rpcListenHttp.length <= 0) {
+      throw new Error(
+        "Please specify at least one HTTP RPC URL in rpcListenHttp configuration field"
+      );
+    }
+
     this.config = config;
-    const sdkConfig = PerpetualDataHandler.readSDKConfig(this.config.sdkConfig);
-    // Chain id supplied from env. For testing purposes (hardhat network)
-    if (process.env.CHAIN_ID !== undefined) {
-      sdkConfig.chainId = parseInt(process.env.CHAIN_ID);
-    }
-    if (config.priceFeedConfigNetwork !== undefined) {
-      sdkConfig.priceFeedConfigNetwork = config.priceFeedConfigNetwork;
-    }
-    if (config.configSource !== undefined) {
-      sdkConfig.configSource = config.configSource;
-    }
-    this.md = new MarketData(sdkConfig);
+    this.md = new MarketData(
+      PerpetualDataHandler.readSDKConfig(this.config.sdkConfig)
+    );
+    this.chainId = Number(this.md.chainId);
     this.redisPubClient = constructRedis("sentinelPubClient");
-    this.httpProvider = new JsonRpcProvider(
-      this.chooseHttpRpc(),
+    this.httpProvider = new MultiUrlJsonRpcProvider(
+      this.config.rpcListenHttp,
       this.md.network,
-      { staticNetwork: true }
+      {
+        logErrors: false,
+        logRpcSwitches: false,
+        switchRpcOnEachRequest: true,
+        timeoutSeconds: 20,
+        maxRetries: this.config.rpcListenHttp.length * 5,
+
+        staticNetwork: true,
+        polling: true,
+      }
+    );
+    this.multiUrlWsProvider = new MultiUrlWebSocketProvider(
+      this.config.rpcListenWs,
+      this.network,
+      {
+        logErrors: true,
+        logRpcSwitches: true,
+        maxRetries: this.config.rpcListenWs.length * 4,
+
+        staticNetwork: true,
+      }
     );
     this.lastBlockReceivedAt = Date.now();
-    this.proxyInterface = IPerpetualManager__factory.createInterface();
-    this.orderBookInterface = LimitOrderBook__factory.createInterface();
-  }
-
-  private chooseHttpRpc() {
-    const idx = (this.lastRpcIndex.http + 1) % this.config.rpcListenHttp.length;
-    this.lastRpcIndex.http = idx;
-    return this.config.rpcListenHttp[idx];
-  }
-
-  private chooseWsRpc() {
-    const idx = (this.lastRpcIndex.ws + 1) % this.config.rpcListenWs.length;
-    this.lastRpcIndex.ws = idx;
-    return this.config.rpcListenWs[idx];
   }
 
   public unsubscribe() {
@@ -118,64 +125,75 @@ export default class BlockhainListener {
       (Date.now() - this.lastBlockReceivedAt) / 1_000
     );
     if (blockTime > this.config.waitForBlockSeconds) {
-      console.log(
-        `${new Date(
-          Date.now()
-        ).toISOString()}: websocket connection block time is ${blockTime} - disconnecting`
-      );
+      console.log({
+        info: "Last block received too long ago - heartbeat check failed",
+        receivedSecondsAgo: blockTime,
+        time: new Date(Date.now()).toISOString(),
+      });
       return false;
     }
-    console.log(
-      `${new Date(
-        Date.now()
-      ).toISOString()}: websocket connection block time is ${blockTime} seconds @ block ${
-        this.blockNumber
-      }`
-    );
+    console.log({
+      info: "Last block received within expected time",
+      receivedSecondsAgo: blockTime,
+      time: new Date(Date.now()).toISOString(),
+    });
     return true;
   }
 
   private async switchListeningMode() {
+    if (this.switchingRPC) {
+      console.log(
+        `${new Date(Date.now()).toISOString()}: already switching RPC`
+      );
+      return;
+    }
+
     this.blockNumber = undefined;
+    this.switchingRPC = true;
 
-    // Destroy websockets provider and close underlying connection. Do not call
-    // unsubscribe for websocket provider as it will cause async eth_unsubscribe
-    // calls while underlying connection is being closed.
-    //
-    // Change this once ether.js is upgraded to v6
-    if (this.listeningProvider instanceof WebSocketProvider) {
-      this.listeningProvider.destroy();
-    } else {
-      this.listeningProvider?.removeAllListeners();
+    // Remove existing listeners. MultiUrlWebSocketProvider handles this
+    // internally, so this is only for Http providers.
+    if (this.listeningProvider) {
+      if (this.listeningProvider instanceof MultiUrlWebSocketProvider) {
+        await this.listeningProvider.stop();
+      }
+      await this.listeningProvider.removeAllListeners();
     }
 
-    if (this.mode == ListeningMode.Events) {
-      console.log(
-        `${new Date(Date.now()).toISOString()}: switching from WS to HTTP`
-      );
+    if (
+      this.mode == ListeningMode.Events ||
+      this.config.rpcListenWs.length < 1
+    ) {
+      console.log({
+        info: "Switching from Websocket to HTTP provider",
+        time: new Date(Date.now()).toISOString(),
+      });
       this.mode = ListeningMode.Polling;
-      this.listeningProvider = new JsonRpcProvider(
-        this.chooseHttpRpc(),
-        this.md.network,
-        { staticNetwork: true, polling: true }
-      );
-    } else {
-      console.log(
-        `${new Date(Date.now()).toISOString()}: switching from HTTP to WS`
-      );
+      this.listeningProvider = this.httpProvider;
+    } else if (this.config.rpcListenWs.length > 0) {
+      console.log({
+        info: "Switching from HTTP to WS",
+        nexRpcUrl: this.multiUrlWsProvider.getCurrentRpcUrl(),
+        time: new Date(Date.now()).toISOString(),
+      });
       this.mode = ListeningMode.Events;
-      this.listeningProvider = new WebSocketProvider(
-        this.chooseWsRpc(),
-        this.md.network,
-        { staticNetwork: true }
-      );
+      // startNextWebsocket will be called in health checks, therefore we don't
+      // need to do that here.
+      this.listeningProvider = this.multiUrlWsProvider;
     }
+    this.switchingRPC = false;
+
+    this.listeningProvider!.resetErrorNumber();
+
     await this.addListeners();
     this.redisPubClient.publish("switch-mode", this.mode);
   }
 
-  private async connectOrSwitch() {
-    // try to connect via ws, switch to http on failure
+  /**
+   * Wait for blockNumber to come from WS connection or switch to http on
+   * failure.
+   */
+  private async connectWsOrSwitchToHttp() {
     this.blockNumber = undefined;
     setTimeout(async () => {
       if (!this.blockNumber) {
@@ -194,43 +212,76 @@ export default class BlockhainListener {
     // periodic health checks
     setInterval(async () => {
       if (this.mode == ListeningMode.Events) {
-        // currently on WS - check that block time is still reasonable or if we need to switch
+        // currently on WS - check that block time is still reasonable or if we
+        // need to switch
         if (!this.checkHeartbeat()) {
           this.switchListeningMode();
         }
-      } else {
-        // currently on HTTP - check if we can switch to WS by seeing if we get blocks
+      } else if (this.config.rpcListenWs.length > 0) {
+        // currently on HTTP - check if we can switch to WS by seeing if we get
+        // blocks with next WS connection.
         let success = false;
-        let wsProvider = new WebSocketProvider(
-          new SturdyWebSocket(this.chooseWsRpc(), {
-            wsConstructor: Websocket,
-          }),
-          this.md.network,
-          { staticNetwork: true }
+
+        // await this.multiUrlWsProvider.startNextWebsocket(); Do not use once
+        // with MultiUrlWebsocketProvider. Also, do not call
+        // startNextWebsocket(), multi url provider will handle the switching
+        // internally
+        await this.multiUrlWsProvider.startNextWebsocket();
+        console.log(
+          `[${new Date(
+            Date.now()
+          ).toISOString()}] attempting to switch to WS ${this.multiUrlWsProvider.getCurrentRpcUrl()}`
         );
-        wsProvider.once("block", () => {
+        const blockReceivedCb = () => {
+          console.log(
+            "block received",
+            this.multiUrlWsProvider.getCurrentRpcUrl()
+          );
           success = true;
-        });
+        };
+        this.multiUrlWsProvider.on("block", blockReceivedCb);
         // after N seconds, check if we received a block - if yes, switch
         setTimeout(async () => {
           if (success) {
+            this.multiUrlWsProvider.removeListener("block", blockReceivedCb);
             await this.switchListeningMode();
+          } else {
+            // Otherwise just stop the multi url ws provider and try again later
+            await this.multiUrlWsProvider.stop();
+            console.log(
+              `[${new Date(
+                Date.now()
+              ).toISOString()}] attempting to switch to WS failed - block not received`
+            );
           }
-          // Destroy the one-off websocket provider and close underlying ws
-          // connection.
-          wsProvider.destroy();
         }, this.config.waitForBlockSeconds * 1_000);
       }
     }, this.config.healthCheckSeconds * 1_000);
   }
 
+  public containsEthersConnErrors(error: string) {
+    const ethersErrors = [
+      "Unexpected server response",
+      "SERVER_ERROR",
+      "WebSocket was closed before the connection was established",
+    ];
+    for (const err of ethersErrors) {
+      if (error.includes(err)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   public async start() {
-    // http rpc
-    const network = await executeWithTimeout(
-      this.httpProvider._detectNetwork(),
-      10_000,
+    this.network = await executeWithTimeout(
+      this.httpProvider.getNetwork(),
+      // Use at least 2X timeout of HTTP provider in case some of the rpc are
+      // slow to respond.
+      40_000,
       "could not establish http connection"
     );
+
     await this.md.createProxyInstance(this.httpProvider);
 
     const perps = await this.md
@@ -254,34 +305,29 @@ export default class BlockhainListener {
       );
     }
 
-    console.log(
-      `${new Date(Date.now()).toISOString()}: connected to ${
-        network.name
-      }, chain id ${Number(network.chainId)}, using HTTP provider`
-    );
-
-    // ws rpc
     if (this.config.rpcListenWs.length > 0) {
-      this.listeningProvider = new WebSocketProvider(
-        new SturdyWebSocket(this.chooseWsRpc(), {
-          wsConstructor: Websocket,
-        }),
-        network,
-        { staticNetwork: true }
-      );
+      this.listeningProvider = this.multiUrlWsProvider;
     } else if (this.config.rpcListenHttp.length > 0) {
-      this.listeningProvider = new JsonRpcProvider(
-        this.chooseHttpRpc(),
-        network,
-        { staticNetwork: true, polling: true }
-      );
+      this.listeningProvider = this.httpProvider;
     } else {
       throw new Error(
         "Please specify RPC URLs for listening to blockchain events"
       );
     }
+    console.log({
+      info: "BlockchainListener started",
+      time: new Date(Date.now()).toISOString(),
+      network: {
+        name: this.network.name,
+        chainId: this.network.chainId,
+      },
+      listenerType:
+        this.listeningProvider instanceof MultiUrlWebSocketProvider
+          ? "Websocket"
+          : "Http",
+    });
 
-    this.connectOrSwitch();
+    this.connectWsOrSwitchToHttp();
     this.addListeners();
     this.resetHealthChecks();
   }
@@ -317,6 +363,7 @@ export default class BlockhainListener {
       this.blockNumber = blockNumber;
     });
 
+    // const proxy = IPerpetualManager__factory.connect(this.md.getProxyAddress(), this.listeningProvider);
     const filters = [
       [
         ...[
@@ -326,6 +373,8 @@ export default class BlockhainListener {
           "UpdateMarkPrice",
           "PerpetualLimitOrderCancelled",
           "TransferAddressTo",
+          "SetEmergencyState",
+          "SetNormalState",
         ].map(
           (eventName) =>
             this.proxyInterface.encodeFilterTopics(eventName, [])[0] as string
@@ -351,29 +400,6 @@ export default class BlockhainListener {
     });
   }
 
-  // Retrieves order dependencies with a http provider instead of a websocket
-  // one.
-  public async getOrderDependenciesHttp(
-    obAddress: string,
-    orderDigest: string
-  ): Promise<[string, string]> {
-    const ob = LimitOrderBook__factory.connect(obAddress, this.httpProvider);
-    return await ob.orderDependency(orderDigest);
-  }
-
-  private sendMsg(parsedEvent: LogDescription, msg: RedisMsg) {
-    console.log({
-      event: parsedEvent.name,
-      time: new Date(Date.now()).toISOString(),
-      mode: this.mode,
-      ...msg,
-    });
-    this.redisPubClient.publish(
-      `${parsedEvent.name}Event`,
-      JSON.stringify(msg)
-    );
-  }
-
   private handleProxyEvent(event: Log) {
     const parsedEvent = this.proxyInterface.parseLog(event);
     if (!parsedEvent) {
@@ -390,10 +416,14 @@ export default class BlockhainListener {
     // handle different events
     switch (parsedEvent.name) {
       case "TransferAddressTo":
+      case "SetEmergencyState":
+      case "SetNormalState":
         this.redisPubClient.publish("Restart", parsedEvent.args[0]);
         this.unsubscribe();
         // force restart
-        process.exit(0);
+        sleep(1_000).then(() => {
+          process.exit(0);
+        });
 
       case "Liquidate":
         {
@@ -408,6 +438,7 @@ export default class BlockhainListener {
           } = parsedEvent.args as unknown as LiquidateEvent.OutputObject;
           const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
+            chainId: this.chainId,
             perpetualId: Number(perpetualId),
             symbol: symbol,
             traderAddr: trader,
@@ -432,6 +463,7 @@ export default class BlockhainListener {
           } = parsedEvent.args as unknown as TradeEvent.OutputObject;
           const order = this.md!.smartContractOrderToOrder(scOrder);
           msg = {
+            chainId: this.chainId,
             perpetualId: Number(perpetualId),
             trader: trader,
             digest: orderDigest,
@@ -450,6 +482,7 @@ export default class BlockhainListener {
             parsedEvent.args as unknown as UpdateMarginAccountEvent.OutputObject;
           const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
+            chainId: this.chainId,
             perpetualId: Number(perpetualId),
             symbol: symbol,
             traderAddr: trader,
@@ -470,6 +503,7 @@ export default class BlockhainListener {
           } = parsedEvent.args as unknown as UpdateMarkPriceEvent.OutputObject;
           const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
+            chainId: this.chainId,
             perpetualId: Number(perpetualId),
             symbol: symbol,
             midPremium: ABK64x64ToFloat(fMidPricePremium),
@@ -487,6 +521,7 @@ export default class BlockhainListener {
             parsedEvent.args as unknown as PerpetualLimitOrderCancelledEvent.OutputObject;
           const symbol = this.md!.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
+            chainId: this.chainId,
             symbol: symbol,
             perpetualId: Number(perpetualId),
             digest: orderHash,
@@ -519,6 +554,7 @@ export default class BlockhainListener {
             parsedEvent.args as unknown as ExecutionFailedEvent.OutputObject;
           const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
           msg = {
+            chainId: this.chainId,
             perpetualId: Number(perpetualId),
             symbol: symbol,
             trader: trader,
@@ -535,6 +571,7 @@ export default class BlockhainListener {
           const { perpetualId, trader, brokerAddr, order, digest } =
             parsedEvent.args as unknown as PerpetualLimitOrderCreatedEvent.OutputObject;
           msg = {
+            chainId: this.chainId,
             symbol: this.md!.getSymbolFromPerpId(Number(perpetualId))!,
             perpetualId: Number(perpetualId),
             trader: trader,
@@ -551,12 +588,14 @@ export default class BlockhainListener {
           // Include parent/child order dependency ids. Order dependency is
           // not included in PerpetualLimitOrderCreated event but is needed
           // for the dependency checks in distributor and executor.
-          const orderDependency = await executeWithTimeout(
-            this.getOrderDependenciesHttp(event.address, digest),
-            10_000
-          );
-          const [id1, id2] = [orderDependency[0], orderDependency[1]];
-          msg.order.parentChildOrderIds = [id1, id2];
+          try {
+            const orderDependency = await executeWithTimeout(
+              this.getOrderDependenciesHttp(event.address, digest),
+              10_000
+            );
+            const [id1, id2] = [orderDependency[0], orderDependency[1]];
+            msg.order.parentChildOrderIds = [id1, id2];
+          } catch {}
         }
         break;
 
@@ -565,5 +604,28 @@ export default class BlockhainListener {
         return;
     }
     this.sendMsg(parsedEvent, msg);
+  }
+
+  // Retrieves order dependencies with a http provider instead of a websocket
+  // one.
+  public async getOrderDependenciesHttp(
+    obAddress: string,
+    orderDigest: string
+  ): Promise<[string, string]> {
+    const ob = LimitOrderBook__factory.connect(obAddress, this.httpProvider);
+    return await ob.orderDependency(orderDigest);
+  }
+
+  private sendMsg(parsedEvent: LogDescription, msg: RedisMsg) {
+    console.log({
+      event: parsedEvent.name,
+      time: new Date(Date.now()).toISOString(),
+      mode: this.mode,
+      ...msg,
+    });
+    this.redisPubClient.publish(
+      `${parsedEvent.name}Event`,
+      JSON.stringify(msg)
+    );
   }
 }

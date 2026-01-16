@@ -65,7 +65,7 @@ export interface ExecutorConfig {
   // oracle network to override default
   priceFeedConfigNetwork?: string;
   // override default config (defaults to 1.2x RPC gas px), multiplier (e.g. 1.5 means 1.5x the gas price)
-  gasPriceBuffer?: number;
+  gasPriceMultiplier?: number;
 }
 
 export interface BrokerWSErrorData {
@@ -90,6 +90,7 @@ export interface BrokerWSMessage {
 }
 
 export interface RedisMsg {
+  chainId: number;
   block: number;
   hash: string;
   id: string;
@@ -102,6 +103,7 @@ export type OrderType =
   | typeof ORDER_TYPE_STOP_MARKET;
 
 export interface BrokerOrderMsg {
+  chainId: number;
   symbol: string;
   perpetualId: number;
   traderAddr: string;

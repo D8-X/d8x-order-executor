@@ -1,36 +1,39 @@
 import {
-  PerpetualDataHandler,
-  OrderExecutorTool,
   Order,
+  OrderExecutorTool,
+  PerpetualDataHandler,
   ZERO_ORDER_ID,
 } from "@d8x/perpetuals-sdk";
-import { Redis } from "ioredis";
-import { constructRedis, executeWithTimeout, sleep } from "../utils";
-import {
-  BotStatus,
-  ExecutorConfig,
-  TradeMsg,
-  ExecuteOrderCommand,
-} from "../types";
-import { ExecutorMetrics } from "./metrics";
-import { getTxRevertReason, sendTxRevertedMessage } from "./reverts";
-import Distributor from "./distributor";
 import {
   formatUnits,
-  JsonRpcProvider,
+  Network,
   parseUnits,
+  Provider,
   TransactionResponse,
   Wallet,
 } from "ethers";
+import { Redis } from "ioredis";
+import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
+import {
+  BotStatus,
+  ExecuteOrderCommand,
+  ExecutorConfig,
+  TradeMsg,
+} from "../types";
+import { constructRedis, executeWithTimeout, sleep } from "../utils";
+import Distributor from "./distributor";
+import { ExecutorMetrics } from "./metrics";
+import { getTxRevertReason, sendTxRevertedMessage } from "./reverts";
 
 // How much back in time we consider order to be recent. Currently 2 minutes.
 const RECENT_ORDER_TIME_S = 2 * 60;
 
 export default class Executor {
   // objects
-  private providers: JsonRpcProvider[] = [];
-  private bots: { api: OrderExecutorTool; busy: boolean }[];
+  private providers: MultiUrlJsonRpcProvider[] = [];
+  private bots: { api: OrderExecutorTool; busy: boolean; rpc: string }[];
   private redisSubClient: Redis;
+  private redisPubClient: Redis;
 
   // parameters
   private treasury: string;
@@ -41,7 +44,8 @@ export default class Executor {
   private originalGasLimit: number;
   private gasLimitIncreaseFactor = 1.25;
   protected gasLimitIncreaseCounter: number = 0;
-  private gasPriceBuffer: bigint = 120n;
+  private maxFeePerGasBuffer: bigint = 120n;
+  private maxPriorityFeeBuffer: bigint = 120n;
 
   // state
   private q: Set<ExecuteOrderCommand> = new Set();
@@ -79,11 +83,25 @@ export default class Executor {
     this.config = config;
     this.originalGasLimit = this.config.gasLimit;
     this.redisSubClient = constructRedis("executorSubClient");
-    // this.providers = this.config.rpcExec.map(
-    //   (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
-    // );
+    this.redisPubClient = constructRedis("executorPubClient");
 
     const sdkConfig = PerpetualDataHandler.readSDKConfig(this.config.sdkConfig);
+    this.providers = [
+      new MultiUrlJsonRpcProvider(
+        this.config.rpcExec,
+        new Network(sdkConfig.name || "", sdkConfig.chainId),
+        {
+          timeoutSeconds: 25,
+          logErrors: true,
+          logRpcSwitches: true,
+          staticNetwork: true,
+          maxRetries: this.config.rpcExec.length * 3,
+          // do not switch rpc on each request with premium rpcExec rpcs.
+          switchRpcOnEachRequest: false,
+        }
+      ),
+    ];
+
     // Chain id supplied from env. For testing purposes (hardhat network)
     if (process.env.CHAIN_ID !== undefined) {
       sdkConfig.chainId = parseInt(process.env.CHAIN_ID);
@@ -108,9 +126,17 @@ export default class Executor {
       );
     }
 
-    if (this.config.gasPriceBuffer) {
-      if (this.config.gasPriceBuffer > 0) {
-        this.gasPriceBuffer = BigInt(this.config.gasPriceBuffer * 100);
+    if (this.config.gasPriceMultiplier) {
+      if (this.config.gasPriceMultiplier > 1) {
+        // we only keep 2 digits
+        // base fee: full multiplier
+        this.maxFeePerGasBuffer = BigInt(
+          Math.round(this.config.gasPriceMultiplier * 100)
+        ); // e.g.  150n <=> 1.5x
+        // tip: 10% of multiplier
+        this.maxPriorityFeeBuffer = BigInt(
+          Math.max(100, Math.round(this.config.gasPriceMultiplier * 10))
+        );
       } else {
         throw new Error("Invalid gas price buffer");
       }
@@ -119,6 +145,7 @@ export default class Executor {
     this.bots = this.privateKey.map((pk) => ({
       api: new OrderExecutorTool(sdkConfig, pk),
       busy: false,
+      rpc: "",
     }));
   }
   /**
@@ -128,47 +155,35 @@ export default class Executor {
   public async initialize() {
     // try all providers until one works, reverts otherwise
     // console.log(`${new Date(Date.now()).toISOString()}: initializing ...`);
-    this.providers = this.config.rpcExec.map(
-      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
-    );
-    for (let botIdx = 0; botIdx < this.bots.length; botIdx++) {
-      // Create a proxy instance to access the blockchain
-      let success = false;
-      let i = Math.floor(Math.random() * this.config.rpcExec.length);
-      let tried = 0;
-      console.log(`Initializing bot ${botIdx}`);
-      while (
-        !success &&
-        i < this.providers.length &&
-        tried <= this.providers.length
-      ) {
-        i = (i + 1) % this.providers.length;
-        tried++;
-        console.log(`Trying RPC:`, this.config.rpcExec[i]);
-        const results = await Promise.allSettled(
-          // createProxyInstance attaches the given provider to the object instance
-          [this.bots[botIdx].api.createProxyInstance(this.providers[i])]
-        );
-        success = results.every((r) => r.status === "fulfilled");
-        if (!success) {
-          console.log(`Connection to ${this.config.rpcExec[i]} failed:`);
-          console.log(
-            results.map((r) => {
-              if (r.status === "rejected") console.log(r.reason);
-            })
-          );
-        }
-      }
-      if (!success) {
-        throw new Error("critical: all RPCs are down");
-      } else {
-        console.log({
-          info: "initialized",
-          bot: botIdx,
-          rpcUrl: this.config.rpcExec[i],
-          time: new Date(Date.now()).toISOString(),
-        });
-      }
+    let success = false;
+    const providers = this.providers;
+    const rpcs = this.config.rpcExec;
+    let i = Math.floor(Math.random() * providers.length);
+    let tried = 0;
+    // try all providers until one works, reverts otherwise
+    // console.log(`${new Date(Date.now()).toISOString()}: initializing ...`);
+    while (!success && i < providers.length && tried <= providers.length) {
+      console.log(`trying provider ${i} ... `);
+      const results = await Promise.allSettled(
+        // createProxyInstance attaches the given provider to the object instance
+        this.bots.map((liq) => {
+          liq.rpc = rpcs[i];
+          return liq.api.createProxyInstance(providers[i]);
+        })
+      );
+
+      success = results.every((r) => r.status === "fulfilled");
+      i = (i + 1) % providers.length;
+      tried++;
+    }
+    if (!success) {
+      throw new Error("critical: all RPCs are down");
+    } else {
+      console.log({
+        info: "initialized",
+        rpcUrl: rpcs[i],
+        time: new Date(Date.now()).toISOString(),
+      });
     }
 
     this.ready = true;
@@ -387,6 +402,16 @@ export default class Executor {
     return order;
   }
 
+  private _lock(digest: string) {
+    this.locked.add(digest);
+  }
+
+  private _unlock(digest: string) {
+    if (!this.trash.has(digest)) {
+      this.locked.delete(digest);
+    }
+  }
+
   /**
    * Executes an order using a given bot.
    * @param botIdx Index of wallet used
@@ -402,11 +427,20 @@ export default class Executor {
   ) {
     digest = digest.toLowerCase();
     if (this.bots[botIdx].busy || this.locked.has(digest) || !this.ready) {
+      console.log({
+        info:
+          this.bots[botIdx].busy || !this.ready
+            ? "bot unavailable"
+            : "order locked",
+        symbol,
+        digest,
+        time: new Date(Date.now()).toISOString(),
+      });
       return this.trash.has(digest) ? BotStatus.Ready : BotStatus.Busy;
     }
     // lock
     this.bots[botIdx].busy = true;
-    this.locked.add(digest);
+    this._lock(digest);
 
     // If this order came from event, we might already have its info in the
     // distributor. Attempt to get it from there first.
@@ -417,20 +451,30 @@ export default class Executor {
         ?.get(digest)?.order;
     }
 
-    if (!onChainOrder) {
+    if (!onChainOrder || !onChainOrder.parentChildOrderIds) {
       // fetch order from sc, including the dependencies
       onChainOrder = await this.getOrderByIdWithDependencies(
         symbol,
         digest,
         this.bots[botIdx].api
       );
-      console.log({
-        info: "order fetched from blockchain",
-        symbol,
-        digest,
-        time: new Date(Date.now()).toISOString(),
-        onChainOrder,
-      });
+      if (onChainOrder) {
+        console.log({
+          info: "order fetched from blockchain",
+          symbol,
+          digest,
+          time: new Date(Date.now()).toISOString(),
+          onChainOrder,
+        });
+      } else {
+        console.log({
+          info: "failed to fetch order",
+          symbol,
+          digest,
+          rpc: this.bots[botIdx].rpc,
+          time: new Date(Date.now()).toISOString(),
+        });
+      }
     } else {
       console.log({
         info: "order found in distributor",
@@ -442,7 +486,7 @@ export default class Executor {
     }
 
     const onChainTS = (() => {
-      if (onChainOrder != undefined && onChainOrder.quantity > 0) {
+      if (onChainOrder != undefined) {
         return onChainOrder.submittedTimestamp;
       }
     })();
@@ -455,9 +499,7 @@ export default class Executor {
         time: new Date(Date.now()).toISOString(),
       });
       this.bots[botIdx].busy = false;
-      if (!this.trash.has(digest)) {
-        this.locked.delete(digest);
-      }
+      this._unlock(digest);
       return BotStatus.PartialError;
     }
 
@@ -469,16 +511,58 @@ export default class Executor {
         time: new Date(Date.now()).toISOString(),
       });
       this.bots[botIdx].busy = false;
-      if (!this.trash.has(digest)) {
-        this.locked.delete(digest);
-      }
+      this._unlock(digest);
       return BotStatus.PartialError;
     }
 
     // check oracles
-    const px = await this.bots[botIdx].api.fetchPriceSubmissionInfoForPerpetual(
-      symbol
-    );
+    const { px, error } = await this.bots[botIdx].api
+      .fetchPriceSubmissionInfoForPerpetual(symbol)
+      .then((px) => ({ px, error: "" }))
+      .catch(async (e) => {
+        return { px: undefined, error: e?.toString() };
+      });
+
+    if (!px) {
+      // oracle problem
+      console.log({
+        reason: "oracle error",
+        symbol: symbol,
+        error: error?.toString(),
+        time: new Date(Date.now()).toISOString(),
+      });
+      // bot can continue
+      this.bots[botIdx].busy = false;
+      // order stays locked for another second
+      sleep(1_000).then(() => {
+        this._unlock(digest);
+      });
+      return BotStatus.PartialError;
+    }
+
+    if (
+      px.submission.priceFeedVaas.length < 1 ||
+      px.submission.priceFeedVaas[0] == "0x"
+    ) {
+      // odin problem?
+      console.log({
+        reason: "no vaa(s)",
+        symbol: symbol,
+        digest: digest,
+        time: new Date(Date.now()).toISOString(),
+      });
+      // bot can continue
+      this.bots[botIdx].busy = false;
+      // trigger a restart if it keeps happening
+      const tried = (this.timesTried.get(digest) ?? 0) + 1;
+      this.timesTried.set(digest, tried);
+      // order stays locked for another second
+      sleep(30_000).then(() => {
+        this._unlock(digest);
+      });
+      return BotStatus.PartialError;
+    }
+
     const oracleTS = Math.min(...px.submission.timestamps);
     if (oracleTS < onChainTS) {
       // let oracle cache expire before trying
@@ -490,11 +574,11 @@ export default class Executor {
       });
       // bot can continue
       this.bots[botIdx].busy = false;
-      // order stays locked for another second
-      // await sleep(1_000);
-      if (!this.trash.has(digest)) {
-        this.locked.delete(digest);
-      }
+      // trigger a restart if it keeps happening
+      const tried = (this.timesTried.get(digest) ?? 0) + 1;
+      this.timesTried.set(digest, tried);
+      // unlock for immediate retry
+      this._unlock(digest);
       return BotStatus.PartialError;
     }
 
@@ -512,9 +596,7 @@ export default class Executor {
         time: new Date(Date.now()).toISOString(),
       });
       this.bots[botIdx].busy = false;
-      if (!this.trash.has(digest)) {
-        this.locked.delete(digest);
-      }
+      this._unlock(digest);
       return BotStatus.PartialError;
     }
 
@@ -524,33 +606,27 @@ export default class Executor {
       symbol: symbol,
       executor: this.bots[botIdx].api.getAddress(),
       digest: digest,
-      oracleTimestamp: oracleTS,
+      // oracleTimestamp: oracleTS,
       time: new Date(Date.now()).toISOString(),
     });
 
-    this.timesTried.set(digest, (this.timesTried.get(digest) ?? 0) + 1);
+    const tried = (this.timesTried.get(digest) ?? 0) + 1;
+    this.timesTried.set(digest, tried);
 
     let tx: TransactionResponse;
     try {
       const p = this.getNextRpc();
+      const feeData = await this.getFeeData(p);
 
-      const feeData = await p.getFeeData();
       tx = await this.bots[botIdx].api.executeOrders(
         symbol,
         [digest],
         this.config.rewardsAddress,
-        px.submission,
+        undefined, // px.submission, // handle internally
         {
-          // gasLimit: this.config.gasLimit, // no gas limit (sdk handles it)
-          gasPrice: feeData.gasPrice
-            ? (feeData.gasPrice * this.gasPriceBuffer) / 100n
-            : undefined,
-          maxFeePerGas:
-            !feeData.gasPrice && feeData.maxFeePerGas // don't send both at the same time
-              ? (feeData.maxFeePerGas * this.gasPriceBuffer) / 100n
-              : undefined,
+          ...feeData,
           rpcURL: p._getConnection().url,
-          maxGasLimit: this.config.gasLimit,
+          // maxGasLimit: this.config.gasLimit,
         }
       );
       // Mark order as executed here once the transaction was sent to the
@@ -563,7 +639,14 @@ export default class Executor {
         orderBook: tx.to,
         executor: tx.from,
         digest: digest,
-        gasLimit: `${formatUnits(tx.gasLimit, "wei")} wei`,
+        gasLimit: `${formatUnits(tx.gasLimit, "wei")} gas`,
+        gasPrice: tx.gasPrice ? `${formatUnits(tx.gasPrice)} wei` : undefined,
+        maxFeePerGas: tx.maxFeePerGas
+          ? `${formatUnits(tx.maxFeePerGas)} wei`
+          : undefined,
+        maxPriorityFeePerGas: tx.maxPriorityFeePerGas
+          ? `${formatUnits(tx.maxPriorityFeePerGas)} wei`
+          : undefined,
         hash: tx.hash,
         time: new Date(Date.now()).toISOString(),
       });
@@ -626,15 +709,29 @@ export default class Executor {
         case error.includes("dpcy not fulfilled") ||
           error.includes("trigger cond not met") ||
           error.includes("price exceeds limit") ||
+          error.includes("0xf4d678b8") || // another form of price exceeds limit
           error.includes("could not replace existing tx"): // <- for zkevm: txns may get stuck in the node
           // false positive: order can be tried again later
           // so just unlock it after waiting (unless it's a repeat offender)
-          if (this.timesTried.get(digest)! > 10) {
-            throw e;
+          if (this.timesTried.get(digest)! > 20) {
+            console.log({
+              info: "restart",
+              reason: "too many false positives",
+              tried: this.timesTried.get(digest),
+              symbol: symbol,
+              executor: addr,
+              digest: digest,
+              time: new Date(Date.now()).toISOString(),
+            });
+            this.redisPubClient.publish("Restart", "false positives");
+            process.exit(1);
           }
           this.bots[botIdx].busy = false;
-          await sleep(10_000);
-          this.locked.delete(digest);
+          sleep(10_000).then(() => {
+            if (!this.trash.has(digest)) {
+              this.locked.delete(digest);
+            }
+          });
           return BotStatus.PartialError;
         default:
           // something else, prob rpc
@@ -646,7 +743,7 @@ export default class Executor {
     try {
       const receipt = await executeWithTimeout(
         tx.wait(),
-        30_000,
+        60_000,
         "fetch tx receipt: timeout"
       );
       if (!receipt) {
@@ -707,40 +804,44 @@ export default class Executor {
           digest: digest,
           time: new Date(Date.now()).toISOString(),
         });
-        await sleep(10_000);
-        this.bots[botIdx].busy = false; // release bot
-        ordr = await this.bots[botIdx].api.getOrderById(symbol, digest);
-        if (ordr !== undefined && ordr.quantity > 0) {
-          // check one last time before declaring an error
-          const receipt = await executeWithTimeout(tx.wait(), 1_000);
-          if (receipt?.status !== 1) {
-            console.log({
-              info: "confirmed that tx failed",
-              symbol: symbol,
-              executor: addr,
-              digest: digest,
-              hash: tx.hash,
-              time: new Date(Date.now()).toISOString(),
-            });
-            if (!this.trash.has(digest)) {
-              this.locked.delete(digest);
+        // finish later, something is off
+        sleep(10_000).then(async () => {
+          this.bots[botIdx].busy = false; // release bot
+
+          ordr = await this.bots[botIdx].api.getOrderById(symbol, digest);
+          if (ordr !== undefined && ordr.quantity > 0) {
+            // check one last time before declaring an error
+            const receipt = await executeWithTimeout(tx.wait(), 1_000);
+            if (receipt?.status !== 1) {
+              console.log({
+                info: "confirmed that tx failed",
+                symbol: symbol,
+                executor: addr,
+                digest: digest,
+                hash: tx.hash,
+                time: new Date(Date.now()).toISOString(),
+              });
+              if (!this.trash.has(digest)) {
+                this.locked.delete(digest);
+              }
+              // return BotStatus.Error;
+            } else {
+              console.log({
+                info: "could not confirm tx status - unlocking order",
+                symbol: symbol,
+                executor: addr,
+                digest: digest,
+                hash: tx.hash,
+                time: new Date(Date.now()).toISOString(),
+              });
+              if (!this.trash.has(digest)) {
+                this.locked.delete(digest);
+              }
+              // return BotStatus.PartialError;
             }
-            return BotStatus.Error;
-          } else {
-            console.log({
-              info: "could not confirm tx status - unlocking order",
-              symbol: symbol,
-              executor: addr,
-              digest: digest,
-              hash: tx.hash,
-              time: new Date(Date.now()).toISOString(),
-            });
-            if (!this.trash.has(digest)) {
-              this.locked.delete(digest);
-            }
-            return BotStatus.PartialError;
           }
-        }
+        });
+        return BotStatus.PartialError;
       }
       this.bots[botIdx].busy = false;
       // order is gone, relock to be safe
@@ -774,7 +875,7 @@ export default class Executor {
 
     this.lastCall = Date.now();
     let attempts = 0;
-    const q = [...this.q];
+    const q = [...this.q].sort(() => Math.random() - 0.5);
     const responses = { busy: 0, partial: 0, error: 0, ok: 0 };
     const executed: Promise<BotStatus>[] = [];
     for (const msg of q) {
@@ -834,11 +935,17 @@ export default class Executor {
         "ether"
       );
     } else {
-      const { gasPrice: gasPriceWei } = await provider.getFeeData();
-      if (!gasPriceWei) {
+      const { gasPrice, maxFeePerGas, maxPriorityFeePerGas } =
+        await this.getFeeData(provider);
+      let gasPriceWei: bigint | undefined;
+      if (maxFeePerGas && maxPriorityFeePerGas) {
+        gasPriceWei = maxFeePerGas + maxPriorityFeePerGas;
+      } else if (gasPrice) {
+        gasPriceWei = gasPrice;
+      } else {
         throw new Error("Unable to fetch fee data");
       }
-      minBalance = gasPriceWei * (BigInt(this.config.gasLimit) * 5n);
+      minBalance = gasPriceWei * (BigInt(this.config.gasLimit) * 10n); // min: 10 orders, fund amount: 100 orders = 10x min
     }
 
     if (this.config.fundGasAmountETH && this.config.fundGasAmountETH > 0) {
@@ -849,9 +956,7 @@ export default class Executor {
       info: "running fundWallets",
       minBalance: formatUnits(minBalance),
       fundAmount:
-        fundAmount == 0n
-          ? "minBalance * 2 - bot balance"
-          : formatUnits(fundAmount),
+        fundAmount == 0n ? "10 * minBalance" : formatUnits(fundAmount),
       time: new Date(Date.now()).toISOString(),
     });
 
@@ -869,17 +974,20 @@ export default class Executor {
       });
       if (botBalance < minBalance) {
         // transfer twice the min so it doesn't transfer every time
-        const transferAmount =
-          fundAmount == 0n ? minBalance * 2n - botBalance : fundAmount;
+        const transferAmount = fundAmount == 0n ? minBalance * 10n : fundAmount;
         if (transferAmount < treasuryBalance) {
           console.log({
             info: "transferring funds...",
             to: addr,
             transferAmount: formatUnits(transferAmount),
           });
+          const { maxFeePerGas, maxPriorityFeePerGas } =
+            await provider.getFeeData();
           const tx = await treasury.sendTransaction({
             to: addr,
             value: transferAmount,
+            maxFeePerGas,
+            maxPriorityFeePerGas,
           });
           await tx.wait();
           console.log({
@@ -913,5 +1021,30 @@ export default class Executor {
     if (!this.recentlyExecutedOrders.has(digest)) {
       this.recentlyExecutedOrders.set(digest, new Date());
     }
+  }
+
+  public async getFeeData(p: Provider) {
+    return await p
+      .getFeeData()
+      .then(({ gasPrice, maxFeePerGas, maxPriorityFeePerGas }) => {
+        if (maxFeePerGas) {
+          return {
+            gasPrice: null,
+            maxFeePerGas: (maxFeePerGas * this.maxFeePerGasBuffer) / 100n,
+            maxPriorityFeePerGas:
+              ((maxPriorityFeePerGas ?? maxFeePerGas) *
+                this.maxPriorityFeeBuffer) /
+              100n,
+          };
+        } else {
+          return {
+            gasPrice: gasPrice
+              ? (gasPrice * this.maxFeePerGasBuffer) / 100n
+              : null,
+            maxFeePerGas: null,
+            maxPriorityFeePerGas: null,
+          };
+        }
+      });
   }
 }
