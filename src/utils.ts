@@ -11,6 +11,7 @@ import {
   containsFlag,
 } from "@d8x/perpetuals-sdk";
 import { HDNodeWallet } from "ethers";
+const cfgPath = process.env.EXECUTOR_CONFIG;
 
 require("dotenv").config();
 
@@ -24,8 +25,8 @@ const shuffle = (array: string[]) => {
 
 export function loadConfig(sdkConfig: string): ExecutorConfig {
   //const configList = require("./config/live.config.json") as ExecutorConfig[];
-  const configList = JSON.parse(
-    fs.readFileSync(process.env.EXECUTOR_CONFIG!, "utf8")
+  if (!cfgPath) throw new Error("EXECUTOR_CONFIG env var not set");
+  const configList = JSON.parse(fs.readFileSync(cfgPath, "utf8")) as ExecutorConfig[];
   ) as ExecutorConfig[];
   const config = configList.find((config) => config.sdkConfig == sdkConfig);
   if (!config) {
