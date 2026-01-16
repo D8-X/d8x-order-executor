@@ -1,5 +1,13 @@
 # D8X Order Executor
 
+# Deploy
+Create a token from your user with readonly access to packages. Log on to server
+- `export GITHUB_TOKEN=...`
+- `export GUSER=...` (your github username)
+- `echo $GITHUB_TOKEN | docker login ghcr.io -u $GUSER --password-stdin`
+- `docker compose up -d`
+
+
 ## 1 - Getting started
 
 ### Dependencies
