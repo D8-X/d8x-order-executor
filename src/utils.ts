@@ -23,7 +23,10 @@ const shuffle = (array: string[]) => {
 };
 
 export function loadConfig(sdkConfig: string): ExecutorConfig {
-  const configList = require("./config/live.config.json") as ExecutorConfig[];
+  //const configList = require("./config/live.config.json") as ExecutorConfig[];
+  const configList = JSON.parse(
+    fs.readFileSync(process.env.EXECUTOR_CONFIG!, "utf8")
+  ) as ExecutorConfig[];
   const config = configList.find((config) => config.sdkConfig == sdkConfig);
   if (!config) {
     throw new Error(`SDK Config ${sdkConfig} not found in config file.`);

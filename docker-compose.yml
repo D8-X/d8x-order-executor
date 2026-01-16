@@ -75,12 +75,15 @@ services:
     #  dockerfile: ./src/sentinel/Dockerfile
     depends_on:
       - cache
+    volumes:
+      - ./config/live.config.json:/app/config/live.config.json:ro
     environment:
       REDIS_HOST: cache
       REDIS_PORT: ${REDIS_PORT}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       REDIS_ID: 4
       SDK_CONFIG: base_sepolia
+      EXECUTOR_CONFIG: /app/config/live.config.json
     restart: always
     logging:
       driver: "json-file"
@@ -164,6 +167,8 @@ services:
     #build:
     #  context: .
     #  dockerfile: ./src/executor/Dockerfile
+    volumes:
+      - ./config/live.config.json:/app/config/live.config.json:ro
     environment:
       REDIS_HOST: cache
       REDIS_PORT: ${REDIS_PORT}
@@ -173,6 +178,7 @@ services:
       SEED_PHRASE: ${SEED_PHRASE}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
       SERVER_IP: ${PROMETHEUS_SERVER_IP}
+      EXECUTOR_CONFIG: /app/config/live.config.json
     restart: always
     logging:
       driver: "json-file"
