@@ -69,9 +69,10 @@ services:
   #       max-file: "10"
 
   sentinel-base_sepolia:
-    build:
-      context: .
-      dockerfile: ./src/sentinel/Dockerfile
+    image: ghcr.io/d8-x/tsnode-exec-sentinel:dev
+    #build:
+    #  context: .
+    #  dockerfile: ./src/sentinel/Dockerfile
     depends_on:
       - cache
     environment:
@@ -159,9 +160,10 @@ services:
   executor-base_sepolia:
     depends_on:
       - cache
-    build:
-      context: .
-      dockerfile: ./src/executor/Dockerfile
+    image: ghcr.io/d8-x/tsnode-exec-executor:dev
+    #build:
+    #  context: .
+    #  dockerfile: ./src/executor/Dockerfile
     environment:
       REDIS_HOST: cache
       REDIS_PORT: ${REDIS_PORT}
