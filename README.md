@@ -1,5 +1,8 @@
 # D8X Order Executor
 
+- `export NODE_AUTH_TOKEN=...` (a PAT to access private repos)
+- `yarn`
+
 # Deploy
 Create a token from your user with readonly access to packages. Log on to server
 - `export GITHUB_TOKEN=...`

@@ -3,7 +3,7 @@ import {
   OrderExecutorTool,
   PerpetualDataHandler,
   ZERO_ORDER_ID,
-} from "@d8x/perpetuals-sdk";
+} from "@d8-x/d8x-node-sdk";
 import {
   formatUnits,
   Network,
@@ -389,7 +389,7 @@ export default class Executor {
     // rpc for this here)
     const randomDistributorRPC =
       this.distributor!.providers[
-        Math.floor(Math.random() * this.distributor!.providers.length)
+      Math.floor(Math.random() * this.distributor!.providers.length)
       ];
     ob.connect(randomDistributorRPC);
     // Make sure dependencies are fetched after order is fetched to introduce a
@@ -998,8 +998,7 @@ export default class Executor {
           throw new Error(
             `insufficient balance in treasury (${formatUnits(
               treasuryBalance
-            )}); send at least ${formatUnits(transferAmount)} to ${
-              treasury.address
+            )}); send at least ${formatUnits(transferAmount)} to ${treasury.address
             }`
           );
         }

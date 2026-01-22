@@ -15,12 +15,12 @@ import {
   PerpetualDataHandler,
   SELL_SIDE,
   ZERO_ORDER_ID,
-} from "@d8x/perpetuals-sdk";
-import {
+} from "@d8-x/d8x-node-sdk";
+import type {
   IPerpetualManager,
   IPerpetualOrder,
   PerpStorage,
-} from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
+} from "@d8-x/d8x-node-sdk/contracts/IPerpetualManager";
 import { JsonRpcProvider } from "ethers";
 import { Redis } from "ioredis";
 import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
@@ -166,7 +166,7 @@ export default class Distributor {
       this.isQuote.set(
         symbol,
         this.md.getPerpetualStaticInfo(symbol).collateralCurrencyType ==
-          COLLATERAL_CURRENCY_QUOTE
+        COLLATERAL_CURRENCY_QUOTE
       );
 
       try {
@@ -505,7 +505,7 @@ export default class Distributor {
     if (
       this.priceCurveUpdatedAtBlock.has(symbol) &&
       this.priceCurveUpdatedAtBlock.get(symbol)! >=
-        this.blockNumber + blockLatency
+      this.blockNumber + blockLatency
     ) {
       // price curve already updated at most X blocks ago
       return;
@@ -631,7 +631,7 @@ export default class Distributor {
         time: new Date(Date.now()).toISOString(),
         nextRefresh: new Date(
           (this.lastRefreshTime.get(symbol) ?? 0) +
-            this.config.refreshOrdersIntervalSecondsMin * 1_000
+          this.config.refreshOrdersIntervalSecondsMin * 1_000
         ),
       });
       return;
@@ -1052,7 +1052,7 @@ export default class Distributor {
     tradePrice = order.isPredictionMarket
       ? indexPrice + this.tradePremium.get(order.symbol)![sideIdx] * scale
       : indexPrice *
-        (1 + this.tradePremium.get(order.symbol)![sideIdx] * scale);
+      (1 + this.tradePremium.get(order.symbol)![sideIdx] * scale);
 
     let execute = false;
 

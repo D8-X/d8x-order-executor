@@ -1,4 +1,4 @@
-import { MarketData, PerpetualDataHandler } from "@d8x/perpetuals-sdk";
+import { MarketData, PerpetualDataHandler } from "@d8-x/d8x-node-sdk";
 import { Redis } from "ioredis";
 import SturdyWebSocket from "sturdy-websocket";
 import Websocket from "ws";
@@ -10,7 +10,7 @@ import {
   PerpetualLimitOrderCreatedMsg,
 } from "../types";
 import { constructRedis, executeWithTimeout, flagToOrderType } from "../utils";
-import { PerpetualCreatedEvent } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
+import { PerpetualCreatedEvent } from "@d8-x/d8x-node-sdk/contracts/IPerpetualManager";
 import { JsonRpcProvider } from "ethers";
 
 export default class BackendListener {
@@ -65,8 +65,7 @@ export default class BackendListener {
     );
     // connect to http provider
     console.log(
-      `${new Date(Date.now()).toISOString()}: Broker listener connected to ${
-        network.name
+      `${new Date(Date.now()).toISOString()}: Broker listener connected to ${network.name
       }, chain id ${network.chainId}, using HTTP provider`
     );
     this.chainId = Number(network.chainId);
@@ -120,8 +119,7 @@ export default class BackendListener {
       console.log(
         `${new Date(
           Date.now()
-        ).toISOString()} Subscribing to perpetual id ${id} via broker WS ${
-          this.config.brokerWS[this.wsIndex]
+        ).toISOString()} Subscribing to perpetual id ${id} via broker WS ${this.config.brokerWS[this.wsIndex]
         }`
       );
       this.ws.send(
@@ -141,16 +139,14 @@ export default class BackendListener {
             console.log(
               `${new Date(
                 Date.now()
-              ).toISOString()} Subscribed to perpetual id ${perpId} via broker WS ${
-                this.config.brokerWS[this.wsIndex]
+              ).toISOString()} Subscribed to perpetual id ${perpId} via broker WS ${this.config.brokerWS[this.wsIndex]
               }`
             );
           } else {
             console.log(
               `${new Date(
                 Date.now()
-              ).toISOString()} Error subscribing to perpetual id ${perpId} on broker WS ${
-                this.config.brokerWS[this.wsIndex]
+              ).toISOString()} Error subscribing to perpetual id ${perpId} on broker WS ${this.config.brokerWS[this.wsIndex]
               }`
             );
           }
