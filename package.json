@@ -28,8 +28,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start-sentinel": "node dist/src/sentinel/main.js",
-    "start-executor": "node dist/src/executor/main.js",
+    "start-sentinel": "node dist/sentinel/main.js",
+    "start-executor": "node dist/executor/main.js",
     "postinstall": "patch-package"
   }
 }
