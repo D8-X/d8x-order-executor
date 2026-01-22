@@ -110,3 +110,4 @@ dist
 dump.rdb
 
 src/config/live.*.json
+.npmrc
