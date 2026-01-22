@@ -2,7 +2,8 @@ import { loadConfig } from "../utils";
 import BlockhainListener from "./blockchainListener";
 import BrokerListener from "./brokerListener";
 
-require("dotenv").config();
+import 'dotenv/config';
+
 
 async function start() {
   const sdkConfig = process.env.SDK_CONFIG;

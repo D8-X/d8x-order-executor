@@ -1,8 +1,7 @@
 import Executor from "./executor";
 import { loadAccounts, loadConfig, sleep } from "../utils";
 import Distributor from "./distributor";
-
-require("dotenv").config();
+import 'dotenv/config';
 
 async function start() {
   const sdkConfig = process.env.SDK_CONFIG;

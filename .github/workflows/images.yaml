@@ -3,42 +3,57 @@ on:
   push:
     branches: ["main", "dev"]
     tags:
-      # Build images for all tags
       - "*"
+
 env:
   container_registry: ghcr.io
+
 jobs:
   build:
     permissions:
       contents: read
       packages: write
+
     strategy:
       fail-fast: false
       matrix:
         include:
-            - dockerfile: ./src/executor/Dockerfile
-              image: ghcr.io/d8-x/tsnode-exec-executor
-            - dockerfile: ./src/sentinel/Dockerfile
-              image: ghcr.io/d8-x/tsnode-exec-sentinel
+          - dockerfile: ./src/executor/Dockerfile
+            image: ghcr.io/d8-x/tsnode-exec-executor
+          - dockerfile: ./src/sentinel/Dockerfile
+            image: ghcr.io/d8-x/tsnode-exec-sentinel
+
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v3
+
       - name: Login to GHCR
         uses: docker/login-action@v2
         with:
           registry: ${{ env.container_registry }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
+
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: ${{matrix.image}}
+          images: ${{ matrix.image }}
+
       - name: Set build date
         id: build_date
         run: echo "BUILD_DATE=$(date +'%Y-%m-%d %H:%M:%S')" >> "$GITHUB_OUTPUT"
+
+      - name: Create npmrc secret file
+        run: |
+          cat > /tmp/npmrc <<EOF
+          @d8-x:registry=https://npm.pkg.github.com
+          //npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}
+          EOF
+
       - name: Build and push ${{ matrix.image }}
         uses: docker/build-push-action@v4
         with:
@@ -49,3 +64,5 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             BUILD_VERSION=${{ steps.build_date.outputs.BUILD_DATE }}-${{ github.sha }}
+          secret-files: |
+            npmrc=/tmp/npmrc

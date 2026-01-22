@@ -1,15 +1,20 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "CommonJS",
-    "esModuleInterop": true,
-    "declaration": true,
-    "outDir": "./dist/src",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
     "strict": true,
-    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
     "sourceMap": true,
-    "forceConsistentCasingInFileNames": true /* Ensure that casing is correct in imports. */,
-    "skipLibCheck": true /* Skip type checking all .d.ts files. */
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true
   },
-  "include": ["./src/**/*", "./src/**/*.json"]
+  "include": [
+    "src/**/*"
+  ]
 }
