@@ -11,6 +11,7 @@ import {
   containsFlag,
 } from "@d8x/perpetuals-sdk";
 import { HDNodeWallet } from "ethers";
+import fs from "node:fs";
 
 require("dotenv").config();
 
@@ -22,18 +23,26 @@ const shuffle = (array: string[]) => {
   return array;
 };
 
+
 export function loadConfig(sdkConfig: string): ExecutorConfig {
-  const configList = require("./config/live.config.json") as ExecutorConfig[];
-  const config = configList.find((config) => config.sdkConfig == sdkConfig);
+  const cfgPath = process.env.EXECUTOR_CONFIG;
+  if (!cfgPath) throw new Error("EXECUTOR_CONFIG env var not set");
+
+  const configList = JSON.parse(fs.readFileSync(cfgPath, "utf8")) as ExecutorConfig[];
+  const config = configList.find((c) => c.sdkConfig === sdkConfig);
+
   if (!config) {
     throw new Error(`SDK Config ${sdkConfig} not found in config file.`);
   }
+
   config.rpcExec = shuffle(config.rpcExec);
   config.rpcListenHttp = shuffle(config.rpcListenHttp);
   config.rpcWatch = shuffle(config.rpcWatch);
   config.rpcListenWs = shuffle(config.rpcListenWs);
+
   return config;
 }
+
 
 export function loadAccounts(
   mnemonicSeed: string,

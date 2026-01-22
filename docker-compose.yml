@@ -69,17 +69,21 @@ services:
   #       max-file: "10"
 
   sentinel-base_sepolia:
-    build:
-      context: .
-      dockerfile: ./src/sentinel/Dockerfile
+    image: ghcr.io/d8-x/tsnode-exec-sentinel:dev
+    #build:
+    #  context: .
+    #  dockerfile: ./src/sentinel/Dockerfile
     depends_on:
       - cache
+    volumes:
+      - ./config/live.config.json:/app/config/live.config.json:ro
     environment:
       REDIS_HOST: cache
       REDIS_PORT: ${REDIS_PORT}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       REDIS_ID: 4
       SDK_CONFIG: base_sepolia
+      EXECUTOR_CONFIG: /app/config/live.config.json
     restart: always
     logging:
       driver: "json-file"
@@ -159,9 +163,12 @@ services:
   executor-base_sepolia:
     depends_on:
       - cache
-    build:
-      context: .
-      dockerfile: ./src/executor/Dockerfile
+    image: ghcr.io/d8-x/tsnode-exec-executor:dev
+    #build:
+    #  context: .
+    #  dockerfile: ./src/executor/Dockerfile
+    volumes:
+      - ./config/live.config.json:/app/config/live.config.json:ro
     environment:
       REDIS_HOST: cache
       REDIS_PORT: ${REDIS_PORT}
@@ -171,6 +178,7 @@ services:
       SEED_PHRASE: ${SEED_PHRASE}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
       SERVER_IP: ${PROMETHEUS_SERVER_IP}
+      EXECUTOR_CONFIG: /app/config/live.config.json
     restart: always
     logging:
       driver: "json-file"
