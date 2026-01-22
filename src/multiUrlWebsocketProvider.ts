@@ -10,7 +10,7 @@ import {
   JsonRpcError,
 } from "ethers";
 import { WebSocket } from "ws";
-import { MultiUrlProvider } from "./multiUrlJsonRpcProvider";
+import { MultiUrlProvider } from "./multiUrlJsonRpcProvider.js";
 
 export interface MultiUrlWebsocketsProviderOptions extends JsonRpcApiProviderOptions {
   maxRetries?: number;
@@ -241,8 +241,7 @@ export class MultiUrlWebSocketProvider extends SocketProvider implements MultiUr
       if (!this.isCurrentRpcUrl(url) && this.switchingRpc) {
         if (this.options.logErrors) {
           console.log(
-            `[(${new Date().toISOString()}) MultiUrlWebSocketProvider@${
-              event.target.url
+            `[(${new Date().toISOString()}) MultiUrlWebSocketProvider@${event.target.url
             }] Ignoring message from previous connection, currently switching rpc.`
           );
         }

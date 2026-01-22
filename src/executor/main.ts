@@ -1,6 +1,6 @@
-import Executor from "./executor";
-import { loadAccounts, loadConfig, sleep } from "../utils";
-import Distributor from "./distributor";
+import Executor from "./executor.js";
+import { loadAccounts, loadConfig, sleep } from "../utils.js";
+import Distributor from "./distributor.js";
 import 'dotenv/config';
 
 async function start() {

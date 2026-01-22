@@ -1,6 +1,10 @@
 import { MarketData, PerpetualDataHandler } from "@d8-x/d8x-node-sdk";
 import { Redis } from "ioredis";
-import SturdyWebSocket from "sturdy-websocket";
+import SturdyWebSocketPkg from "sturdy-websocket";
+
+const SturdyWebSocket =
+  (SturdyWebSocketPkg as any).default ?? SturdyWebSocketPkg;
+
 import Websocket from "ws";
 import {
   BrokerOrderMsg,
@@ -8,8 +12,8 @@ import {
   BrokerWSUpdateData,
   ExecutorConfig,
   PerpetualLimitOrderCreatedMsg,
-} from "../types";
-import { constructRedis, executeWithTimeout, flagToOrderType } from "../utils";
+} from "../types.js";
+import { constructRedis, executeWithTimeout, flagToOrderType } from "../utils.js";
 import { PerpetualCreatedEvent } from "@d8-x/d8x-node-sdk/contracts/IPerpetualManager";
 import { JsonRpcProvider } from "ethers";
 
@@ -21,7 +25,7 @@ export default class BackendListener {
   private httpProvider: JsonRpcProvider;
   private redisPubClient: Redis;
   private md: MarketData;
-  private ws: SturdyWebSocket;
+  private ws: any;
 
   // state
   private perpIds: bigint[] = [];
@@ -130,7 +134,7 @@ export default class BackendListener {
       );
     });
 
-    this.ws.addEventListener("message", (event) => {
+    this.ws.addEventListener("message", (event: any) => {
       const msg = JSON.parse(event.data) as BrokerWSMessage;
       const perpId = msg.topic.split(":")[0];
       switch (msg.type) {

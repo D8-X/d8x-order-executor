@@ -1,5 +1,5 @@
 import { Redis } from "ioredis";
-import { RedisConfig, ExecutorConfig, OrderType } from "./types";
+import { RedisConfig, ExecutorConfig, OrderType } from "./types.js";
 import {
   MASK_LIMIT_ORDER,
   MASK_STOP_ORDER,

@@ -1,6 +1,6 @@
-import { loadConfig } from "../utils";
-import BlockhainListener from "./blockchainListener";
-import BrokerListener from "./brokerListener";
+import { loadConfig } from "../utils.js";
+import BlockhainListener from "./blockchainListener.js";
+import BrokerListener from "./brokerListener.js";
 
 import 'dotenv/config';
 

@@ -13,17 +13,17 @@ import {
   Wallet,
 } from "ethers";
 import { Redis } from "ioredis";
-import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
+import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider.js";
 import {
   BotStatus,
   ExecuteOrderCommand,
   ExecutorConfig,
   TradeMsg,
-} from "../types";
-import { constructRedis, executeWithTimeout, sleep } from "../utils";
-import Distributor from "./distributor";
-import { ExecutorMetrics } from "./metrics";
-import { getTxRevertReason, sendTxRevertedMessage } from "./reverts";
+} from "../types.js";
+import { constructRedis, executeWithTimeout, sleep } from "../utils.js";
+import Distributor from "./distributor.js";
+import { ExecutorMetrics } from "./metrics.js";
+import { getTxRevertReason, sendTxRevertedMessage } from "./reverts.js";
 
 // How much back in time we consider order to be recent. Currently 2 minutes.
 const RECENT_ORDER_TIME_S = 2 * 60;

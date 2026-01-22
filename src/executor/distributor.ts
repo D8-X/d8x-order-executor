@@ -23,7 +23,7 @@ import type {
 } from "@d8-x/d8x-node-sdk/contracts/IPerpetualManager";
 import { JsonRpcProvider } from "ethers";
 import { Redis } from "ioredis";
-import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
+import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider.js";
 import {
   BrokerOrderMsg,
   ExecuteOrderCommand,
@@ -37,9 +37,9 @@ import {
   TradeMsg,
   UpdateMarginAccountMsg,
   UpdateMarkPriceMsg,
-} from "../types";
-import { constructRedis, executeWithTimeout, sleep } from "../utils";
-import Executor from "./executor";
+} from "../types.js";
+import { constructRedis, executeWithTimeout, sleep } from "../utils.js";
+import Executor from "./executor.js";
 
 export default class Distributor {
   // objects

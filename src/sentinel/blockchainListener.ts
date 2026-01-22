@@ -16,8 +16,8 @@ import {
   TradeMsg,
   UpdateMarginAccountMsg,
   UpdateMarkPriceMsg,
-} from "../types";
-import { constructRedis, executeWithTimeout, sleep } from "../utils";
+} from "../types.js";
+import { constructRedis, executeWithTimeout, sleep } from "../utils.js";
 
 import {
   IPerpetualOrder,
@@ -32,8 +32,8 @@ import {
   PerpetualLimitOrderCreatedEvent,
 } from "@d8-x/d8x-node-sdk/contracts/LimitOrderBook";
 import { Log, LogDescription, Network, Result } from "ethers";
-import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
-import { MultiUrlWebSocketProvider } from "../multiUrlWebsocketProvider";
+import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider.js";
+import { MultiUrlWebSocketProvider } from "../multiUrlWebsocketProvider.js";
 
 enum ListeningMode {
   Polling = "Polling",
