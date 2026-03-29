@@ -5,8 +5,8 @@ import {
   ORDER_TYPE_STOP_MARKET,
   Order,
   floatToABK64x64,
-} from "@d8x/perpetuals-sdk";
-import { IPerpetualOrder } from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
+} from "@d8-x/d8x-node-sdk";
+import { IPerpetualOrder } from "@d8-x/d8x-node-sdk/contracts/IPerpetualManager";
 
 export const ZERO_POSITION = floatToABK64x64(0);
 

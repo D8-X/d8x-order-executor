@@ -4,7 +4,7 @@ import {
   LimitOrderBook__factory,
   MarketData,
   PerpetualDataHandler,
-} from "@d8x/perpetuals-sdk";
+} from "@d8-x/d8x-node-sdk";
 import { Redis } from "ioredis";
 import {
   ExecutionFailedMsg,
@@ -16,8 +16,8 @@ import {
   TradeMsg,
   UpdateMarginAccountMsg,
   UpdateMarkPriceMsg,
-} from "../types";
-import { constructRedis, executeWithTimeout, sleep } from "../utils";
+} from "../types.js";
+import { constructRedis, executeWithTimeout, sleep } from "../utils.js";
 
 import {
   IPerpetualOrder,
@@ -26,14 +26,14 @@ import {
   TradeEvent,
   UpdateMarginAccountEvent,
   UpdateMarkPriceEvent,
-} from "@d8x/perpetuals-sdk/dist/esm/contracts/IPerpetualManager";
+} from "@d8-x/d8x-node-sdk/contracts/IPerpetualManager";
 import {
   ExecutionFailedEvent,
   PerpetualLimitOrderCreatedEvent,
-} from "@d8x/perpetuals-sdk/dist/esm/contracts/LimitOrderBook";
+} from "@d8-x/d8x-node-sdk/contracts/LimitOrderBook";
 import { Log, LogDescription, Network, Result } from "ethers";
-import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
-import { MultiUrlWebSocketProvider } from "../multiUrlWebsocketProvider";
+import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider.js";
+import { MultiUrlWebSocketProvider } from "../multiUrlWebsocketProvider.js";
 
 enum ListeningMode {
   Polling = "Polling",
@@ -341,8 +341,7 @@ export default class BlockhainListener {
       console.log(
         `${new Date(
           Date.now()
-        ).toISOString()} BlockchainListener received error msg in ${
-          this.mode
+        ).toISOString()} BlockchainListener received error msg in ${this.mode
         } mode:`,
         e
       );
@@ -595,7 +594,7 @@ export default class BlockhainListener {
             );
             const [id1, id2] = [orderDependency[0], orderDependency[1]];
             msg.order.parentChildOrderIds = [id1, id2];
-          } catch {}
+          } catch { }
         }
         break;
 

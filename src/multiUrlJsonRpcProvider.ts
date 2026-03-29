@@ -7,7 +7,7 @@ import {
   JsonRpcResult,
   Networkish,
 } from "ethers";
-import { executeWithTimeout } from "./utils";
+import { executeWithTimeout } from "./utils.js";
 
 // Common methods among multi url providers
 export interface MultiUrlProvider {
@@ -42,8 +42,7 @@ export interface MultiUrlJsonRpcProviderOptions
  */
 export class MultiUrlJsonRpcProvider
   extends JsonRpcApiProvider
-  implements MultiUrlProvider
-{
+  implements MultiUrlProvider {
   private currentConnection: FetchRequest;
   private options: MultiUrlJsonRpcProviderOptions;
   private rpcUrls: string[] = [];

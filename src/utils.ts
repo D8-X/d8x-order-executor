@@ -1,5 +1,5 @@
 import { Redis } from "ioredis";
-import { RedisConfig, ExecutorConfig, OrderType } from "./types";
+import { RedisConfig, ExecutorConfig, OrderType } from "./types.js";
 import {
   MASK_LIMIT_ORDER,
   MASK_STOP_ORDER,
@@ -9,11 +9,10 @@ import {
   ORDER_TYPE_STOP_LIMIT,
   ORDER_TYPE_STOP_MARKET,
   containsFlag,
-} from "@d8x/perpetuals-sdk";
+} from "@d8-x/d8x-node-sdk";
 import { HDNodeWallet } from "ethers";
 import fs from "node:fs";
-
-require("dotenv").config();
+import 'dotenv/config';
 
 const shuffle = (array: string[]) => {
   for (let i = array.length - 1; i > 0; i--) {

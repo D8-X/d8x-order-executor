@@ -3,7 +3,7 @@ import {
   OrderExecutorTool,
   PerpetualDataHandler,
   ZERO_ORDER_ID,
-} from "@d8x/perpetuals-sdk";
+} from "@d8-x/d8x-node-sdk";
 import {
   formatUnits,
   Network,
@@ -13,17 +13,17 @@ import {
   Wallet,
 } from "ethers";
 import { Redis } from "ioredis";
-import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider";
+import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider.js";
 import {
   BotStatus,
   ExecuteOrderCommand,
   ExecutorConfig,
   TradeMsg,
-} from "../types";
-import { constructRedis, executeWithTimeout, sleep } from "../utils";
-import Distributor from "./distributor";
-import { ExecutorMetrics } from "./metrics";
-import { getTxRevertReason, sendTxRevertedMessage } from "./reverts";
+} from "../types.js";
+import { constructRedis, executeWithTimeout, sleep } from "../utils.js";
+import Distributor from "./distributor.js";
+import { ExecutorMetrics } from "./metrics.js";
+import { getTxRevertReason, sendTxRevertedMessage } from "./reverts.js";
 
 // How much back in time we consider order to be recent. Currently 2 minutes.
 const RECENT_ORDER_TIME_S = 2 * 60;
@@ -389,7 +389,7 @@ export default class Executor {
     // rpc for this here)
     const randomDistributorRPC =
       this.distributor!.providers[
-        Math.floor(Math.random() * this.distributor!.providers.length)
+      Math.floor(Math.random() * this.distributor!.providers.length)
       ];
     ob.connect(randomDistributorRPC);
     // Make sure dependencies are fetched after order is fetched to introduce a
@@ -998,8 +998,7 @@ export default class Executor {
           throw new Error(
             `insufficient balance in treasury (${formatUnits(
               treasuryBalance
-            )}); send at least ${formatUnits(transferAmount)} to ${
-              treasury.address
+            )}); send at least ${formatUnits(transferAmount)} to ${treasury.address
             }`
           );
         }
