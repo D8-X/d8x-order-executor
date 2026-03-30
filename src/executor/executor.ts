@@ -210,7 +210,15 @@ export default class Executor {
   // distributor
   public async ExecuteOrder(msg: ExecuteOrderCommand) {
     this.q.add(msg);
-    await this.execute();
+    try {
+      await this.execute();
+    } catch (e) {
+      console.log({
+        info: "ExecuteOrder error",
+        reason: e?.toString(),
+        time: new Date(Date.now()).toISOString(),
+      });
+    }
   }
 
   /**
@@ -230,7 +238,15 @@ export default class Executor {
     });
     return new Promise<void>((resolve, reject) => {
       setInterval(async () => {
-        await this.execute();
+        try {
+          await this.execute();
+        } catch (e) {
+          console.log({
+            info: "execute() error",
+            reason: e?.toString(),
+            time: new Date(Date.now()).toISOString(),
+          });
+        }
       }, this.config.executeIntervalSecondsMax * 1_000);
 
       setInterval(async () => {
@@ -911,7 +927,12 @@ export default class Executor {
           responses.busy++;
         }
       } else {
-        throw new Error(`uncaught error: ${result.reason.toString()}`);
+        console.log({
+          info: "uncaught error in executeOrderByBot",
+          reason: result.reason?.toString(),
+          time: new Date(Date.now()).toISOString(),
+        });
+        responses.error++;
       }
     }
 
