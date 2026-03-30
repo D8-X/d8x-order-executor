@@ -928,11 +928,12 @@ export default class Executor {
         }
       } else {
         console.log({
-          info: "uncaught error in executeOrderByBot",
+          info: "uncaught error in executeOrderByBot - restarting",
           reason: result.reason?.toString(),
           time: new Date(Date.now()).toISOString(),
         });
-        responses.error++;
+        this.redisPubClient.publish("Restart", "uncaught error");
+        process.exit(1);
       }
     }
 
