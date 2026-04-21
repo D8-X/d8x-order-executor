@@ -127,7 +127,7 @@ export function flagToOrderType(
   let flag = BigInt(orderFlags);
   let isLimit = containsFlag(flag, MASK_LIMIT_ORDER);
   let hasLimit =
-    BigInt(orderLimitPrice) != 0n || BigInt(orderLimitPrice) != MAX_64x64;
+    BigInt(orderLimitPrice) != 0n && BigInt(orderLimitPrice) != MAX_64x64;
   let isStop = containsFlag(flag, MASK_STOP_ORDER);
 
   if (isStop && hasLimit) {
