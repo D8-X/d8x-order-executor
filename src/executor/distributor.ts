@@ -1,7 +1,6 @@
 import {
   ABK64x64ToFloat,
   BUY_SIDE,
-  COLLATERAL_CURRENCY_QUOTE,
   IdxPriceInfo,
   MarketData,
   Multicall3,
@@ -21,7 +20,7 @@ import type {
   IPerpetualOrder,
   PerpStorage,
 } from "@d8-x/d8x-node-sdk/contracts/IPerpetualManager";
-import { JsonRpcProvider } from "ethers";
+import { JsonRpcProvider, ZeroAddress } from "ethers";
 import { Redis } from "ioredis";
 import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider.js";
 import {
@@ -38,8 +37,9 @@ import {
   UpdateMarginAccountMsg,
   UpdateMarkPriceMsg,
 } from "../types.js";
-import { constructRedis, executeWithTimeout, sleep } from "../utils.js";
+import { constructRedis, executeWithTimeout } from "../utils.js";
 import Executor from "./executor.js";
+import { logger } from "../logger.js";
 
 export default class Distributor {
   // objects
@@ -66,21 +66,8 @@ export default class Distributor {
 
   // static info
   private config: ExecutorConfig;
-  private isQuote: Map<string, boolean> = new Map();
   private symbols: string[] = [];
-  private maintenanceRate: Map<string, number> = new Map();
   private chainId: number;
-
-  // constants
-
-  // calculated block time in milliseconds, used for delaying broker orders
-  // execution
-  public blockTimeMS = 0;
-  // Last block timestamp for blockTimeMS measurement
-  public lastBlockTs = 0;
-  // blockTimeMS * brokerOrderBlockSizeDelayFactor is the delay in milliseconds
-  // for broker orders, ideally below 1
-  public brokerOrderBlockSizeDelayFactor = 0.5;
 
   // publish times must be within 10 seconds of each other, or submission will fail on-chain
   private MAX_OUTOFSYNC_SECONDS: number = 10;
@@ -99,9 +86,6 @@ export default class Distributor {
     }
     this.chainId = sdkConfig.chainId;
     this.redisSubClient = constructRedis("commanderSubClient");
-    // this.providers = this.config.rpcWatch.map(
-    //   (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
-    // );
     this.md = new MarketData(sdkConfig);
     this.providers = [
       new MultiUrlJsonRpcProvider(this.config.rpcWatch, this.md.network, {
@@ -134,7 +118,7 @@ export default class Distributor {
       i++;
     }
     if (!success) {
-      console.log(
+      logger.info(
         `${new Date(
           Date.now()
         ).toISOString()}: all rpcs are down ${this.config.rpcWatch.join(", ")}`
@@ -142,7 +126,7 @@ export default class Distributor {
     }
 
     const info = await this.md.exchangeInfo();
-    console.log(JSON.stringify(info, undefined, "  "));
+    logger.info(JSON.stringify(info, undefined, "  "));
 
     const symbols = info.pools
       .filter(({ isRunning }) => isRunning)
@@ -155,20 +139,9 @@ export default class Distributor {
           )
       )
       .flat();
-    console.log({ symbols });
+    logger.info({ symbols });
 
     for (const symbol of symbols) {
-      // static info
-      this.maintenanceRate.set(
-        symbol,
-        this.md.getPerpetualStaticInfo(symbol).maintenanceMarginRate
-      );
-      this.isQuote.set(
-        symbol,
-        this.md.getPerpetualStaticInfo(symbol).collateralCurrencyType ==
-        COLLATERAL_CURRENCY_QUOTE
-      );
-
       try {
         // price info
         this.pxSubmission.set(
@@ -207,7 +180,7 @@ export default class Distributor {
         this.symbols.push(symbol);
       } catch (e) {
         // symbol is ignored if cannot fetch data about it
-        console.log(`Could not fetch data for symbol ${symbol}`);
+        logger.info(`Could not fetch data for symbol ${symbol}`);
       }
     }
 
@@ -226,7 +199,7 @@ export default class Distributor {
       "listener-error",
       (err, count) => {
         if (err) {
-          console.log(
+          logger.info(
             `${new Date(
               Date.now()
             ).toISOString()}: redis subscription failed: ${err}`
@@ -237,14 +210,6 @@ export default class Distributor {
     );
 
     this.ready = true;
-  }
-
-  private log(obj: Object | string) {
-    if (typeof obj == "string") {
-      console.log(obj);
-    } else {
-      console.log(JSON.stringify(obj));
-    }
   }
 
   private requireReady() {
@@ -292,14 +257,6 @@ export default class Distributor {
               this.config.refreshOrdersIntervalSecondsMax * 1_000
             ) {
               this.refreshAllOpenOrders();
-            }
-
-            // Periodically recalculate the block time for broker order delay
-            if (this.lastBlockTs == 0) {
-              this.lastBlockTs = Date.now();
-            } else {
-              this.blockTimeMS = Date.now() - this.lastBlockTs;
-              this.lastBlockTs = Date.now();
             }
             break;
           }
@@ -423,23 +380,11 @@ export default class Distributor {
             if (chainId !== this.chainId) {
               break;
             }
-            // introduce delay of less than 1 block for broker orders
-            console.log({
-              info: "delaying broker order",
-              amountMS: this.blockTimeMS * this.brokerOrderBlockSizeDelayFactor,
-              digest: digest,
-              time: new Date(Date.now()).toISOString(),
-            });
-            await sleep(
-              Math.min(
-                500,
-                this.blockTimeMS * this.brokerOrderBlockSizeDelayFactor
-              )
-            );
-
             this.addOrder(symbol, traderAddr, digest, type, undefined);
             this.brokerOrders.get(symbol)!.set(digest, Date.now());
-            await this.checkOrders(symbol);
+            setTimeout(() => {
+              this.upgradeBrokerStubFromChain(symbol, traderAddr, digest);
+            }, 3_000);
             break;
           }
 
@@ -453,7 +398,7 @@ export default class Distributor {
             if (
               new Date(Date.now() - 30_000) > this.lastRefreshOfAllOpenOrders
             ) {
-              console.log({
+              logger.info({
                 message: "Refreshing all open orders due to sentinel error",
                 time: new Date(Date.now()).toISOString(),
                 lastRefreshOfAllOpenOrders:
@@ -465,7 +410,7 @@ export default class Distributor {
             break;
 
           case "Restart": {
-            console.log("Restarting upong signal received...");
+            logger.info("Restarting upong signal received...");
             process.exit(0);
           }
         }
@@ -536,6 +481,64 @@ export default class Distributor {
     this.tradePremium.set(symbol, prem);
   }
 
+  private async upgradeBrokerStubFromChain(
+    symbol: string,
+    trader: string,
+    digest: string
+  ) {
+    const bundle = this.openOrders.get(symbol)?.get(digest);
+    if (!bundle || bundle.order !== undefined) {
+      return;
+    }
+    try {
+      const provider =
+        this.providers[Math.floor(Math.random() * this.providers.length)];
+      const ob = this.md.getOrderBookContract(symbol, provider);
+      const [scOrder, deps] = await Promise.all([
+        ob.orderOfDigest(digest),
+        ob.orderDependency(digest),
+      ]);
+      if (scOrder.traderAddr === ZeroAddress) {
+        return;
+      }
+      const order = this.md.smartContractOrderToOrder({
+        brokerAddr: scOrder.brokerAddr,
+        brokerFeeTbps: scOrder.brokerFeeTbps,
+        brokerSignature: scOrder.brokerSignature,
+        executionTimestamp: scOrder.executionTimestamp,
+        fAmount: scOrder.fAmount,
+        flags: scOrder.flags,
+        fLimitPrice: scOrder.fLimitPrice,
+        fTriggerPrice: scOrder.fTriggerPrice,
+        iDeadline: scOrder.iDeadline,
+        leverageTDR: scOrder.leverageTDR,
+        traderAddr: scOrder.traderAddr,
+        iPerpetualId: this.md.getPerpIdFromSymbol(symbol)!,
+        executorAddr: this.config.rewardsAddress,
+        submittedTimestamp: scOrder.submittedTimestamp,
+      } as IPerpetualOrder.OrderStruct);
+      order.parentChildOrderIds = [deps[0], deps[1]];
+      if (this.openOrders.get(symbol)?.get(digest)?.order !== undefined) {
+        return;
+      }
+      this.addOrder(symbol, trader, digest, order.type as OrderType, order);
+      logger.info({
+        info: "broker stub upgraded via chain fallback",
+        symbol,
+        digest,
+        time: new Date(Date.now()).toISOString(),
+      });
+      await this.checkOrders(symbol);
+    } catch (e) {
+      logger.info({
+        info: "upgradeBrokerStubFromChain failed",
+        symbol,
+        digest,
+        error: (e as Error)?.message ?? e,
+      });
+    }
+  }
+
   private addOrder(
     symbol: string,
     trader: string,
@@ -555,7 +558,7 @@ export default class Distributor {
         type: type,
         isPredictionMarket: this.md.isPredictionMarket(symbol),
       });
-      console.log({
+      logger.info({
         info: "order added",
         symbol: symbol,
         trader: trader,
@@ -578,7 +581,7 @@ export default class Distributor {
       return;
     }
     this.openOrders.get(symbol)?.delete(digest);
-    console.log({
+    logger.info({
       info: "order removed",
       reason: reason,
       symbol: symbol,
@@ -625,7 +628,7 @@ export default class Distributor {
       Date.now() - (this.lastRefreshTime.get(symbol) ?? 0) <
       this.config.refreshOrdersIntervalSecondsMin * 1_000
     ) {
-      console.log({
+      logger.info({
         symbol: symbol,
         orders: this.openOrders.get(symbol)?.size,
         time: new Date(Date.now()).toISOString(),
@@ -636,7 +639,7 @@ export default class Distributor {
       });
       return;
     }
-    console.log(`refreshing open orders for symbol ${symbol}...`);
+    logger.info(`refreshing open orders for symbol ${symbol}...`);
     const chunkSize1 = 2 ** 6; // for orders
     const rpcProviders = this.config.rpcWatch.map(
       (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
@@ -654,7 +657,7 @@ export default class Distributor {
         10_000
       )
     );
-    console.log(`found ${numOpenOrders} open ${symbol} orders.`);
+    logger.info(`found ${numOpenOrders} open ${symbol} orders.`);
 
     // fetch orders
     const promises = [];
@@ -717,7 +720,7 @@ export default class Distributor {
           }
         }
       } catch (e) {
-        console.log(
+        logger.info(
           `${symbol} ${new Date(Date.now()).toISOString()}: error`,
           e
         );
@@ -743,9 +746,8 @@ export default class Distributor {
       ).length,
       offChain: orderArray.filter(({ order }) => order == undefined).length,
     };
-    // if (orderBundles.size > 0) {
-    // found some orders, report
-    console.log({
+
+    logger.info({
       info: "open orders",
       symbol: symbol,
       orderBook: this.md!.getOrderBookContract(symbol)!.target,
@@ -753,8 +755,7 @@ export default class Distributor {
       ...numOrders,
       waited: `${Date.now() - tsStart} ms`,
     });
-    // }
-    // console.log(orderBundles);
+
     await this.updatePriceCurve(symbol);
     await this.refreshAccounts(symbol);
   }
@@ -779,7 +780,7 @@ export default class Distributor {
   }
 
   private async refreshAccounts(symbol: string) {
-    console.log(`refreshing accounts for symbol ${symbol}...`);
+    logger.info(`refreshing accounts for symbol ${symbol}...`);
     const chunkSize2 = 2 ** 4; // for margin accounts
     const perpId = this.md.getPerpIdFromSymbol(symbol)!;
     const proxy = this.md.getReadOnlyProxyInstance();
@@ -851,12 +852,12 @@ export default class Distributor {
           }
         });
       } catch (e) {
-        console.log("Error fetching account chunk (RPC?)");
+        logger.info("Error fetching account chunk (RPC?)");
       }
     }
     if (this.openPositions.get(symbol)!.size > 0) {
       // found something, report
-      console.log({
+      logger.info({
         info: "traders",
         symbol: symbol,
         time: new Date(Date.now()).toISOString(),
@@ -888,20 +889,19 @@ export default class Distributor {
     this.requireReady();
     const orders = this.openOrders.get(symbol)!;
     if (orders.size == 0) {
-      // console.log(`no open orders for symbol ${symbol}`);
       return;
     }
 
     try {
       await this.refreshPrices(symbol);
     } catch (e) {
-      console.log("error fetching from price service");
+      logger.info("error fetching from price service");
       throw e;
     }
 
     const curPx = this.pxSubmission.get(symbol)!;
     if (curPx.s2MktClosed || curPx.s3MktClosed) {
-      // console.log(`${symbol} market is closed`);
+      logger.info(`${symbol} market is closed`);
       return;
     }
 
@@ -921,11 +921,8 @@ export default class Distributor {
         continue;
       }
 
-      const isExecOnChain = this.isExecutableIfOnChain(orderBundle, curPx.s2);
-      if (isExecOnChain) {
+      if (this.isExecutableIfOnChain(orderBundle, curPx.s2)) {
         await this.sendCommand(command);
-      } else {
-        // console.log("Not executable:", { orderBundle, curPx });
       }
       if (
         orderBundle.order == undefined &&
@@ -954,7 +951,7 @@ export default class Distributor {
       this.config.executeIntervalSecondsMin * 2000
     ) {
       if (!this.messageSentAt.has(msg.digest)) {
-        console.log({
+        logger.info({
           info: "execute",
           order: msg,
           time: new Date(Date.now()).toISOString(),
@@ -972,10 +969,9 @@ export default class Distributor {
    * @returns
    */
   public isExecutableIfOnChain(order: OrderBundle, indexPrice: number) {
-    // console.log(order);
+    // broker order need to follow the main orders checking path too
     if (order.order == undefined) {
-      // broker order: if it's market and on chain, it's executable, nothing to check
-      return order.type == ORDER_TYPE_MARKET;
+      return false;
     }
 
     if (
@@ -996,6 +992,15 @@ export default class Distributor {
     if (!!order.order.deadline && order.order.deadline < Date.now() / 1_000) {
       // expired - get paid to remove it
       return true;
+    }
+
+    const delay = this.config.orderDelaySec ?? 0;
+    if (
+      delay > 0 &&
+      order.order.submittedTimestamp !== undefined &&
+      order.order.submittedTimestamp + delay > Date.now() / 1_000
+    ) {
+      return false;
     }
 
     // dependencies must be checked before reduce-only order checks, since there
@@ -1064,7 +1069,6 @@ export default class Distributor {
     switch (order.order.type) {
       case ORDER_TYPE_MARKET:
         execute = true;
-        // console.log("mkt");
         break;
 
       case ORDER_TYPE_LIMIT:
@@ -1094,21 +1098,6 @@ export default class Distributor {
       default:
         break;
     }
-    // if (execute) {
-    //   console.log({
-    //     side: order.order.side,
-    //     indexPrice,
-    //     tradePrice,
-    //     limitPrice,
-    //     markPrice,
-    //     triggerPrice,
-    //     size: order.order.quantity,
-    //     refSize,
-    //     scale,
-    //     tradePrem: this.tradePremium.get(order.symbol)![sideIdx],
-    //     timestamp: new Date(Date.now()).toISOString(),
-    //   });
-    // }
     return execute;
   }
 

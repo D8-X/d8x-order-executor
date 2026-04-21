@@ -13,6 +13,7 @@ import {
 import { HDNodeWallet } from "ethers";
 import fs from "node:fs";
 import 'dotenv/config';
+import { logger } from "./logger.js";
 
 const shuffle = (array: string[]) => {
   for (let i = array.length - 1; i > 0; i--) {
@@ -85,7 +86,7 @@ export function constructRedis(name: string): Redis {
   let client;
   let redisConfig = getRedisConfig();
   client = new Redis(redisConfig);
-  client.on("error", (err) => console.log(`${name} Redis Client Error:` + err));
+  client.on("error", (err) => logger.info(`${name} Redis Client Error:` + err));
   return client;
 }
 
@@ -144,7 +145,7 @@ export async function createRedisTimer(r: Redis, name: string) {
   const d = new Date();
   await r.rpush(name, d.getTime());
 
-  console.log(`[REDIS TIMER: ${name}] Started at ${d.toISOString()}`);
+  logger.info(`[REDIS TIMER: ${name}] Started at ${d.toISOString()}`);
 }
 
 export async function subRedisTimer(r: Redis, name: string, info: string) {
@@ -153,7 +154,7 @@ export async function subRedisTimer(r: Redis, name: string, info: string) {
   if (prev !== null) {
     const prevTimestamp = parseInt(prev);
     const diff = (d.getTime() - prevTimestamp) / 1000;
-    console.log(
+    logger.info(
       `[REDIS TIMER: ${name}] ${info} at ${d.toISOString()} sub from last: ${diff}s`
     );
 

@@ -34,6 +34,7 @@ import {
 import { Log, LogDescription, Network, Result } from "ethers";
 import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider.js";
 import { MultiUrlWebSocketProvider } from "../multiUrlWebsocketProvider.js";
+import { logger } from "../logger.js";
 
 enum ListeningMode {
   Polling = "Polling",
@@ -112,7 +113,7 @@ export default class BlockhainListener {
   }
 
   public unsubscribe() {
-    console.log(
+    logger.info(
       `${new Date(Date.now()).toISOString()} BlockchainListener: unsubscribing`
     );
     if (this.listeningProvider) {
@@ -125,14 +126,14 @@ export default class BlockhainListener {
       (Date.now() - this.lastBlockReceivedAt) / 1_000
     );
     if (blockTime > this.config.waitForBlockSeconds) {
-      console.log({
+      logger.info({
         info: "Last block received too long ago - heartbeat check failed",
         receivedSecondsAgo: blockTime,
         time: new Date(Date.now()).toISOString(),
       });
       return false;
     }
-    console.log({
+    logger.info({
       info: "Last block received within expected time",
       receivedSecondsAgo: blockTime,
       time: new Date(Date.now()).toISOString(),
@@ -142,7 +143,7 @@ export default class BlockhainListener {
 
   private async switchListeningMode() {
     if (this.switchingRPC) {
-      console.log(
+      logger.info(
         `${new Date(Date.now()).toISOString()}: already switching RPC`
       );
       return;
@@ -164,14 +165,14 @@ export default class BlockhainListener {
       this.mode == ListeningMode.Events ||
       this.config.rpcListenWs.length < 1
     ) {
-      console.log({
+      logger.info({
         info: "Switching from Websocket to HTTP provider",
         time: new Date(Date.now()).toISOString(),
       });
       this.mode = ListeningMode.Polling;
       this.listeningProvider = this.httpProvider;
     } else if (this.config.rpcListenWs.length > 0) {
-      console.log({
+      logger.info({
         info: "Switching from HTTP to WS",
         nexRpcUrl: this.multiUrlWsProvider.getCurrentRpcUrl(),
         time: new Date(Date.now()).toISOString(),
@@ -197,7 +198,7 @@ export default class BlockhainListener {
     this.blockNumber = undefined;
     setTimeout(async () => {
       if (!this.blockNumber) {
-        console.log(
+        logger.info(
           `${new Date(
             Date.now()
           ).toISOString()}: websocket connection could not be established`
@@ -227,13 +228,13 @@ export default class BlockhainListener {
         // startNextWebsocket(), multi url provider will handle the switching
         // internally
         await this.multiUrlWsProvider.startNextWebsocket();
-        console.log(
+        logger.info(
           `[${new Date(
             Date.now()
           ).toISOString()}] attempting to switch to WS ${this.multiUrlWsProvider.getCurrentRpcUrl()}`
         );
         const blockReceivedCb = () => {
-          console.log(
+          logger.info(
             "block received",
             this.multiUrlWsProvider.getCurrentRpcUrl()
           );
@@ -248,7 +249,7 @@ export default class BlockhainListener {
           } else {
             // Otherwise just stop the multi url ws provider and try again later
             await this.multiUrlWsProvider.stop();
-            console.log(
+            logger.info(
               `[${new Date(
                 Date.now()
               ).toISOString()}] attempting to switch to WS failed - block not received`
@@ -314,7 +315,7 @@ export default class BlockhainListener {
         "Please specify RPC URLs for listening to blockchain events"
       );
     }
-    console.log({
+    logger.info({
       info: "BlockchainListener started",
       time: new Date(Date.now()).toISOString(),
       network: {
@@ -338,7 +339,7 @@ export default class BlockhainListener {
     }
     // on error terminate
     this.listeningProvider.on("error", (e) => {
-      console.log(
+      logger.info(
         `${new Date(
           Date.now()
         ).toISOString()} BlockchainListener received error msg in ${this.mode
@@ -402,7 +403,7 @@ export default class BlockhainListener {
   private handleProxyEvent(event: Log) {
     const parsedEvent = this.proxyInterface.parseLog(event);
     if (!parsedEvent) {
-      console.log("Unexpected event log:", event);
+      logger.info("Unexpected event log:", event);
       return;
     }
     let msg:
@@ -531,7 +532,7 @@ export default class BlockhainListener {
         }
         break;
       default:
-        console.log("Unexpected event:", parsedEvent);
+        logger.info("Unexpected event:", parsedEvent);
         return;
     }
     this.sendMsg(parsedEvent, msg);
@@ -540,7 +541,7 @@ export default class BlockhainListener {
   private async handleOrderBookEvent(event: Log) {
     const parsedEvent = this.orderBookInterface.parseLog(event);
     if (!parsedEvent) {
-      console.log("Unexpected order book event log:", event);
+      logger.info("Unexpected order book event log:", event);
       return;
     }
 
@@ -599,7 +600,7 @@ export default class BlockhainListener {
         break;
 
       default:
-        console.log("Unexpected event:", parsedEvent);
+        logger.info("Unexpected event:", parsedEvent);
         return;
     }
     this.sendMsg(parsedEvent, msg);
@@ -616,7 +617,7 @@ export default class BlockhainListener {
   }
 
   private sendMsg(parsedEvent: LogDescription, msg: RedisMsg) {
-    console.log({
+    logger.info({
       event: parsedEvent.name,
       time: new Date(Date.now()).toISOString(),
       mode: this.mode,

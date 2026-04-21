@@ -8,6 +8,7 @@ import {
   Networkish,
 } from "ethers";
 import { executeWithTimeout } from "./utils.js";
+import { logger } from "./logger.js";
 
 // Common methods among multi url providers
 export interface MultiUrlProvider {
@@ -112,7 +113,7 @@ export class MultiUrlJsonRpcProvider
     this.currentConnection = new FetchRequest(this.getCurrentRpcUrl());
 
     if (this.options.logRpcSwitches) {
-      console.log(
+      logger.info(
         `[(${new Date().toISOString()}) MultiUrlJsonRpcProvider]  switched rpc to ${this.getCurrentRpcUrl()}`
       );
     }
@@ -155,7 +156,7 @@ export class MultiUrlJsonRpcProvider
       }
     } catch (err) {
       if (this.options.logErrors) {
-        console.error(
+        logger.error(
           `[(${new Date().toISOString()}) MultiUrlJsonRpcProvider@${currentRpcUrl}] request error: `,
           err
         );
@@ -164,7 +165,7 @@ export class MultiUrlJsonRpcProvider
 
       // When max number of errors is reached - throw.
       if (this.currentNumberOfErrors >= this.options.maxRetries!) {
-        console.error(
+        logger.error(
           `[(${new Date().toISOString()}) MultiUrlJsonRpcProvider@${currentRpcUrl}] Max retries reached`
         );
         throw err;
@@ -181,7 +182,7 @@ export class MultiUrlJsonRpcProvider
     // JSON-RPC error might be returned inside a correct response. Check for it.
     if (resp.length > 0 && Object.hasOwnProperty.call(resp[0], "error")) {
       if (this.options.logErrors) {
-        console.error(
+        logger.error(
           `[(${new Date().toISOString()}) MultiUrlJsonRpcProvider@${currentRpcUrl}] JSON-RPC response error: `,
           resp[0].error
         );

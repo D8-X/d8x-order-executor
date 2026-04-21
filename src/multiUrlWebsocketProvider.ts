@@ -11,6 +11,7 @@ import {
 } from "ethers";
 import { WebSocket } from "ws";
 import { MultiUrlProvider } from "./multiUrlJsonRpcProvider.js";
+import { logger } from "./logger.js";
 
 export interface MultiUrlWebsocketsProviderOptions extends JsonRpcApiProviderOptions {
   maxRetries?: number;
@@ -106,7 +107,7 @@ export class MultiUrlWebSocketProvider extends SocketProvider implements MultiUr
     this.switchingRpc = true;
     this.switchToNextRpc();
     if (this.options.logRpcSwitches) {
-      console.log(
+      logger.info(
         `[(${new Date().toISOString()}) MultiUrlWebSocketProvider] switching rpc to ${this.getCurrentRpcUrl()}`
       );
     }
@@ -176,7 +177,7 @@ export class MultiUrlWebSocketProvider extends SocketProvider implements MultiUr
         await this._start();
         this.resume();
       } catch (error) {
-        console.log("failed to start WebsocketProvider", error);
+        logger.info("failed to start WebsocketProvider", error);
       }
 
       // Resolve _waitUntilReady promise once connected
@@ -191,7 +192,7 @@ export class MultiUrlWebSocketProvider extends SocketProvider implements MultiUr
       }
       this.currentErrorsNumber = 0;
       if (this.options.logRpcSwitches) {
-        console.log(`[(${new Date().toISOString()}) MultiUrlWebSocketProvider] switched to ${event.target.url}`);
+        logger.info(`[(${new Date().toISOString()}) MultiUrlWebSocketProvider] switched to ${event.target.url}`);
       }
     };
 
@@ -206,7 +207,7 @@ export class MultiUrlWebSocketProvider extends SocketProvider implements MultiUr
       // should switch to the next one in the list.
       if (!this.isCurrentRpcUrl(url) && this.switchingRpc) {
         if (this.options.logErrors) {
-          console.log(
+          logger.info(
             `[(${new Date().toISOString()}) MultiUrlWebSocketProvider@${url}] Ignoring error from previous connection, currently switching rpc.`,
             this.getCurrentRpcUrl()
           );
@@ -216,12 +217,11 @@ export class MultiUrlWebSocketProvider extends SocketProvider implements MultiUr
 
       this.emit("error", error);
       // Connection failure, attempt to switch to next rpc url
-      // console.log("got websocket error", error, this.websocket.readyState);
       if (this.options.logErrors) {
-        console.log(`[(${new Date().toISOString()}) MultiUrlWebSocketProvider@${url}] Connection error:`, error);
+        logger.info(`[(${new Date().toISOString()}) MultiUrlWebSocketProvider@${url}] Connection error:`, error);
       }
       if (this.currentErrorsNumber >= this.options.maxRetries!) {
-        console.error(`[(${new Date().toISOString()}) MultiUrlWebSocketProvider] Max retries reached`);
+        logger.error(`[(${new Date().toISOString()}) MultiUrlWebSocketProvider] Max retries reached`);
         throw error;
       }
       this.currentErrorsNumber++;
@@ -240,7 +240,7 @@ export class MultiUrlWebSocketProvider extends SocketProvider implements MultiUr
       // Drop messages from previous connection when switching rpc
       if (!this.isCurrentRpcUrl(url) && this.switchingRpc) {
         if (this.options.logErrors) {
-          console.log(
+          logger.info(
             `[(${new Date().toISOString()}) MultiUrlWebSocketProvider@${event.target.url
             }] Ignoring message from previous connection, currently switching rpc.`
           );
@@ -253,7 +253,7 @@ export class MultiUrlWebSocketProvider extends SocketProvider implements MultiUr
       try {
         const result = <JsonRpcResult | JsonRpcError>JSON.parse(data);
         if ("error" in result) {
-          console.log(
+          logger.info(
             `[(${new Date().toISOString()}) MultiUrlWebSocketProvider@${event.target.url}] Received error in message:`,
             result.error
           );
@@ -262,7 +262,7 @@ export class MultiUrlWebSocketProvider extends SocketProvider implements MultiUr
         }
       } catch (e) {
         if (this.options.logErrors) {
-          console.log(
+          logger.info(
             `[(${new Date().toISOString()}) MultiUrlWebSocketProvider@${event.target.url}] Invalid JSON in message:`,
             data
           );
