@@ -38,7 +38,7 @@ import {
   UpdateMarginAccountMsg,
   UpdateMarkPriceMsg,
 } from "../types.js";
-import { constructRedis, executeWithTimeout } from "../utils.js";
+import { constructRedis, executeWithTimeout, sleep } from "../utils.js";
 import Executor from "./executor.js";
 import { logger } from "../logger.js";
 
@@ -863,6 +863,8 @@ export default class Distributor {
       }
 
       if (this.isExecutableIfOnChain(orderBundle, curPx.s2)) {
+        await this.waitUntilDelayElapsed(orderBundle);
+        if (!this.openOrders.get(symbol)?.has(digest)) continue;
         await this.sendCommand(command);
       }
       if (
@@ -883,6 +885,15 @@ export default class Distributor {
       this.brokerOrders.get(symbol)?.delete(digest);
     }
     return;
+  }
+
+  private async waitUntilDelayElapsed(orderBundle: OrderBundle) {
+    const delay = this.config.orderDelaySec ?? 0;
+    if (delay <= 0) return;
+    const ts = orderBundle.order?.submittedTimestamp;
+    if (ts === undefined) return;
+    const remainingMs = (ts + delay) * 1_000 - Date.now();
+    if (remainingMs > 0) await sleep(remainingMs);
   }
 
   private async sendCommand(msg: ExecuteOrderCommand) {
@@ -933,15 +944,6 @@ export default class Distributor {
     if (!!order.order.deadline && order.order.deadline < Date.now() / 1_000) {
       // expired - get paid to remove it
       return true;
-    }
-
-    const delay = this.config.orderDelaySec ?? 0;
-    if (
-      delay > 0 &&
-      order.order.submittedTimestamp !== undefined &&
-      order.order.submittedTimestamp + delay > Date.now() / 1_000
-    ) {
-      return false;
     }
 
     // dependencies must be checked before reduce-only order checks, since there
