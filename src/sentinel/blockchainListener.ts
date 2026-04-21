@@ -114,7 +114,7 @@ export default class BlockhainListener {
   }
 
   public unsubscribe() {
-    logger.info(
+    logger.debug(
       `${new Date(Date.now()).toISOString()} BlockchainListener: unsubscribing`
     );
     if (this.listeningProvider) {
@@ -127,14 +127,14 @@ export default class BlockhainListener {
       (Date.now() - this.lastBlockReceivedAt) / 1_000
     );
     if (blockTime > this.config.waitForBlockSeconds) {
-      logger.info({
+      logger.warn({
         info: "Last block received too long ago - heartbeat check failed",
         receivedSecondsAgo: blockTime,
         time: new Date(Date.now()).toISOString(),
       });
       return false;
     }
-    logger.info({
+    logger.debug({
       info: "Last block received within expected time",
       receivedSecondsAgo: blockTime,
       time: new Date(Date.now()).toISOString(),
@@ -144,7 +144,7 @@ export default class BlockhainListener {
 
   private async switchListeningMode() {
     if (this.switchingRPC) {
-      logger.info(
+      logger.debug(
         `${new Date(Date.now()).toISOString()}: already switching RPC`
       );
       return;
@@ -235,7 +235,7 @@ export default class BlockhainListener {
           ).toISOString()}] attempting to switch to WS ${this.multiUrlWsProvider.getCurrentRpcUrl()}`
         );
         const blockReceivedCb = () => {
-          logger.info(
+          logger.debug(
             "block received",
             this.multiUrlWsProvider.getCurrentRpcUrl()
           );
@@ -395,7 +395,7 @@ export default class BlockhainListener {
   private handleProxyEvent(event: Log) {
     const parsedEvent = this.proxyInterface.parseLog(event);
     if (!parsedEvent) {
-      logger.info("Unexpected event log:", event);
+      logger.warn("Unexpected event log:", event);
       return;
     }
     let msg:
@@ -562,7 +562,7 @@ export default class BlockhainListener {
   private async handleOrderBookEvent(event: Log) {
     const parsedEvent = this.orderBookInterface.parseLog(event);
     if (!parsedEvent) {
-      logger.info("Unexpected order book event log:", event);
+      logger.warn("Unexpected order book event log:", event);
       return;
     }
 

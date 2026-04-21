@@ -212,7 +212,7 @@ export default class Executor {
     try {
       await this.execute();
     } catch (e) {
-      logger.info({
+      logger.warn({
         info: "ExecuteOrder error",
         reason: e?.toString(),
         time: new Date(Date.now()).toISOString(),
@@ -240,7 +240,7 @@ export default class Executor {
         try {
           await this.execute();
         } catch (e) {
-          logger.info({
+          logger.warn({
             info: "execute() error",
             reason: e?.toString(),
             time: new Date(Date.now()).toISOString(),
@@ -335,7 +335,7 @@ export default class Executor {
         // order's symbol.
         const order = this.distributor!.getOrderByDigest(digest);
         if (order !== undefined) {
-          logger.info({
+          logger.warn({
             info: "executed order still present in open orders, refreshing open orders",
             digest: digest,
             order: order,
@@ -491,7 +491,7 @@ export default class Executor {
         });
       }
     } else {
-      logger.info({
+      logger.debug({
         info: "order found in distributor",
         symbol,
         digest,
@@ -507,7 +507,7 @@ export default class Executor {
     })();
 
     if (!onChainTS) {
-      logger.info({
+      logger.debug({
         reason: "order not found",
         symbol: symbol,
         digest: digest,
@@ -519,7 +519,7 @@ export default class Executor {
     }
 
     if (!this.checkOrderDependenciesResolved(onChainOrder!)) {
-      logger.info({
+      logger.debug({
         reason: "unresolved/unfetched order dependencies",
         symbol: symbol,
         digest: digest,
@@ -540,7 +540,7 @@ export default class Executor {
 
     if (!px) {
       // oracle problem
-      logger.info({
+      logger.warn({
         reason: "oracle error",
         symbol: symbol,
         error: error?.toString(),
@@ -560,7 +560,7 @@ export default class Executor {
       px.submission.priceFeedVaas[0] == "0x"
     ) {
       // odin problem?
-      logger.info({
+      logger.warn({
         reason: "no vaa(s)",
         symbol: symbol,
         digest: digest,
@@ -581,7 +581,7 @@ export default class Executor {
     const oracleTS = Math.min(...px.submission.timestamps);
     if (oracleTS < onChainTS) {
       // let oracle cache expire before trying
-      logger.info({
+      logger.debug({
         reason: "outdated off-chain oracle(s)",
         symbol: symbol,
         digest: digest,
@@ -604,7 +604,7 @@ export default class Executor {
       !this.distributor?.isExecutableIfOnChain(savedOrder, px.pxS2S3[0])
     ) {
       // prices moved - retreat
-      logger.info({
+      logger.debug({
         reason: "no longer executable",
         symbol: symbol,
         digest: digest,
@@ -715,7 +715,7 @@ export default class Executor {
           // https://docs.ethers.org/v5/troubleshooting/errors/#help-NUMERIC_FAULT-underflow
           this.config.gasLimit = Math.floor(this.config.gasLimit);
           this.gasLimitIncreaseCounter++;
-          logger.info("intrinsic gas too low, increasing gas limit", {
+          logger.warn("intrinsic gas too low, increasing gas limit", {
             new_gas_limit: this.config.gasLimit,
           });
           this.locked.delete(digest);
@@ -791,7 +791,7 @@ export default class Executor {
       // could not confirm
       const error = e?.toString();
       const addr = this.bots[botIdx].api.getAddress();
-      logger.info({
+      logger.warn({
         info: "txn not confirmed",
         reason: error,
         symbol: symbol,
@@ -812,7 +812,7 @@ export default class Executor {
       if (ordr !== undefined && ordr.quantity > 0) {
         // order is still on chain - maybe still processing, so wait and check again,
         // then unlock if it hasn't been trashed
-        logger.info({
+        logger.debug({
           info: "order is still on-chain",
           symbol: symbol,
           executor: addr,
@@ -828,7 +828,7 @@ export default class Executor {
             // check one last time before declaring an error
             const receipt = await executeWithTimeout(tx.wait(), 1_000);
             if (receipt?.status !== 1) {
-              logger.info({
+              logger.warn({
                 info: "confirmed that tx failed",
                 symbol: symbol,
                 executor: addr,
@@ -841,7 +841,7 @@ export default class Executor {
               }
               // return BotStatus.Error;
             } else {
-              logger.info({
+              logger.warn({
                 info: "could not confirm tx status - unlocking order",
                 symbol: symbol,
                 executor: addr,
@@ -862,7 +862,7 @@ export default class Executor {
       // order is gone, relock to be safe
       this.locked.add(digest);
       this.trash.add(digest);
-      logger.info({
+      logger.debug({
         info: "order is gone",
         symbol: symbol,
         executor: addr,
@@ -926,7 +926,7 @@ export default class Executor {
           responses.busy++;
         }
       } else {
-        logger.info({
+        logger.error({
           info: "uncaught error in executeOrderByBot - restarting",
           reason: result.reason?.toString(),
           time: new Date(Date.now()).toISOString(),

@@ -113,7 +113,7 @@ export class MultiUrlJsonRpcProvider
     this.currentConnection = new FetchRequest(this.getCurrentRpcUrl());
 
     if (this.options.logRpcSwitches) {
-      logger.info(
+      logger.debug(
         `[(${new Date().toISOString()}) MultiUrlJsonRpcProvider]  switched rpc to ${this.getCurrentRpcUrl()}`
       );
     }

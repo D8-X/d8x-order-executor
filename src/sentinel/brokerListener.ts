@@ -57,7 +57,7 @@ export default class BackendListener {
   }
 
   public unsubscribe() {
-    logger.info(
+    logger.debug(
       `${new Date(Date.now()).toISOString()} unsubscribing not implemented`
     );
   }
@@ -115,13 +115,13 @@ export default class BackendListener {
     });
 
     this.ws.addEventListener("close", () => {
-      logger.info(
+      logger.warn(
         `${new Date(Date.now()).toISOString()} Disconnected from broker WS`
       );
     });
 
     this.perpIds.forEach((id) => {
-      logger.info(
+      logger.debug(
         `${new Date(
           Date.now()
         ).toISOString()} Subscribing to perpetual id ${id} via broker WS ${this.config.brokerWS[this.wsIndex]
@@ -141,14 +141,14 @@ export default class BackendListener {
       switch (msg.type) {
         case "subscribe":
           if (msg.data === "ack") {
-            logger.info(
+            logger.debug(
               `${new Date(
                 Date.now()
               ).toISOString()} Subscribed to perpetual id ${perpId} via broker WS ${this.config.brokerWS[this.wsIndex]
               }`
             );
           } else {
-            logger.info(
+            logger.warn(
               `${new Date(
                 Date.now()
               ).toISOString()} Error subscribing to perpetual id ${perpId} on broker WS ${this.config.brokerWS[this.wsIndex]
@@ -175,7 +175,7 @@ export default class BackendListener {
             digest: `0x${orderId}`,
             type: flagToOrderType(BigInt(flags), BigInt(fLimitPrice)),
           };
-          logger.info({
+          logger.debug({
             event: "BrokerOrderCreated",
             time: new Date(Date.now()).toISOString(),
             ...eventMsg,

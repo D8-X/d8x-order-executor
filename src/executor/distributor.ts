@@ -512,7 +512,7 @@ export default class Distributor {
         return;
       }
       this.addOrder(symbol, trader, digest, order.type as OrderType, order);
-      logger.info({
+      logger.debug({
         info: "broker stub upgraded via chain fallback",
         symbol,
         digest,
@@ -520,7 +520,7 @@ export default class Distributor {
       });
       await this.checkOrders(symbol);
     } catch (e) {
-      logger.info({
+      logger.warn({
         info: "upgradeBrokerStubFromChain failed",
         symbol,
         digest,
@@ -548,7 +548,7 @@ export default class Distributor {
         type: type,
         isPredictionMarket: this.md.isPredictionMarket(symbol),
       });
-      logger.info({
+      logger.debug({
         info: "order added",
         symbol: symbol,
         trader: trader,
@@ -571,7 +571,7 @@ export default class Distributor {
       return;
     }
     this.openOrders.get(symbol)?.delete(digest);
-    logger.info({
+    logger.debug({
       info: "order removed",
       reason: reason,
       symbol: symbol,
@@ -618,7 +618,7 @@ export default class Distributor {
       Date.now() - (this.lastRefreshTime.get(symbol) ?? 0) <
       this.config.refreshOrdersIntervalSecondsMin * 1_000
     ) {
-      logger.info({
+      logger.debug({
         symbol: symbol,
         orders: this.openOrders.get(symbol)?.size,
         time: new Date(Date.now()).toISOString(),
@@ -657,7 +657,7 @@ export default class Distributor {
         });
       }
     } catch (e) {
-      logger.info(
+      logger.warn(
         `${symbol} ${new Date(Date.now()).toISOString()}: error refreshing open orders`,
         e
       );
@@ -718,7 +718,7 @@ export default class Distributor {
   }
 
   private async refreshAccounts(symbol: string) {
-    logger.info(`refreshing accounts for symbol ${symbol}...`);
+    logger.debug(`refreshing accounts for symbol ${symbol}...`);
     const chunkSize2 = 2 ** 4; // for margin accounts
     const perpId = this.md.getPerpIdFromSymbol(symbol)!;
     const proxy = this.md.getReadOnlyProxyInstance();
@@ -790,7 +790,7 @@ export default class Distributor {
           }
         });
       } catch (e) {
-        logger.info("Error fetching account chunk (RPC?)");
+        logger.warn("Error fetching account chunk (RPC?)");
       }
     }
     if (this.openPositions.get(symbol)!.size > 0) {
@@ -833,13 +833,13 @@ export default class Distributor {
     try {
       await this.refreshPrices(symbol);
     } catch (e) {
-      logger.info("error fetching from price service");
+      logger.warn("error fetching from price service");
       throw e;
     }
 
     const curPx = this.pxSubmission.get(symbol)!;
     if (curPx.s2MktClosed || curPx.s3MktClosed) {
-      logger.info(`${symbol} market is closed`);
+      logger.debug(`${symbol} market is closed`);
       return;
     }
 
