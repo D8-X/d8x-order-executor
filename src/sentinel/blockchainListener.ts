@@ -3,6 +3,7 @@ import {
   IPerpetualManager__factory,
   LimitOrderBook__factory,
   MarketData,
+  Order,
   PerpetualDataHandler,
 } from "@d8-x/d8x-node-sdk";
 import { Redis } from "ioredis";
@@ -415,15 +416,19 @@ export default class BlockhainListener {
 
     // handle different events
     switch (parsedEvent.name) {
-      case "TransferAddressTo":
-      case "SetEmergencyState":
       case "SetNormalState":
+      case "SetEmergencyState":
+        logger.info({
+          event: parsedEvent.name,
+          args: parsedEvent.args,
+          time: new Date(Date.now()).toISOString(),
+        });
+        return;
+
+      case "TransferAddressTo":
         this.redisPubClient.publish("Restart", parsedEvent.args[0]);
         this.unsubscribe();
-        // force restart
-        sleep(1_000).then(() => {
-          process.exit(0);
-        });
+        setTimeout(() => process.exit(0), 1_000);
         return;
 
       case "Liquidate":
@@ -437,7 +442,11 @@ export default class BlockhainListener {
             fFeeCC,
             newPositionSizeBC,
           } = parsedEvent.args as unknown as LiquidateEvent.OutputObject;
-          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
+          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId));
+          if (!symbol) {
+            logger.warn({ event: "Liquidate", perpetualId: Number(perpetualId) }, "unknown perpetualId");
+            return;
+          }
           msg = {
             chainId: this.chainId,
             perpetualId: Number(perpetualId),
@@ -462,14 +471,22 @@ export default class BlockhainListener {
             trader,
             orderDigest,
           } = parsedEvent.args as unknown as TradeEvent.OutputObject;
-          const order = this.md!.smartContractOrderToOrder(scOrder);
+          let order: Order;
+          try {
+            order = this.md.smartContractOrderToOrder(scOrder);
+          } catch (e) {
+            logger.warn(
+              { event: "Trade", perpetualId: Number(perpetualId), error: (e as Error)?.message ?? e },
+              "smartContractOrderToOrder failed"
+            );
+            return;
+          }
           msg = {
             chainId: this.chainId,
             perpetualId: Number(perpetualId),
             trader: trader,
             digest: orderDigest,
             ...order,
-            brokerAddr: scOrder.brokerAddr,
             executor: scOrder.executorAddr,
             block: event.blockNumber,
             hash: event.transactionHash,
@@ -481,7 +498,11 @@ export default class BlockhainListener {
         {
           const { perpetualId, trader, fFundingPaymentCC } =
             parsedEvent.args as unknown as UpdateMarginAccountEvent.OutputObject;
-          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
+          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId));
+          if (!symbol) {
+            logger.warn({ event: "UpdateMarginAccount", perpetualId: Number(perpetualId) }, "unknown perpetualId");
+            return;
+          }
           msg = {
             chainId: this.chainId,
             perpetualId: Number(perpetualId),
@@ -502,7 +523,11 @@ export default class BlockhainListener {
             fMidPricePremium,
             fMarkIndexPrice,
           } = parsedEvent.args as unknown as UpdateMarkPriceEvent.OutputObject;
-          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
+          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId));
+          if (!symbol) {
+            logger.warn({ event: "UpdateMarkPrice", perpetualId: Number(perpetualId) }, "unknown perpetualId");
+            return;
+          }
           msg = {
             chainId: this.chainId,
             perpetualId: Number(perpetualId),
@@ -520,7 +545,11 @@ export default class BlockhainListener {
         {
           const { perpetualId, orderHash } =
             parsedEvent.args as unknown as PerpetualLimitOrderCancelledEvent.OutputObject;
-          const symbol = this.md!.getSymbolFromPerpId(Number(perpetualId))!;
+          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId));
+          if (!symbol) {
+            logger.warn({ event: "PerpetualLimitOrderCancelled", perpetualId: Number(perpetualId) }, "unknown perpetualId");
+            return;
+          }
           msg = {
             chainId: this.chainId,
             symbol: symbol,
@@ -533,7 +562,7 @@ export default class BlockhainListener {
         }
         break;
       default:
-        logger.info("Unexpected event:", parsedEvent);
+        logger.warn({ event: parsedEvent.name }, "unexpected perpetual event");
         return;
     }
     this.sendMsg(parsedEvent, msg);

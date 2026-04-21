@@ -11,6 +11,7 @@ import {
   ORDER_TYPE_MARKET,
   ORDER_TYPE_STOP_LIMIT,
   ORDER_TYPE_STOP_MARKET,
+  OrderStatus,
   PerpetualDataHandler,
   SELL_SIDE,
   ZERO_ORDER_ID,
@@ -20,7 +21,7 @@ import type {
   IPerpetualOrder,
   PerpStorage,
 } from "@d8-x/d8x-node-sdk/contracts/IPerpetualManager";
-import { JsonRpcProvider, ZeroAddress } from "ethers";
+import { JsonRpcProvider, Overrides, ZeroAddress } from "ethers";
 import { Redis } from "ioredis";
 import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider.js";
 import {
@@ -62,6 +63,7 @@ export default class Distributor {
   // order digest => sent for execution timestamp
   private messageSentAt: Map<string, number> = new Map();
   private pricesFetchedAt: Map<string, number> = new Map();
+  private refreshRpcIdx = 0;
   public ready: boolean = false;
 
   // static info
@@ -491,6 +493,10 @@ export default class Distributor {
       return;
     }
     try {
+      const status = await this.md.getOrderStatus(symbol, digest);
+      if (status !== OrderStatus.OPEN) {
+        return;
+      }
       const provider =
         this.providers[Math.floor(Math.random() * this.providers.length)];
       const ob = this.md.getOrderBookContract(symbol, provider);
@@ -501,22 +507,9 @@ export default class Distributor {
       if (scOrder.traderAddr === ZeroAddress) {
         return;
       }
-      const order = this.md.smartContractOrderToOrder({
-        brokerAddr: scOrder.brokerAddr,
-        brokerFeeTbps: scOrder.brokerFeeTbps,
-        brokerSignature: scOrder.brokerSignature,
-        executionTimestamp: scOrder.executionTimestamp,
-        fAmount: scOrder.fAmount,
-        flags: scOrder.flags,
-        fLimitPrice: scOrder.fLimitPrice,
-        fTriggerPrice: scOrder.fTriggerPrice,
-        iDeadline: scOrder.iDeadline,
-        leverageTDR: scOrder.leverageTDR,
-        traderAddr: scOrder.traderAddr,
-        iPerpetualId: this.md.getPerpIdFromSymbol(symbol)!,
-        executorAddr: this.config.rewardsAddress,
-        submittedTimestamp: scOrder.submittedTimestamp,
-      } as IPerpetualOrder.OrderStruct);
+      const order = this.md.smartContractOrderToOrder(
+        scOrder as unknown as IPerpetualOrder.OrderStruct
+      );
       order.parentChildOrderIds = [deps[0], deps[1]];
       if (this.openOrders.get(symbol)?.get(digest)?.order !== undefined) {
         return;
@@ -640,92 +633,40 @@ export default class Distributor {
       return;
     }
     logger.info(`refreshing open orders for symbol ${symbol}...`);
-    const chunkSize1 = 2 ** 6; // for orders
-    const rpcProviders = this.config.rpcWatch.map(
-      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
-    );
-    let providerIdx = Math.floor(Math.random() * rpcProviders.length);
     this.lastRefreshTime.set(symbol, Date.now());
+    const tsStart = Date.now();
+    const isPred = this.md.isPredictionMarket(symbol);
 
-    let tsStart = Date.now();
-
-    const numOpenOrders = Number(
-      await executeWithTimeout(
-        this.md
-          .getOrderBookContract(symbol, rpcProviders[providerIdx])!
-          .orderCount(),
-        10_000
-      )
-    );
-    logger.info(`found ${numOpenOrders} open ${symbol} orders.`);
-
-    // fetch orders
-    const promises = [];
-    for (let i = 0; i < numOpenOrders; i += chunkSize1) {
-      const ob = this.md!.getOrderBookContract(
-        symbol,
-        rpcProviders[providerIdx]
-      );
-      promises.push(ob.pollRange(i, chunkSize1));
-      providerIdx = (providerIdx + 1) % rpcProviders.length;
-    }
-
-    if (!this.openOrders.has(symbol)) {
-      this.openOrders.set(symbol, new Map<string, OrderBundle>());
-    }
     const orderBundles: Map<string, OrderBundle> = new Map();
-    for (let i = 0; i < promises.length; i += rpcProviders.length) {
-      try {
-        const chunks = await executeWithTimeout(
-          Promise.allSettled(promises.slice(i, i + rpcProviders.length)),
-          10_000
-        );
-        for (const result of chunks) {
-          if (result.status === "fulfilled") {
-            const [orders, orderHashes, submittedTs] = result.value;
-            for (let j = 0; j < orders.length; j++) {
-              if (orderHashes[j] == ZERO_ORDER_ID) {
-                continue;
-              }
-              const bundle = {
-                symbol: symbol,
-                trader: orders[j].traderAddr,
-                digest: orderHashes[j],
-                isPredictionMarket: this.md.isPredictionMarket(symbol),
-                order: this.md!.smartContractOrderToOrder({
-                  brokerAddr: orders[j].brokerAddr,
-                  brokerFeeTbps: orders[j].brokerFeeTbps,
-                  brokerSignature: orders[j].brokerSignature,
-                  executionTimestamp: orders[j].executionTimestamp,
-                  fAmount: orders[j].fAmount,
-                  flags: orders[j].flags,
-                  fLimitPrice: orders[j].fLimitPrice,
-                  fTriggerPrice: orders[j].fTriggerPrice,
-                  iDeadline: orders[j].iDeadline,
-                  leverageTDR: orders[j].leverageTDR,
-                  traderAddr: orders[j].traderAddr,
-                  iPerpetualId: this.md!.getPerpIdFromSymbol(symbol),
-                  executorAddr: this.config.rewardsAddress,
-                  submittedTimestamp: submittedTs[j],
-                } as IPerpetualOrder.OrderStruct),
-                type: ORDER_TYPE_MARKET as OrderType,
-              };
-              bundle.type = bundle.order.type as OrderType;
-              bundle.order.parentChildOrderIds = [
-                orders[j].parentChildDigest1,
-                orders[j].parentChildDigest2,
-              ];
-              orderBundles.set(orderHashes[j], bundle);
-            }
-          }
-        }
-      } catch (e) {
-        logger.info(
-          `${symbol} ${new Date(Date.now()).toISOString()}: error`,
-          e
-        );
+    const rpcUrls = this.config.rpcWatch;
+    const rpcURL = rpcUrls[this.refreshRpcIdx % rpcUrls.length];
+    this.refreshRpcIdx = (this.refreshRpcIdx + 1) % rpcUrls.length;
+    const overrides: Overrides & { rpcURL: string } = { rpcURL };
+    try {
+      const [orders, digests, traders] = await executeWithTimeout(
+        this.md.getAllOpenOrders(symbol, overrides),
+        10_000
+      );
+      for (let i = 0; i < orders.length; i++) {
+        const digest = digests[i];
+        if (!digest || digest == ZERO_ORDER_ID) continue;
+        orderBundles.set(digest, {
+          symbol,
+          trader: traders[i],
+          digest,
+          isPredictionMarket: isPred,
+          order: orders[i],
+          type: orders[i].type as OrderType,
+        });
       }
+    } catch (e) {
+      logger.info(
+        `${symbol} ${new Date(Date.now()).toISOString()}: error refreshing open orders`,
+        e
+      );
     }
+
+    logger.info(`found ${orderBundles.size} open ${symbol} orders.`);
     this.openOrders.set(symbol, orderBundles);
 
     const orderArray = [...orderBundles.values()];

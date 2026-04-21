@@ -369,9 +369,9 @@ export default class Executor {
 
         // Parent order should not be available in openOrders (already executed)
         // in the distributor for child order to get executed
-        return !this.distributor?.openOrders.has(
-          onchainOrder.parentChildOrderIds[1]
-        );
+        return !this.distributor?.openOrders
+          .get(onchainOrder.symbol)
+          ?.has(onchainOrder.parentChildOrderIds[1]);
       }
 
       // If this is parent order, we don't care about the dependencies.
