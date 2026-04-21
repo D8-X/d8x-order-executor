@@ -383,7 +383,7 @@ export default class Distributor {
             this.brokerOrders.get(symbol)!.set(digest, Date.now());
             setTimeout(() => {
               this.upgradeBrokerStubFromChain(symbol, traderAddr, digest);
-            }, 3_000);
+            }, 2_000);
             break;
           }
 
