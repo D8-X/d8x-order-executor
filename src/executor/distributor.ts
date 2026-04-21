@@ -830,19 +830,6 @@ export default class Distributor {
       return;
     }
 
-    try {
-      await this.refreshPrices(symbol);
-    } catch (e) {
-      logger.warn("error fetching from price service");
-      throw e;
-    }
-
-    const curPx = this.pxSubmission.get(symbol)!;
-    if (curPx.s2MktClosed || curPx.s3MktClosed) {
-      logger.debug(`${symbol} market is closed`);
-      return;
-    }
-
     const removeOrders: string[] = [];
     for (const [digest, orderBundle] of orders) {
       const command: ExecuteOrderCommand = {
@@ -859,9 +846,22 @@ export default class Distributor {
         continue;
       }
 
+      await this.waitUntilDelayElapsed(orderBundle);
+      if (!this.openOrders.get(symbol)?.has(digest)) continue;
+
+      try {
+        await this.refreshPrices(symbol);
+      } catch {
+        logger.warn("error fetching from price service");
+        continue;
+      }
+      const curPx = this.pxSubmission.get(symbol)!;
+      if (curPx.s2MktClosed || curPx.s3MktClosed) {
+        logger.debug(`${symbol} market is closed`);
+        continue;
+      }
+
       if (this.isExecutableIfOnChain(orderBundle, curPx.s2)) {
-        await this.waitUntilDelayElapsed(orderBundle);
-        if (!this.openOrders.get(symbol)?.has(digest)) continue;
         await this.sendCommand(command);
       }
       if (
