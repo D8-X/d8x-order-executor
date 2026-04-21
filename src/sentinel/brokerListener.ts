@@ -184,6 +184,7 @@ export default class BackendListener {
             "BrokerOrderCreatedEvent",
             JSON.stringify(eventMsg)
           );
+          break;
         default:
           break;
       }

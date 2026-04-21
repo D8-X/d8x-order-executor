@@ -424,6 +424,7 @@ export default class BlockhainListener {
         sleep(1_000).then(() => {
           process.exit(0);
         });
+        return;
 
       case "Liquidate":
         {
