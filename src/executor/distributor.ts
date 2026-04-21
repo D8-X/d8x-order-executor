@@ -71,9 +71,6 @@ export default class Distributor {
   private symbols: string[] = [];
   private chainId: number;
 
-  // publish times must be within 10 seconds of each other, or submission will fail on-chain
-  private MAX_OUTOFSYNC_SECONDS: number = 10;
-
   // Last time when refreshAllOpenOrders was called
   private lastRefreshOfAllOpenOrders: Date = new Date();
 
@@ -1042,22 +1039,6 @@ export default class Distributor {
         break;
     }
     return execute;
-  }
-
-  /**
-   * Check that max(t) - min (t) <= threshold
-   * @param timestamps Array of timestamps
-   * @returns True if the timestamps are sufficiently close to each other
-   */
-  private checkSubmissionsInSync(timestamps: number[]): boolean {
-    let gap = Math.max(...timestamps) - Math.min(...timestamps);
-    if (
-      gap > this.MAX_OUTOFSYNC_SECONDS &&
-      Math.min(...timestamps) >= Math.floor(Date.now() / 1_000 - 5)
-    ) {
-      return false;
-    }
-    return true;
   }
 
   public getOrder(symbol: string, digest: string) {

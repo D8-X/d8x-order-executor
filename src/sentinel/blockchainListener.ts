@@ -18,7 +18,7 @@ import {
   UpdateMarginAccountMsg,
   UpdateMarkPriceMsg,
 } from "../types.js";
-import { constructRedis, executeWithTimeout, sleep } from "../utils.js";
+import { constructRedis, executeWithTimeout, isEthersConnError, sleep } from "../utils.js";
 
 import {
   IPerpetualOrder,
@@ -261,20 +261,6 @@ export default class BlockhainListener {
     }, this.config.healthCheckSeconds * 1_000);
   }
 
-  public containsEthersConnErrors(error: string) {
-    const ethersErrors = [
-      "Unexpected server response",
-      "SERVER_ERROR",
-      "WebSocket was closed before the connection was established",
-    ];
-    for (const err of ethersErrors) {
-      if (error.includes(err)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   public async start() {
     this.network = await executeWithTimeout(
       this.httpProvider.getNetwork(),
@@ -340,20 +326,25 @@ export default class BlockhainListener {
     }
     // on error terminate
     this.listeningProvider.on("error", (e) => {
-      logger.info(
-        `${new Date(
-          Date.now()
-        ).toISOString()} BlockchainListener received error msg in ${this.mode
-        } mode:`,
-        e
+      const isConn = isEthersConnError(e);
+      logger.warn(
+        {
+          mode: this.mode,
+          connError: isConn,
+          error: (e as Error)?.message ?? e,
+        },
+        "BlockchainListener provider error"
       );
+      if (!isConn) {
+        // don't tear down the listener. just flag it.
+        return;
+      }
       // Submit last block received ts to executor/distributor to take action if
       // needed.
       this.redisPubClient.publish(
         "listener-error",
         this.lastBlockReceivedAt.toString()
       );
-
       this.unsubscribe();
       this.switchListeningMode();
     });

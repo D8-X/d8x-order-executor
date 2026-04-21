@@ -141,24 +141,33 @@ export function flagToOrderType(
   }
 }
 
-export async function createRedisTimer(r: Redis, name: string) {
-  const d = new Date();
-  await r.rpush(name, d.getTime());
+// Transient connection layer errors 
+const CONN_ERROR_PATTERNS = [
+  "Unexpected server response",
+  "SERVER_ERROR",
+  "WebSocket was closed before the connection was established",
+  "socket hang up",
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "network timeout",
+  "could not detect network",
+];
 
-  logger.info(`[REDIS TIMER: ${name}] Started at ${d.toISOString()}`);
-}
-
-export async function subRedisTimer(r: Redis, name: string, info: string) {
-  const prev = await r.rpop(name);
-  const d = new Date();
-  if (prev !== null) {
-    const prevTimestamp = parseInt(prev);
-    const diff = (d.getTime() - prevTimestamp) / 1000;
-    logger.info(
-      `[REDIS TIMER: ${name}] ${info} at ${d.toISOString()} sub from last: ${diff}s`
-    );
-
-    await r.rpush(name, prev);
-    await r.rpush(name, d.getTime());
+export function isEthersConnError(err: unknown): boolean {
+  const msg =
+    err instanceof Error
+      ? `${err.message} ${err.stack ?? ""}`
+      : typeof err === "string"
+        ? err
+        : (() => {
+          try { return JSON.stringify(err); } catch { return String(err); }
+        })();
+  for (const pat of CONN_ERROR_PATTERNS) {
+    if (msg.includes(pat)) return true;
   }
+  return false;
 }
+
