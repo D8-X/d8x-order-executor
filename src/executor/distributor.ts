@@ -42,7 +42,6 @@ import Executor from "./executor.js";
 import { logger } from "../logger.js";
 
 export default class Distributor {
-
   // SDK instance
   private md: MarketData;
   private redisSubClient: Redis;
@@ -108,7 +107,6 @@ export default class Distributor {
    * If none of the RPCs work, it sleeps before crashing.
    */
   public async initialize() {
-    // Create a proxy instance to access the blockchain
     let success = false;
     let i = 0;
     this.providers = this.providers.sort(() => Math.random() - 0.5);
@@ -179,7 +177,7 @@ export default class Distributor {
         this.openPositions.set(symbol, new Map());
         this.openOrders.set(symbol, new Map());
         this.symbols.push(symbol);
-      } catch (e) {
+      } catch {
         // symbol is ignored if cannot fetch data about it
         logger.info(`Could not fetch data for symbol ${symbol}`);
       }
@@ -322,8 +320,8 @@ export default class Distributor {
             }
             if (!this.brokerHandled.has(digest)) {
               // the order is not yet handled by broker WS path
-              // in this path only wait for the delay and try execute, without retries, 
-              // because if sentinel has not fired yet, it means the order is not yet in the open orders map, 
+              // in this path only wait for the delay and try execute, without retries,
+              // because if sentinel has not fired yet, it means the order is not yet in the open orders map,
               // and will be picked up by the block handler when it is
               const delayMs = (this.config.orderDelaySec ?? 0) * 1_000;
               this.eligibleAfterTs.set(digest, Date.now() + delayMs);
@@ -458,7 +456,7 @@ export default class Distributor {
     if (
       this.priceCurveUpdatedAtBlock.has(symbol) &&
       this.priceCurveUpdatedAtBlock.get(symbol)! >=
-      this.blockNumber + blockLatency
+        this.blockNumber + blockLatency
     ) {
       // price curve already updated at most X blocks ago
       return;
@@ -586,7 +584,7 @@ export default class Distributor {
         time: new Date(Date.now()).toISOString(),
         nextRefresh: new Date(
           (this.lastRefreshTime.get(symbol) ?? 0) +
-          this.config.refreshOrdersIntervalSecondsMin * 1_000
+            this.config.refreshOrdersIntervalSecondsMin * 1_000
         ),
       });
       return;
@@ -618,7 +616,10 @@ export default class Distributor {
           if (!digest || digest === ZERO_ORDER_ID) break;
           const co = orders[j];
           const order = this.md.smartContractOrderToOrder(co);
-          order.parentChildOrderIds = [co.parentChildDigest1, co.parentChildDigest2];
+          order.parentChildOrderIds = [
+            co.parentChildDigest1,
+            co.parentChildDigest2,
+          ];
           orderBundles.set(digest, {
             symbol,
             trader: co.traderAddr,
@@ -634,7 +635,9 @@ export default class Distributor {
       }
     } catch (e) {
       logger.warn(
-        `${symbol} ${new Date(Date.now()).toISOString()}: error refreshing open orders`,
+        `${symbol} ${new Date(
+          Date.now()
+        ).toISOString()}: error refreshing open orders`,
         e
       );
     }
@@ -765,7 +768,7 @@ export default class Distributor {
             });
           }
         });
-      } catch (e) {
+      } catch {
         logger.warn("Error fetching account chunk (RPC?)");
       }
     }
@@ -958,7 +961,7 @@ export default class Distributor {
     tradePrice = order.isPredictionMarket
       ? indexPrice + this.tradePremium.get(order.symbol)![sideIdx] * scale
       : indexPrice *
-      (1 + this.tradePremium.get(order.symbol)![sideIdx] * scale);
+        (1 + this.tradePremium.get(order.symbol)![sideIdx] * scale);
 
     let execute = false;
 
