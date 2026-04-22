@@ -42,12 +42,13 @@ import Executor from "./executor.js";
 import { logger } from "../logger.js";
 
 export default class Distributor {
-  // objects
+
+  // SDK instance
   private md: MarketData;
   private redisSubClient: Redis;
   public providers: MultiUrlJsonRpcProvider[];
 
-  // state
+  // Dynamic state info
   private blockNumber = 0;
   private priceCurveUpdatedAtBlock: Map<string, number> = new Map(); // symbol => block number
   private lastRefreshTime: Map<string, number> = new Map();
@@ -58,22 +59,20 @@ export default class Distributor {
   private midPremium: Map<string, number> = new Map();
   private unitAccumulatedFunding: Map<string, number> = new Map();
   private tradePremium: Map<string, [number, number]> = new Map();
-  // order digest => sent for execution timestamp
   private messageSentAt: Map<string, number> = new Map();
   private pricesFetchedAt: Map<string, number> = new Map();
   private refreshRpcIdx = 0;
   public ready: boolean = false;
 
-  // static info
+  // Static info
   private config: ExecutorConfig;
   private symbols: string[] = [];
   private chainId: number;
 
   // Last time when refreshAllOpenOrders was called
   private lastRefreshOfAllOpenOrders: Date = new Date();
-
+  // RPC timeout for calls made in distributor. The calls are expected to be fast enoug
   private readonly RPC_TIMEOUT_MS = 10_000;
-
   // Digests whose broker WS handler has taken ownership of execution
   private brokerHandled: Set<string> = new Set();
   // Earliest wall clock ms at which a digest may be sent for execution
