@@ -785,7 +785,7 @@ export default class Distributor {
         continue;
       }
 
-      await this.waitUntilDelayElapsed(orderBundle);
+      await this.waitUntilDelayElapsed();
       if (!this.openOrders.get(symbol)?.has(digest)) continue;
 
       try {
@@ -807,7 +807,7 @@ export default class Distributor {
     return;
   }
 
-  private async waitUntilDelayElapsed(_orderBundle: OrderBundle) {
+  private async waitUntilDelayElapsed() {
     const delay = this.config.orderDelaySec ?? 0;
     if (delay <= 0) return;
     await sleep(delay * 1_000);
