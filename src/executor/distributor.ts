@@ -81,12 +81,14 @@ export default class Distributor {
   constructor(config: ExecutorConfig, private executor: Executor) {
     this.config = config;
     const sdkConfig = PerpetualDataHandler.readSDKConfig(config.sdkConfig);
+
     if (config.priceFeedConfigNetwork !== undefined) {
       sdkConfig.priceFeedConfigNetwork = config.priceFeedConfigNetwork;
     }
     if (config.configSource !== undefined) {
       sdkConfig.configSource = config.configSource;
     }
+
     this.chainId = sdkConfig.chainId;
     this.redisSubClient = constructRedis("commanderSubClient");
     this.md = new MarketData(sdkConfig);
@@ -95,7 +97,6 @@ export default class Distributor {
         timeoutSeconds: 25,
         logErrors: true,
         logRpcSwitches: true,
-        // Distributor uses free rpcs, make sure to switch on each call.
         switchRpcOnEachRequest: true,
         staticNetwork: true,
       }),
