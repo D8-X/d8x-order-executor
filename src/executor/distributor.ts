@@ -24,6 +24,7 @@ import { JsonRpcProvider } from "ethers";
 import { Redis } from "ioredis";
 import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider.js";
 import {
+  BrokerOrderMsg,
   ExecuteOrderCommand,
   ExecutionFailedMsg,
   ExecutorConfig,
@@ -70,6 +71,13 @@ export default class Distributor {
 
   // Last time when refreshAllOpenOrders was called
   private lastRefreshOfAllOpenOrders: Date = new Date();
+
+  private readonly RPC_TIMEOUT_MS = 10_000;
+
+  // Digests whose broker WS handler has taken ownership of execution
+  private brokerHandled: Set<string> = new Set();
+  // Earliest wall clock ms at which a digest may be sent for execution
+  private eligibleAfterTs: Map<string, number> = new Map();
 
   constructor(config: ExecutorConfig, private executor: Executor) {
     this.config = config;
@@ -186,6 +194,7 @@ export default class Distributor {
       "ExecutionFailedEvent",
       "PerpetualLimitOrderCreatedEvent",
       "PerpetualLimitOrderCancelledEvent",
+      "BrokerOrderCreatedEvent",
       "Restart",
       "switch-mode",
       "listener-error",
@@ -311,7 +320,33 @@ export default class Distributor {
               // new trader, refresh
               await this.refreshAccount(symbol, trader);
             }
-            await this.checkOrders(symbol);
+            if (!this.brokerHandled.has(digest)) {
+              // the order is not yet handled by broker WS path
+              // in this path only wait for the delay and try execute, without retries, 
+              // because if sentinel has not fired yet, it means the order is not yet in the open orders map, 
+              // and will be picked up by the block handler when it is
+              const delayMs = (this.config.orderDelaySec ?? 0) * 1_000;
+              this.eligibleAfterTs.set(digest, Date.now() + delayMs);
+            }
+            break;
+          }
+
+          case "BrokerOrderCreatedEvent": {
+            const {
+              chainId,
+              symbol,
+              traderAddr,
+              digest,
+              type,
+            }: BrokerOrderMsg = JSON.parse(msg);
+            if (chainId !== this.chainId) {
+              break;
+            }
+            this.brokerHandled.add(digest);
+            this.addOrder(symbol, traderAddr, digest, type, undefined);
+            const delayMs = ((this.config.orderDelaySec ?? 0) + 1) * 1_000;
+            this.eligibleAfterTs.set(digest, Date.now() + delayMs);
+            this.scheduleBrokerExecution(symbol, digest);
             break;
           }
 
@@ -496,6 +531,8 @@ export default class Distributor {
       return;
     }
     this.openOrders.get(symbol)?.delete(digest);
+    this.brokerHandled.delete(digest);
+    this.eligibleAfterTs.delete(digest);
     logger.debug({
       info: "order removed",
       reason: reason,
@@ -573,7 +610,7 @@ export default class Distributor {
       while (true) {
         const [orders, digests] = (await executeWithTimeout(
           ob.pollRange(start, chunkSize),
-          10_000
+          this.RPC_TIMEOUT_MS
         )) as [any[], string[], unknown];
         let found = 0;
         for (let j = 0; j < orders.length; j++) {
@@ -700,7 +737,7 @@ export default class Distributor {
         const addressChunkBin = addressChunks.slice(i, i + rpcProviders.length);
         const accountChunk = await executeWithTimeout(
           Promise.allSettled(promises2.slice(i, i + rpcProviders.length)),
-          10_000
+          this.RPC_TIMEOUT_MS
         );
         accountChunk.map((results, j) => {
           if (results.status === "fulfilled") {
@@ -764,53 +801,57 @@ export default class Distributor {
    */
   private async checkOrders(symbol: string) {
     this.requireReady();
-    const orders = this.openOrders.get(symbol)!;
-    if (orders.size == 0) {
-      return;
+    const orders = this.openOrders.get(symbol);
+    if (!orders || orders.size === 0) return;
+    for (const digest of [...orders.keys()]) {
+      await this.tryExecute(symbol, digest);
     }
+  }
 
-    const removeOrders: string[] = [];
-    for (const [digest, orderBundle] of orders) {
-      const command: ExecuteOrderCommand = {
-        symbol: orderBundle.symbol,
-        digest: orderBundle.digest,
-        trader: orderBundle.trader,
-        reduceOnly: orderBundle.order?.reduceOnly,
-      };
-      // check if it's not too soon to send order for execution again
-      if (
-        Date.now() - (this.messageSentAt.get(command.digest) ?? 0) <
-        this.config.executeIntervalSecondsMin * 500
-      ) {
-        continue;
-      }
-
-      await this.waitUntilDelayElapsed();
-      if (!this.openOrders.get(symbol)?.has(digest)) continue;
-
+  // Returns true if a send was attempted
+  private async tryExecute(symbol: string, digest: string): Promise<boolean> {
+    const orderBundle = this.openOrders.get(symbol)?.get(digest);
+    if (!orderBundle || orderBundle.order === undefined) return false;
+    if ((this.eligibleAfterTs.get(digest) ?? 0) > Date.now()) return false;
+    if (
+      Date.now() - (this.messageSentAt.get(digest) ?? 0) <
+      this.config.executeIntervalSecondsMin * 500
+    ) {
+      return false;
+    }
+    const isMarket = orderBundle.order?.type === ORDER_TYPE_MARKET;
+    if (!isMarket) {
       try {
         await this.refreshPrices(symbol);
       } catch {
         logger.warn("error fetching from price service");
-        continue;
-      }
-      const curPx = this.pxSubmission.get(symbol)!;
-      if (curPx.s2MktClosed || curPx.s3MktClosed) {
-        logger.debug(`${symbol} market is closed`);
-        continue;
-      }
-
-      if (this.isExecutableIfOnChain(orderBundle, curPx.s2)) {
-        await this.sendCommand(command);
+        return false;
       }
     }
-    return;
+    const curPx = this.pxSubmission.get(symbol);
+    if (!curPx || curPx.s2MktClosed || curPx.s3MktClosed) return false;
+    if (!this.isExecutableIfOnChain(orderBundle, curPx.s2)) return false;
+    const command: ExecuteOrderCommand = {
+      symbol: orderBundle.symbol,
+      digest: orderBundle.digest,
+      trader: orderBundle.trader,
+      reduceOnly: orderBundle.order?.reduceOnly,
+    };
+    await this.sendCommand(command);
+    return true;
   }
 
-  private async waitUntilDelayElapsed() {
-    const delay = this.config.orderDelaySec ?? 0;
-    if (delay <= 0) return;
-    await sleep(delay * 1_000);
+  // broker-ws path
+  // wait 1 + delay seconds, then try execute; retry up to 4x1s if
+  // sentinel hasn't fired yet
+  private async scheduleBrokerExecution(symbol: string, digest: string) {
+    const waitMs = ((this.config.orderDelaySec ?? 0) + 1) * 1_000;
+    await sleep(waitMs);
+    for (let i = 0; i < 4; i++) {
+      if (await this.tryExecute(symbol, digest)) return;
+      if (!this.openOrders.get(symbol)?.has(digest)) return;
+      await sleep(1_000);
+    }
   }
 
   private async sendCommand(msg: ExecuteOrderCommand) {
