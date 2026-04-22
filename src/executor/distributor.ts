@@ -11,7 +11,6 @@ import {
   ORDER_TYPE_MARKET,
   ORDER_TYPE_STOP_LIMIT,
   ORDER_TYPE_STOP_MARKET,
-  OrderStatus,
   PerpetualDataHandler,
   SELL_SIDE,
   ZERO_ORDER_ID,
@@ -21,11 +20,10 @@ import type {
   IPerpetualOrder,
   PerpStorage,
 } from "@d8-x/d8x-node-sdk/contracts/IPerpetualManager";
-import { JsonRpcProvider, Overrides, ZeroAddress } from "ethers";
+import { JsonRpcProvider } from "ethers";
 import { Redis } from "ioredis";
 import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider.js";
 import {
-  BrokerOrderMsg,
   ExecuteOrderCommand,
   ExecutionFailedMsg,
   ExecutorConfig,
@@ -54,7 +52,6 @@ export default class Distributor {
   private lastRefreshTime: Map<string, number> = new Map();
   private openPositions: Map<string, Map<string, Position>> = new Map(); // symbol => (trader => Position)
   public openOrders: Map<string, Map<string, OrderBundle>> = new Map(); // symbol => (digest => order bundle)
-  private brokerOrders: Map<string, Map<string, number>> = new Map(); // symbol => (digest => received ts)
   private pxSubmission: Map<string, IdxPriceInfo> = new Map(); // symbol => px submission
   private markPremium: Map<string, number> = new Map();
   private midPremium: Map<string, number> = new Map();
@@ -173,9 +170,6 @@ export default class Distributor {
         // "preallocate" trader set
         this.openPositions.set(symbol, new Map());
         this.openOrders.set(symbol, new Map());
-        this.brokerOrders.set(symbol, new Map());
-        // dummy values
-        this.lastRefreshTime.set(symbol, 0);
         this.symbols.push(symbol);
       } catch (e) {
         // symbol is ignored if cannot fetch data about it
@@ -192,7 +186,6 @@ export default class Distributor {
       "ExecutionFailedEvent",
       "PerpetualLimitOrderCreatedEvent",
       "PerpetualLimitOrderCancelledEvent",
-      "BrokerOrderCreatedEvent",
       "Restart",
       "switch-mode",
       "listener-error",
@@ -368,25 +361,6 @@ export default class Distributor {
             break;
           }
 
-          case "BrokerOrderCreatedEvent": {
-            const {
-              chainId,
-              symbol,
-              traderAddr,
-              digest,
-              type,
-            }: BrokerOrderMsg = JSON.parse(msg);
-            if (chainId !== this.chainId) {
-              break;
-            }
-            this.addOrder(symbol, traderAddr, digest, type, undefined);
-            this.brokerOrders.get(symbol)!.set(digest, Date.now());
-            setTimeout(() => {
-              this.upgradeBrokerStubFromChain(symbol, traderAddr, digest);
-            }, 2_000);
-            break;
-          }
-
           case "listener-error":
           case "switch-mode":
             // Whenever something wrong happens on sentinel, refresh orders if
@@ -478,55 +452,6 @@ export default class Distributor {
       }
     }
     this.tradePremium.set(symbol, prem);
-  }
-
-  private async upgradeBrokerStubFromChain(
-    symbol: string,
-    trader: string,
-    digest: string
-  ) {
-    const bundle = this.openOrders.get(symbol)?.get(digest);
-    if (!bundle || bundle.order !== undefined) {
-      return;
-    }
-    try {
-      const status = await this.md.getOrderStatus(symbol, digest);
-      if (status !== OrderStatus.OPEN) {
-        return;
-      }
-      const provider =
-        this.providers[Math.floor(Math.random() * this.providers.length)];
-      const ob = this.md.getOrderBookContract(symbol, provider);
-      const [scOrder, deps] = await Promise.all([
-        ob.orderOfDigest(digest),
-        ob.orderDependency(digest),
-      ]);
-      if (scOrder.traderAddr === ZeroAddress) {
-        return;
-      }
-      const order = this.md.smartContractOrderToOrder(
-        scOrder as unknown as IPerpetualOrder.OrderStruct
-      );
-      order.parentChildOrderIds = [deps[0], deps[1]];
-      if (this.openOrders.get(symbol)?.get(digest)?.order !== undefined) {
-        return;
-      }
-      this.addOrder(symbol, trader, digest, order.type as OrderType, order);
-      logger.debug({
-        info: "broker stub upgraded via chain fallback",
-        symbol,
-        digest,
-        time: new Date(Date.now()).toISOString(),
-      });
-      await this.checkOrders(symbol);
-    } catch (e) {
-      logger.warn({
-        info: "upgradeBrokerStubFromChain failed",
-        symbol,
-        digest,
-        error: (e as Error)?.message ?? e,
-      });
-    }
   }
 
   private addOrder(
@@ -638,23 +563,37 @@ export default class Distributor {
     const rpcUrls = this.config.rpcWatch;
     const rpcURL = rpcUrls[this.refreshRpcIdx % rpcUrls.length];
     this.refreshRpcIdx = (this.refreshRpcIdx + 1) % rpcUrls.length;
-    const overrides: Overrides & { rpcURL: string } = { rpcURL };
     try {
-      const [orders, digests, traders] = await executeWithTimeout(
-        this.md.getAllOpenOrders(symbol, overrides),
-        10_000
-      );
-      for (let i = 0; i < orders.length; i++) {
-        const digest = digests[i];
-        if (!digest || digest == ZERO_ORDER_ID) continue;
-        orderBundles.set(digest, {
-          symbol,
-          trader: traders[i],
-          digest,
-          isPredictionMarket: isPred,
-          order: orders[i],
-          type: orders[i].type as OrderType,
-        });
+      const provider = new JsonRpcProvider(rpcURL, this.md.network, {
+        staticNetwork: true,
+      });
+      const ob = this.md.getOrderBookContract(symbol, provider);
+      const chunkSize = 500;
+      let start = 0;
+      while (true) {
+        const [orders, digests] = (await executeWithTimeout(
+          ob.pollRange(start, chunkSize),
+          10_000
+        )) as [any[], string[], unknown];
+        let found = 0;
+        for (let j = 0; j < orders.length; j++) {
+          const digest = digests[j];
+          if (!digest || digest === ZERO_ORDER_ID) break;
+          const co = orders[j];
+          const order = this.md.smartContractOrderToOrder(co);
+          order.parentChildOrderIds = [co.parentChildDigest1, co.parentChildDigest2];
+          orderBundles.set(digest, {
+            symbol,
+            trader: co.traderAddr,
+            digest,
+            isPredictionMarket: isPred,
+            order,
+            type: order.type as OrderType,
+          });
+          found++;
+        }
+        if (found < chunkSize) break;
+        start += found;
       }
     } catch (e) {
       logger.warn(
@@ -864,33 +803,14 @@ export default class Distributor {
       if (this.isExecutableIfOnChain(orderBundle, curPx.s2)) {
         await this.sendCommand(command);
       }
-      if (
-        orderBundle.order == undefined &&
-        Date.now() - (this.brokerOrders.get(symbol)?.get(digest) ?? 0) > 60_000
-      ) {
-        removeOrders.push(orderBundle.digest);
-        this.removeOrder(
-          orderBundle.symbol,
-          orderBundle.digest,
-          "broker order expired"
-        );
-      }
-    }
-    // cleanup
-    for (const digest of removeOrders) {
-      this.openOrders.get(symbol)?.delete(digest);
-      this.brokerOrders.get(symbol)?.delete(digest);
     }
     return;
   }
 
-  private async waitUntilDelayElapsed(orderBundle: OrderBundle) {
+  private async waitUntilDelayElapsed(_orderBundle: OrderBundle) {
     const delay = this.config.orderDelaySec ?? 0;
     if (delay <= 0) return;
-    const ts = orderBundle.order?.submittedTimestamp;
-    if (ts === undefined) return;
-    const remainingMs = (ts + delay) * 1_000 - Date.now();
-    if (remainingMs > 0) await sleep(remainingMs);
+    await sleep(delay * 1_000);
   }
 
   private async sendCommand(msg: ExecuteOrderCommand) {
