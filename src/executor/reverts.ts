@@ -1,5 +1,6 @@
 import { IncomingWebhook } from "@slack/webhook";
 import { Provider, toUtf8String, TransactionResponse } from "ethers";
+import { logger } from "../logger.js";
 
 // sendTxRevertedMessage sends a message to the Slack channel when a transaction
 // is reverted with reason other than execution frontruns
@@ -18,7 +19,7 @@ export const sendTxRevertedMessage = async (
       return;
     }
   }
-  console.log("transaction reverted with non-whitelisted reason", {
+  logger.info("transaction reverted with non-whitelisted reason", {
     revertReasonMessage: revertMsg,
     txHash,
     orderDigest,
@@ -27,7 +28,7 @@ export const sendTxRevertedMessage = async (
   // Send message to Slack
   const endpoint = process.env.SLACK_WEBHOOK_URL!;
   if (endpoint === undefined || endpoint === "") {
-    console.log("SLACK_WEBHOOK_URL not set, skipping Slack notification");
+    logger.info("SLACK_WEBHOOK_URL not set, skipping Slack notification");
     return;
   }
 

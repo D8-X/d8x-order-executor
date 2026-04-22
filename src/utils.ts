@@ -13,6 +13,7 @@ import {
 import { HDNodeWallet } from "ethers";
 import fs from "node:fs";
 import 'dotenv/config';
+import { logger } from "./logger.js";
 
 const shuffle = (array: string[]) => {
   for (let i = array.length - 1; i > 0; i--) {
@@ -85,7 +86,7 @@ export function constructRedis(name: string): Redis {
   let client;
   let redisConfig = getRedisConfig();
   client = new Redis(redisConfig);
-  client.on("error", (err) => console.log(`${name} Redis Client Error:` + err));
+  client.on("error", (err) => logger.info(`${name} Redis Client Error:` + err));
   return client;
 }
 
@@ -126,7 +127,7 @@ export function flagToOrderType(
   let flag = BigInt(orderFlags);
   let isLimit = containsFlag(flag, MASK_LIMIT_ORDER);
   let hasLimit =
-    BigInt(orderLimitPrice) != 0n || BigInt(orderLimitPrice) != MAX_64x64;
+    BigInt(orderLimitPrice) != 0n && BigInt(orderLimitPrice) != MAX_64x64;
   let isStop = containsFlag(flag, MASK_STOP_ORDER);
 
   if (isStop && hasLimit) {
@@ -140,24 +141,33 @@ export function flagToOrderType(
   }
 }
 
-export async function createRedisTimer(r: Redis, name: string) {
-  const d = new Date();
-  await r.rpush(name, d.getTime());
+// Transient connection layer errors 
+const CONN_ERROR_PATTERNS = [
+  "Unexpected server response",
+  "SERVER_ERROR",
+  "WebSocket was closed before the connection was established",
+  "socket hang up",
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "network timeout",
+  "could not detect network",
+];
 
-  console.log(`[REDIS TIMER: ${name}] Started at ${d.toISOString()}`);
-}
-
-export async function subRedisTimer(r: Redis, name: string, info: string) {
-  const prev = await r.rpop(name);
-  const d = new Date();
-  if (prev !== null) {
-    const prevTimestamp = parseInt(prev);
-    const diff = (d.getTime() - prevTimestamp) / 1000;
-    console.log(
-      `[REDIS TIMER: ${name}] ${info} at ${d.toISOString()} sub from last: ${diff}s`
-    );
-
-    await r.rpush(name, prev);
-    await r.rpush(name, d.getTime());
+export function isEthersConnError(err: unknown): boolean {
+  const msg =
+    err instanceof Error
+      ? `${err.message} ${err.stack ?? ""}`
+      : typeof err === "string"
+        ? err
+        : (() => {
+          try { return JSON.stringify(err); } catch { return String(err); }
+        })();
+  for (const pat of CONN_ERROR_PATTERNS) {
+    if (msg.includes(pat)) return true;
   }
+  return false;
 }
+

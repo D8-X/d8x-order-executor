@@ -2,6 +2,7 @@ import Executor from "./executor.js";
 import { loadAccounts, loadConfig, sleep } from "../utils.js";
 import Distributor from "./distributor.js";
 import 'dotenv/config';
+import { logger } from "../logger.js";
 
 async function start() {
   const sdkConfig = process.env.SDK_CONFIG;
@@ -23,7 +24,7 @@ async function start() {
 
   // bot wallets
   const { addr, pk } = loadAccounts(seedPhrase, 1, cfg.bots);
-  console.log(
+  logger.info(
     `\nStarting ${addr.length} bots with addresses ${addr.join("\n")}`
   );
 
@@ -33,7 +34,7 @@ async function start() {
   try {
     await executor.fundWallets(addr);
   } catch (e) {
-    console.log(e);
+    logger.info(e);
     await sleep(60_000);
     process.exit(1);
   }
