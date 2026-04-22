@@ -76,6 +76,8 @@ export default class Distributor {
   private brokerHandled: Set<string> = new Set();
   // Earliest wall clock ms at which a digest may be sent for execution
   private eligibleAfterTs: Map<string, number> = new Map();
+  // Which path learned about each digest first
+  private orderSource: Map<string, "broker" | "sentinel" | "refresh"> = new Map();
 
   constructor(config: ExecutorConfig, private executor: Executor) {
     this.config = config;
@@ -128,20 +130,30 @@ export default class Distributor {
     }
 
     const info = await this.md.exchangeInfo();
-    logger.info(JSON.stringify(info, undefined, "  "));
+    const runningPools = info.pools.filter((p) => p.isRunning);
+    const allPerps = runningPools.flatMap((p) => p.perpetuals);
+    logger.info({
+      info: "exchange info",
+      proxyAddr: info.proxyAddr,
+      chainId: Number(this.md.chainId),
+      runningPools: runningPools.length,
+      totalPerps: allPerps.length,
+      normalPerps: allPerps.filter((p) => p.state === "NORMAL").length,
+      poolSymbols: runningPools.map((p) => p.poolSymbol),
+    });
+    logger.debug({ info: "full exchange info", exchange: info });
 
-    const symbols = info.pools
-      .filter(({ isRunning }) => isRunning)
-      .map((pool) =>
+    const symbols = runningPools
+      .flatMap((pool) =>
         pool.perpetuals
           .filter(({ state }) => state === "NORMAL")
           .map(
             (perpetual) =>
               `${perpetual.baseCurrency}-${perpetual.quoteCurrency}-${pool.poolSymbol}`
           )
-      )
-      .flat();
-    logger.info({ symbols });
+      );
+    logger.info({ info: "tracked symbols", count: symbols.length });
+    logger.debug({ info: "tracked symbols", symbols });
 
     for (const symbol of symbols) {
       try {
@@ -314,8 +326,10 @@ export default class Distributor {
               order
             );
             await this.updatePriceCurve(symbol);
-            if (!this.openPositions.get(symbol)?.has(trader)) {
-              // new trader, refresh
+            if (
+              order.reduceOnly &&
+              !this.openPositions.get(symbol)?.has(trader)
+            ) {
               await this.refreshAccount(symbol, trader);
             }
             if (!this.brokerHandled.has(digest)) {
@@ -325,6 +339,7 @@ export default class Distributor {
               // and will be picked up by the block handler when it is
               const delayMs = (this.config.orderDelaySec ?? 0) * 1_000;
               this.eligibleAfterTs.set(digest, Date.now() + delayMs);
+              if (!this.orderSource.has(digest)) this.orderSource.set(digest, "sentinel");
             }
             break;
           }
@@ -341,6 +356,7 @@ export default class Distributor {
               break;
             }
             this.brokerHandled.add(digest);
+            this.orderSource.set(digest, "broker");
             this.addOrder(symbol, traderAddr, digest, type, undefined);
             const delayMs = ((this.config.orderDelaySec ?? 0) + 1) * 1_000;
             this.eligibleAfterTs.set(digest, Date.now() + delayMs);
@@ -378,16 +394,22 @@ export default class Distributor {
           }
 
           case "ExecutionFailedEvent": {
-            const {
-              chainId,
+            const parsed: ExecutionFailedMsg = JSON.parse(msg);
+            const { chainId, symbol, digest, trader, reason, hash, block } =
+              parsed;
+            if (chainId !== this.chainId) {
+              break;
+            }
+            logger.warn({
+              info: "ExecutionFailedEvent",
               symbol,
               digest,
               trader,
               reason,
-            }: ExecutionFailedMsg = JSON.parse(msg);
-            if (chainId !== this.chainId) {
-              break;
-            }
+              source: this.orderSource.get(digest) ?? "unknown",
+              txHash: hash,
+              block,
+            });
             if (reason != "cancel delay required") {
               this.removeOrder(symbol, digest, reason, trader);
             }
@@ -452,6 +474,17 @@ export default class Distributor {
    * @param symbol
    */
   private async updatePriceCurve(symbol: string) {
+    const orders = this.openOrders.get(symbol);
+    if (orders) {
+      let hasPriceGated = false;
+      for (const { order } of orders.values()) {
+        if (order && order.type !== ORDER_TYPE_MARKET) {
+          hasPriceGated = true;
+          break;
+        }
+      }
+      if (!hasPriceGated) return;
+    }
     const blockLatency = 2;
     if (
       this.priceCurveUpdatedAtBlock.has(symbol) &&
@@ -531,6 +564,8 @@ export default class Distributor {
     this.openOrders.get(symbol)?.delete(digest);
     this.brokerHandled.delete(digest);
     this.eligibleAfterTs.delete(digest);
+    // keep orderSource around briefly so late ExecutionFailed logs can still show path
+    setTimeout(() => this.orderSource.delete(digest), 30_000);
     logger.debug({
       info: "order removed",
       reason: reason,
@@ -606,10 +641,10 @@ export default class Distributor {
       const chunkSize = 500;
       let start = 0;
       while (true) {
-        const [orders, digests] = (await executeWithTimeout(
+        const [orders, digests, submittedTs] = (await executeWithTimeout(
           ob.pollRange(start, chunkSize),
           this.RPC_TIMEOUT_MS
-        )) as [any[], string[], unknown];
+        )) as [any[], string[], bigint[]];
         let found = 0;
         for (let j = 0; j < orders.length; j++) {
           const digest = digests[j];
@@ -620,6 +655,7 @@ export default class Distributor {
             co.parentChildDigest1,
             co.parentChildDigest2,
           ];
+          order.submittedTimestamp = Number(submittedTs[j]);
           orderBundles.set(digest, {
             symbol,
             trader: co.traderAddr,
@@ -628,6 +664,7 @@ export default class Distributor {
             order,
             type: order.type as OrderType,
           });
+          if (!this.orderSource.has(digest)) this.orderSource.set(digest, "refresh");
           found++;
         }
         if (found < chunkSize) break;
@@ -851,8 +888,17 @@ export default class Distributor {
     const waitMs = ((this.config.orderDelaySec ?? 0) + 1) * 1_000;
     await sleep(waitMs);
     for (let i = 0; i < 4; i++) {
-      if (await this.tryExecute(symbol, digest)) return;
+      if (this.messageSentAt.has(digest)) {
+        logger.debug({
+          info: "broker path skipped: already handled by main path",
+          symbol,
+          digest,
+        });
+        this.brokerHandled.delete(digest);
+        return;
+      }
       if (!this.openOrders.get(symbol)?.has(digest)) return;
+      if (await this.tryExecute(symbol, digest)) return;
       await sleep(1_000);
     }
   }
