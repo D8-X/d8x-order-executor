@@ -358,8 +358,10 @@ export default class Distributor {
             this.brokerHandled.add(digest);
             this.orderSource.set(digest, "broker");
             this.addOrder(symbol, traderAddr, digest, type, undefined);
-            const delayMs = ((this.config.orderDelaySec ?? 0) + 1) * 1_000;
-            this.eligibleAfterTs.set(digest, Date.now() + delayMs);
+            if (!this.eligibleAfterTs.has(digest)) {
+              const delayMs = ((this.config.orderDelaySec ?? 0) + 1) * 1_000;
+              this.eligibleAfterTs.set(digest, Date.now() + delayMs);
+            }
             this.scheduleBrokerExecution(symbol, digest);
             break;
           }
