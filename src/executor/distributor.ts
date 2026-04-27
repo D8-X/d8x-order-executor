@@ -903,6 +903,11 @@ export default class Distributor {
       if (await this.tryExecute(symbol, digest)) return;
       await sleep(1_000);
     }
+    // that's delay + 1 + 4 
+    const bundle = this.openOrders.get(symbol)?.get(digest);
+    if (bundle && bundle.order === undefined) {
+      this.removeOrder(symbol, digest, "broker stub timed out");
+    }
   }
 
   private async sendCommand(msg: ExecuteOrderCommand) {
