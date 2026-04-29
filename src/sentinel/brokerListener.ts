@@ -171,9 +171,15 @@ export default class BackendListener {
             chainId: this.chainId,
             symbol: this.md!.getSymbolFromPerpId(+perpId)!,
             perpetualId: +perpId,
-            traderAddr: traderAddr,
+            traderAddr,
             digest: `0x${orderId}`,
             type: flagToOrderType(BigInt(flags), BigInt(fLimitPrice)),
+            fAmount,
+            fLimitPrice,
+            fTriggerPrice,
+            iDeadline,
+            flags,
+            executionTimestamp,
           };
           logger.debug({
             event: "BrokerOrderCreated",

@@ -1,8 +1,11 @@
 import {
   ABK64x64ToFloat,
   BUY_SIDE,
+  containsFlag,
   IdxPriceInfo,
   MarketData,
+  MASK_CLOSE_ONLY,
+  MASK_KEEP_POS_LEVERAGE,
   Multicall3,
   Multicall3__factory,
   MULTICALL_ADDRESS,
@@ -12,6 +15,7 @@ import {
   ORDER_TYPE_STOP_LIMIT,
   ORDER_TYPE_STOP_MARKET,
   PerpetualDataHandler,
+  priceToProb,
   SELL_SIDE,
   ZERO_ORDER_ID,
 } from "@d8-x/d8x-node-sdk";
@@ -345,24 +349,18 @@ export default class Distributor {
           }
 
           case "BrokerOrderCreatedEvent": {
-            const {
-              chainId,
-              symbol,
-              traderAddr,
-              digest,
-              type,
-            }: BrokerOrderMsg = JSON.parse(msg);
-            if (chainId !== this.chainId) {
+            const m: BrokerOrderMsg = JSON.parse(msg);
+            if (m.chainId !== this.chainId) {
               break;
             }
-            this.brokerHandled.add(digest);
-            this.orderSource.set(digest, "broker");
-            this.addOrder(symbol, traderAddr, digest, type, undefined);
-            if (!this.eligibleAfterTs.has(digest)) {
+            this.brokerHandled.add(m.digest);
+            this.orderSource.set(m.digest, "broker");
+            this.addOrder(m.symbol, m.traderAddr, m.digest, m.type, this.brokerMsgToOrder(m));
+            if (!this.eligibleAfterTs.has(m.digest)) {
               const delayMs = ((this.config.orderDelaySec ?? 0) + 1) * 1_000;
-              this.eligibleAfterTs.set(digest, Date.now() + delayMs);
+              this.eligibleAfterTs.set(m.digest, Date.now() + delayMs);
             }
-            this.scheduleBrokerExecution(symbol, digest);
+            this.scheduleBrokerExecution(m.symbol, m.digest);
             break;
           }
 
@@ -520,6 +518,28 @@ export default class Distributor {
       }
     }
     this.tradePremium.set(symbol, prem);
+  }
+
+  private brokerMsgToOrder(m: BrokerOrderMsg): Order {
+    const flags = BigInt(m.flags);
+    const fAmount = BigInt(m.fAmount);
+    const fLimit = BigInt(m.fLimitPrice);
+    const fStop = BigInt(m.fTriggerPrice);
+    const isPM = this.md.isPredictionMarket(m.symbol);
+    const limit = fLimit === 0n ? undefined : ABK64x64ToFloat(fLimit);
+    const stop = fStop === 0n ? undefined : ABK64x64ToFloat(fStop);
+    return {
+      symbol: m.symbol,
+      side: fAmount >= 0n ? BUY_SIDE : SELL_SIDE,
+      type: m.type,
+      quantity: Math.abs(ABK64x64ToFloat(fAmount)),
+      reduceOnly: containsFlag(flags, MASK_CLOSE_ONLY),
+      limitPrice: isPM && limit !== undefined ? priceToProb(limit) : limit,
+      keepPositionLvg: containsFlag(flags, MASK_KEEP_POS_LEVERAGE),
+      stopPrice: isPM && stop !== undefined ? priceToProb(stop) : stop,
+      deadline: m.iDeadline,
+      executionTimestamp: m.executionTimestamp,
+    };
   }
 
   private addOrder(

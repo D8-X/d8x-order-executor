@@ -111,6 +111,12 @@ export interface BrokerOrderMsg {
   traderAddr: string;
   digest: string;
   type: OrderType;
+  fAmount: string;
+  fLimitPrice: string;
+  fTriggerPrice: string;
+  iDeadline: number;
+  flags: number;
+  executionTimestamp: number;
 }
 
 export interface LiquidateMsg extends RedisMsg {
