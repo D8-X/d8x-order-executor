@@ -1,5 +1,6 @@
 import {
   Order,
+  ORDER_TYPE_MARKET,
   OrderExecutorTool,
   PerpetualDataHandler,
   ZERO_ORDER_ID,
@@ -390,28 +391,11 @@ export default class Executor {
     digest: string,
     selectedExecutorTool: OrderExecutorTool
   ): Promise<Order | undefined> {
+    // getOrderById already fetches orderOfDigest + orderDependency in a single
+    // multicall and sets order.parentChildOrderIds
     const order = await selectedExecutorTool.getOrderById(symbol, digest);
-
-    // Do not query for dependencies if order is not found - saves 1 rpc call
     if (!order) {
       return undefined;
-    }
-
-    // We can't bundle retrieval of orderbook sc and order in one go from
-    // getOrderById, so therefore we do this twice here.
-    let ob = selectedExecutorTool.getOrderBookContract(symbol);
-    // Pick random free rpc from distributor (we don't want to use paid executor
-    // rpc for this here)
-    const randomDistributorRPC =
-      this.distributor!.providers[
-      Math.floor(Math.random() * this.distributor!.providers.length)
-      ];
-    ob.connect(randomDistributorRPC);
-    // Make sure dependencies are fetched after order is fetched to introduce a
-    // slight 1 network call delay (xlayer chain problem)
-    const deps = await ob.orderDependency(digest);
-    if (order && deps) {
-      order.parentChildOrderIds = [deps[0], deps[1]];
     }
 
     return order;
@@ -500,13 +484,10 @@ export default class Executor {
       });
     }
 
-    const onChainTS = (() => {
-      if (onChainOrder != undefined) {
-        return onChainOrder.submittedTimestamp;
-      }
-    })();
+    const isMarket = onChainOrder?.type === ORDER_TYPE_MARKET;
+    const onChainTS = onChainOrder?.submittedTimestamp;
 
-    if (!onChainTS) {
+    if (!onChainOrder) {
       logger.debug({
         reason: "order not found",
         symbol: symbol,
@@ -579,7 +560,7 @@ export default class Executor {
     }
 
     const oracleTS = Math.min(...px.submission.timestamps);
-    if (oracleTS < onChainTS) {
+    if (!isMarket && onChainTS && oracleTS < onChainTS) {
       // let oracle cache expire before trying
       logger.debug({
         reason: "outdated off-chain oracle(s)",
