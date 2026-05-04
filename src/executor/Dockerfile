@@ -1,23 +1,24 @@
 # syntax=docker/dockerfile:1.6
-FROM node:20-alpine
 
-ARG SDK_CONFIG
-ARG REDIS_HOST
-ARG REDIS_PORT
-ARG REDIS_ID
-
+# ---- builder ----
+FROM node:20-alpine AS builder
 WORKDIR /app
 
 COPY package.json yarn.lock ./
-# If you're in a monorepo, also COPY workspace package.json files needed for yarn resolution here.
 
 # Use the secret npmrc only during install (not stored in layers)
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc \
     yarn install --frozen-lockfile
 
-# Now copy the rest
 COPY . .
 
-RUN yarn build
+RUN yarn build && yarn bundle:executor
 
-CMD ["yarn", "start-executor"]
+# ---- runtime ----
+# Single bundled CJS file: no node_modules, no source, no SDK files on disk.
+FROM node:20-alpine
+WORKDIR /app
+
+COPY --from=builder /app/bundles/executor.cjs ./executor.cjs
+
+CMD ["node", "executor.cjs"]

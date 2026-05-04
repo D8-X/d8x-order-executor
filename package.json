@@ -4,7 +4,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@d8-x/d8x-node-sdk": "0.1.66",
+    "@d8-x/d8x-node-sdk": "0.1.75",
     "@pythnetwork/pyth-sdk-solidity": "^2.2.1",
     "@slack/webhook": "^7.0.2",
     "dotenv": "^16.0.3",
@@ -21,6 +21,7 @@
     "@types/express": "^4.17.21",
     "@types/node": "^20.0.0",
     "@types/ws": "^8.5.5",
+    "esbuild": "^0.23.0",
     "patch-package": "^7.0.2",
     "pino-pretty": "^13.1.3",
     "postinstall-postinstall": "^2.1.0",
@@ -32,6 +33,8 @@
     "build": "tsc -p tsconfig.json",
     "start-sentinel": "node dist/sentinel/main.js",
     "start-executor": "node dist/executor/main.js",
+    "bundle:executor": "esbuild dist/executor/main.js --bundle --platform=node --target=node20 --format=cjs --minify --legal-comments=none --external:pino-pretty --external:bufferutil --external:utf-8-validate --outfile=bundles/executor.cjs",
+    "bundle:sentinel": "esbuild dist/sentinel/main.js --bundle --platform=node --target=node20 --format=cjs --minify --legal-comments=none --external:pino-pretty --external:bufferutil --external:utf-8-validate --outfile=bundles/sentinel.cjs",
     "postinstall": "patch-package"
   }
 }
