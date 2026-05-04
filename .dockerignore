@@ -3,6 +3,9 @@
 .github
 .vscode
 ./src/orderBook/
+.npmrc
+bundles/
+dist/
 examples/
 logs/
 node_modules/
