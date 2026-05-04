@@ -9,14 +9,15 @@ export enum OrderExecutionError {
   too_low_intrinsic_gas = "too_low_intrinsic_gas",
 }
 
-export class ExecutorMetrics {
-  constructor(
-    // Port on which metrics endpoint server will be exposed
-    private port: number = 9001,
-    // Endpoint on which the metrics will be exposed
-    private endpoint: string = "metrics",
+export type ExecutionOutcome = "confirmed" | "failed" | "rejected";
 
-    // All the exported metrics below
+export class ExecutorMetrics {
+  private readonly chain: string;
+
+  constructor(
+    chain: string = process.env.SDK_CONFIG ?? "unknown",
+    private port: number = 9001,
+    private endpoint: string = "metrics",
     private metricsList = {
       orderExecutionErrors: new promClient.Counter({
         name: "execute_order_errors",
@@ -31,20 +32,35 @@ export class ExecutorMetrics {
         name: "execute_order_failed_confirmations",
         help: "Number of failed executed orders confirmations",
       }),
+      openOrders: new promClient.Gauge({
+        name: "executor_open_orders",
+        help: "Number of currently open orders per symbol and order type, observed at the last refresh.",
+        labelNames: ["chain", "symbol", "type"] as const,
+      }),
+      openOrderOldestAge: new promClient.Gauge({
+        name: "executor_open_order_oldest_age_seconds",
+        help: "Age in seconds of the oldest currently open order per symbol and order type.",
+        labelNames: ["chain", "symbol", "type"] as const,
+      }),
+      lastExecutionTimestamp: new promClient.Gauge({
+        name: "executor_last_execution_timestamp_seconds",
+        help: "Unix timestamp of the last successful order execution per worker wallet.",
+        labelNames: ["chain", "bot_idx", "bot_addr"] as const,
+      }),
+      executionsTotal: new promClient.Counter({
+        name: "executor_executions_total",
+        help: "Cumulative count of order execution outcomes per worker wallet.",
+        labelNames: ["chain", "bot_idx", "bot_addr", "outcome"] as const,
+      }),
     }
-  ) {}
+  ) {
+    this.chain = chain;
+  }
 
-  /**
-   * Start the metrics endpoint
-   */
   public async start() {
     this.metricsEndpoint(this.port, this.endpoint);
   }
 
-  /**
-   * Exposes metrics endpoint at given port
-   * @param port
-   */
   private async metricsEndpoint(port: number, endpoint: string = "metrics") {
     const app = express();
     app.get(`/${endpoint}`, async (req: any, res: any) => {
@@ -83,5 +99,24 @@ export class ExecutorMetrics {
 
   public incrementOrderExecutionFailedConfirmations() {
     this.metricsList.orderExecutionFailedConfirmations.inc();
+  }
+
+  public setOpenOrders(symbol: string, type: string, count: number, oldestAgeSeconds: number) {
+    const t = type.toLowerCase();
+    this.metricsList.openOrders.labels(this.chain, symbol, t).set(count);
+    this.metricsList.openOrderOldestAge.labels(this.chain, symbol, t).set(oldestAgeSeconds);
+  }
+
+  public observeLastExecution(botIdx: number, botAddr: string, when: Date = new Date()) {
+    this.metricsList.lastExecutionTimestamp
+      .labels(this.chain, String(botIdx), botAddr.toLowerCase())
+      .set(Math.floor(when.getTime() / 1000));
+  }
+
+  public incExecutionOutcome(botIdx: number, botAddr: string, outcome: ExecutionOutcome, n: number = 1) {
+    if (n <= 0) return;
+    this.metricsList.executionsTotal
+      .labels(this.chain, String(botIdx), botAddr.toLowerCase(), outcome)
+      .inc(n);
   }
 }
