@@ -690,10 +690,13 @@ export default class Distributor {
           });
           if (!this.orderSource.has(digest)) this.orderSource.set(digest, "refresh");
           if (!this.eligibleAfterTs.has(digest)) {
-            const eligibleAtMs =
-              (order.submittedTimestamp + (this.config.orderDelaySec ?? 0)) *
-              1_000;
-            this.eligibleAfterTs.set(digest, eligibleAtMs);
+            const delaySec = this.config.orderDelaySec ?? 0;
+            const ageSec = Math.max(
+              0,
+              Math.floor(Date.now() / 1_000) - order.submittedTimestamp
+            );
+            const remainingSec = Math.max(0, delaySec - ageSec);
+            this.eligibleAfterTs.set(digest, Date.now() + remainingSec * 1_000);
           }
           found++;
         }
