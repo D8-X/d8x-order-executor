@@ -322,6 +322,17 @@ export default class Distributor {
             if (chainId !== this.chainId) {
               break;
             }
+            // Hold off execution until orderDelaySec has elapsed since the
+            // order was first observed, so we don't submit before the on-chain
+            // delay-required window has passed. The gate must be set before
+            // any await and before addOrder, otherwise checkOrders can pick
+            // up the order with no gate in place. The broker WS path owns
+            // the gate when it has already claimed the digest.
+            if (!this.brokerHandled.has(digest)) {
+              const delayMs = (this.config.orderDelaySec ?? 0) * 1_000;
+              this.eligibleAfterTs.set(digest, Date.now() + delayMs);
+              if (!this.orderSource.has(digest)) this.orderSource.set(digest, "sentinel");
+            }
             this.addOrder(
               symbol,
               trader,
@@ -335,15 +346,6 @@ export default class Distributor {
               !this.openPositions.get(symbol)?.has(trader)
             ) {
               await this.refreshAccount(symbol, trader);
-            }
-            if (!this.brokerHandled.has(digest)) {
-              // the order is not yet handled by broker WS path
-              // in this path only wait for the delay and try execute, without retries,
-              // because if sentinel has not fired yet, it means the order is not yet in the open orders map,
-              // and will be picked up by the block handler when it is
-              const delayMs = (this.config.orderDelaySec ?? 0) * 1_000;
-              this.eligibleAfterTs.set(digest, Date.now() + delayMs);
-              if (!this.orderSource.has(digest)) this.orderSource.set(digest, "sentinel");
             }
             break;
           }
@@ -687,6 +689,15 @@ export default class Distributor {
             type: order.type as OrderType,
           });
           if (!this.orderSource.has(digest)) this.orderSource.set(digest, "refresh");
+          if (!this.eligibleAfterTs.has(digest)) {
+            const delaySec = this.config.orderDelaySec ?? 0;
+            const ageSec = Math.max(
+              0,
+              Math.floor(Date.now() / 1_000) - order.submittedTimestamp
+            );
+            const remainingSec = Math.max(0, delaySec - ageSec);
+            this.eligibleAfterTs.set(digest, Date.now() + remainingSec * 1_000);
+          }
           found++;
         }
         if (found < chunkSize) break;
@@ -874,7 +885,16 @@ export default class Distributor {
   private async tryExecute(symbol: string, digest: string): Promise<boolean> {
     const orderBundle = this.openOrders.get(symbol)?.get(digest);
     if (!orderBundle || orderBundle.order === undefined) return false;
-    if ((this.eligibleAfterTs.get(digest) ?? 0) > Date.now()) return false;
+    const eligibleAt = this.eligibleAfterTs.get(digest);
+    if (eligibleAt === undefined) {
+      logger.warn({
+        info: "missing eligibility timestamp for order",
+        symbol,
+        digest,
+      });
+      return false;
+    }
+    if (eligibleAt > Date.now()) return false;
     if (
       Date.now() - (this.messageSentAt.get(digest) ?? 0) <
       this.config.executeIntervalSecondsMin * 500
