@@ -689,6 +689,12 @@ export default class Distributor {
             type: order.type as OrderType,
           });
           if (!this.orderSource.has(digest)) this.orderSource.set(digest, "refresh");
+          if (!this.eligibleAfterTs.has(digest)) {
+            const eligibleAtMs =
+              (order.submittedTimestamp + (this.config.orderDelaySec ?? 0)) *
+              1_000;
+            this.eligibleAfterTs.set(digest, eligibleAtMs);
+          }
           found++;
         }
         if (found < chunkSize) break;
@@ -876,7 +882,16 @@ export default class Distributor {
   private async tryExecute(symbol: string, digest: string): Promise<boolean> {
     const orderBundle = this.openOrders.get(symbol)?.get(digest);
     if (!orderBundle || orderBundle.order === undefined) return false;
-    if ((this.eligibleAfterTs.get(digest) ?? 0) > Date.now()) return false;
+    const eligibleAt = this.eligibleAfterTs.get(digest);
+    if (eligibleAt === undefined) {
+      logger.warn({
+        info: "missing eligibility timestamp for order",
+        symbol,
+        digest,
+      });
+      return false;
+    }
+    if (eligibleAt > Date.now()) return false;
     if (
       Date.now() - (this.messageSentAt.get(digest) ?? 0) <
       this.config.executeIntervalSecondsMin * 500
