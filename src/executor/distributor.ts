@@ -117,8 +117,9 @@ export default class Distributor {
 
   // Last time when refreshAllOpenOrders was called
   private lastRefreshOfAllOpenOrders: Date = new Date();
-  // RPC timeout for calls made in distributor. The calls are expected to be fast enoug
-  private readonly RPC_TIMEOUT_MS = 10_000;
+  // RPC timeout for calls made in distributor. Sized for parallel refreshOpenOrders
+  // fan-out where each pollRange can take 12-20s under contention.
+  private readonly RPC_TIMEOUT_MS = 30_000;
   // Digests whose broker WS handler has taken ownership of execution
   private brokerHandled: Set<string> = new Set();
   // Earliest wall clock ms at which a digest may be sent for execution
@@ -727,6 +728,7 @@ export default class Distributor {
     const rpcUrls = this.config.rpcWatch;
     const rpcURL = rpcUrls[this.refreshRpcIdx % rpcUrls.length];
     this.refreshRpcIdx = (this.refreshRpcIdx + 1) % rpcUrls.length;
+    let succeeded = false;
     try {
       const provider = new JsonRpcProvider(rpcURL, this.md.network, {
         staticNetwork: true,
@@ -773,6 +775,7 @@ export default class Distributor {
         if (found < chunkSize) break;
         start += found;
       }
+      succeeded = true;
     } catch (e) {
       logger.warn(
         `${symbol} ${new Date(
@@ -780,6 +783,18 @@ export default class Distributor {
         ).toISOString()}: error refreshing open orders`,
         e
       );
+    }
+
+    if (!succeeded) {
+      // Preserve the existing in-memory order book; an empty result from a
+      // timed-out poll would otherwise wipe digests learned via broker WS or
+      // sentinel events.
+      logger.warn({
+        info: "refresh failed, keeping cached orders",
+        symbol,
+        cached: this.openOrders.get(symbol)?.size ?? 0,
+      });
+      return;
     }
 
     logger.info(`found ${orderBundles.size} open ${symbol} orders.`);
