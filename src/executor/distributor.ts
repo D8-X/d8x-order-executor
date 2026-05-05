@@ -58,7 +58,12 @@ function withLimit(concurrency: number) {
     new Promise<T>((resolve, reject) => {
       const run = () => {
         active++;
-        fn().then(resolve, reject).finally(release);
+        try {
+          fn().then(resolve, reject).finally(release);
+        } catch (e) {
+          release();
+          reject(e);
+        }
       };
       if (active < concurrency) run();
       else queue.push(run);
