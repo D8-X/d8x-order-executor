@@ -16,6 +16,7 @@ import {
 import { constructRedis, executeWithTimeout, flagToOrderType } from "../utils.js";
 import { PerpetualCreatedEvent } from "@d8-x/d8x-node-sdk/contracts/IPerpetualManager";
 import { JsonRpcProvider } from "ethers";
+import { logger } from "../logger.js";
 
 export default class BackendListener {
   private config: ExecutorConfig;
@@ -56,7 +57,7 @@ export default class BackendListener {
   }
 
   public unsubscribe() {
-    console.log(
+    logger.debug(
       `${new Date(Date.now()).toISOString()} unsubscribing not implemented`
     );
   }
@@ -68,14 +69,14 @@ export default class BackendListener {
       10_000
     );
     // connect to http provider
-    console.log(
+    logger.info(
       `${new Date(Date.now()).toISOString()}: Broker listener connected to ${network.name
       }, chain id ${network.chainId}, using HTTP provider`
     );
     this.chainId = Number(network.chainId);
 
     await this.md.createProxyInstance(this.httpProvider);
-    console.log(
+    logger.info(
       `${new Date(
         Date.now()
       ).toISOString()}: http connection established with proxy @ ${this.md.getProxyAddress()}`
@@ -108,19 +109,19 @@ export default class BackendListener {
 
   private addListeners() {
     this.ws.addEventListener("open", () => {
-      console.log(
+      logger.info(
         `${new Date(Date.now()).toISOString()} Connected to broker WS`
       );
     });
 
     this.ws.addEventListener("close", () => {
-      console.log(
+      logger.warn(
         `${new Date(Date.now()).toISOString()} Disconnected from broker WS`
       );
     });
 
     this.perpIds.forEach((id) => {
-      console.log(
+      logger.debug(
         `${new Date(
           Date.now()
         ).toISOString()} Subscribing to perpetual id ${id} via broker WS ${this.config.brokerWS[this.wsIndex]
@@ -140,14 +141,14 @@ export default class BackendListener {
       switch (msg.type) {
         case "subscribe":
           if (msg.data === "ack") {
-            console.log(
+            logger.debug(
               `${new Date(
                 Date.now()
               ).toISOString()} Subscribed to perpetual id ${perpId} via broker WS ${this.config.brokerWS[this.wsIndex]
               }`
             );
           } else {
-            console.log(
+            logger.warn(
               `${new Date(
                 Date.now()
               ).toISOString()} Error subscribing to perpetual id ${perpId} on broker WS ${this.config.brokerWS[this.wsIndex]
@@ -170,11 +171,17 @@ export default class BackendListener {
             chainId: this.chainId,
             symbol: this.md!.getSymbolFromPerpId(+perpId)!,
             perpetualId: +perpId,
-            traderAddr: traderAddr,
+            traderAddr,
             digest: `0x${orderId}`,
             type: flagToOrderType(BigInt(flags), BigInt(fLimitPrice)),
+            fAmount,
+            fLimitPrice,
+            fTriggerPrice,
+            iDeadline,
+            flags,
+            executionTimestamp,
           };
-          console.log({
+          logger.debug({
             event: "BrokerOrderCreated",
             time: new Date(Date.now()).toISOString(),
             ...eventMsg,
@@ -183,6 +190,7 @@ export default class BackendListener {
             "BrokerOrderCreatedEvent",
             JSON.stringify(eventMsg)
           );
+          break;
         default:
           break;
       }

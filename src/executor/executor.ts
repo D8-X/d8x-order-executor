@@ -1,5 +1,6 @@
 import {
   Order,
+  ORDER_TYPE_MARKET,
   OrderExecutorTool,
   PerpetualDataHandler,
   ZERO_ORDER_ID,
@@ -24,6 +25,7 @@ import { constructRedis, executeWithTimeout, sleep } from "../utils.js";
 import Distributor from "./distributor.js";
 import { ExecutorMetrics } from "./metrics.js";
 import { getTxRevertReason, sendTxRevertedMessage } from "./reverts.js";
+import { logger } from "../logger.js";
 
 // How much back in time we consider order to be recent. Currently 2 minutes.
 const RECENT_ORDER_TIME_S = 2 * 60;
@@ -115,12 +117,12 @@ export default class Executor {
     // Use price feed endpoints from user specified config
     if (this.config.priceFeedEndpoints.length > 0) {
       sdkConfig.priceFeedEndpoints = this.config.priceFeedEndpoints;
-      console.log(
+      logger.info(
         "Using user specified price feed endpoints",
         sdkConfig.priceFeedEndpoints
       );
     } else {
-      console.warn(
+      logger.warn(
         "No price feed endpoints specified in config. Using default endpoints from SDK.",
         sdkConfig.priceFeedEndpoints
       );
@@ -154,16 +156,14 @@ export default class Executor {
    */
   public async initialize() {
     // try all providers until one works, reverts otherwise
-    // console.log(`${new Date(Date.now()).toISOString()}: initializing ...`);
     let success = false;
     const providers = this.providers;
     const rpcs = this.config.rpcExec;
     let i = Math.floor(Math.random() * providers.length);
     let tried = 0;
     // try all providers until one works, reverts otherwise
-    // console.log(`${new Date(Date.now()).toISOString()}: initializing ...`);
     while (!success && i < providers.length && tried <= providers.length) {
-      console.log(`trying provider ${i} ... `);
+      logger.info(`trying provider ${i} ... `);
       const results = await Promise.allSettled(
         // createProxyInstance attaches the given provider to the object instance
         this.bots.map((liq) => {
@@ -179,7 +179,7 @@ export default class Executor {
     if (!success) {
       throw new Error("critical: all RPCs are down");
     } else {
-      console.log({
+      logger.info({
         info: "initialized",
         rpcUrl: rpcs[i],
         time: new Date(Date.now()).toISOString(),
@@ -195,7 +195,7 @@ export default class Executor {
       "Restart",
       (err, count) => {
         if (err) {
-          console.log(
+          logger.info(
             `${new Date(
               Date.now()
             ).toISOString()}: redis subscription failed: ${err}`
@@ -210,7 +210,15 @@ export default class Executor {
   // distributor
   public async ExecuteOrder(msg: ExecuteOrderCommand) {
     this.q.add(msg);
-    await this.execute();
+    try {
+      await this.execute();
+    } catch (e) {
+      logger.warn({
+        info: "ExecuteOrder error",
+        reason: e?.toString(),
+        time: new Date(Date.now()).toISOString(),
+      });
+    }
   }
 
   /**
@@ -224,13 +232,21 @@ export default class Executor {
 
     // consecutive responses
     let [busy, errors, success, msgs] = [0, 0, 0, 0];
-    console.log({
+    logger.info({
       info: "running",
       time: new Date(Date.now()).toISOString(),
     });
     return new Promise<void>((resolve, reject) => {
       setInterval(async () => {
-        await this.execute();
+        try {
+          await this.execute();
+        } catch (e) {
+          logger.warn({
+            info: "execute() error",
+            reason: e?.toString(),
+            time: new Date(Date.now()).toISOString(),
+          });
+        }
       }, this.config.executeIntervalSecondsMax * 1_000);
 
       setInterval(async () => {
@@ -254,7 +270,7 @@ export default class Executor {
         switch (channel) {
           case "block": {
             if (+msg % 1000 == 0) {
-              console.log(
+              logger.info(
                 JSON.stringify(
                   {
                     busy: busy,
@@ -320,7 +336,7 @@ export default class Executor {
         // order's symbol.
         const order = this.distributor!.getOrderByDigest(digest);
         if (order !== undefined) {
-          console.log({
+          logger.warn({
             info: "executed order still present in open orders, refreshing open orders",
             digest: digest,
             order: order,
@@ -354,9 +370,9 @@ export default class Executor {
 
         // Parent order should not be available in openOrders (already executed)
         // in the distributor for child order to get executed
-        return !this.distributor?.openOrders.has(
-          onchainOrder.parentChildOrderIds[1]
-        );
+        return !this.distributor?.openOrders
+          .get(onchainOrder.symbol)
+          ?.has(onchainOrder.parentChildOrderIds[1]);
       }
 
       // If this is parent order, we don't care about the dependencies.
@@ -375,28 +391,11 @@ export default class Executor {
     digest: string,
     selectedExecutorTool: OrderExecutorTool
   ): Promise<Order | undefined> {
+    // getOrderById already fetches orderOfDigest + orderDependency in a single
+    // multicall and sets order.parentChildOrderIds
     const order = await selectedExecutorTool.getOrderById(symbol, digest);
-
-    // Do not query for dependencies if order is not found - saves 1 rpc call
     if (!order) {
       return undefined;
-    }
-
-    // We can't bundle retrieval of orderbook sc and order in one go from
-    // getOrderById, so therefore we do this twice here.
-    let ob = selectedExecutorTool.getOrderBookContract(symbol);
-    // Pick random free rpc from distributor (we don't want to use paid executor
-    // rpc for this here)
-    const randomDistributorRPC =
-      this.distributor!.providers[
-      Math.floor(Math.random() * this.distributor!.providers.length)
-      ];
-    ob.connect(randomDistributorRPC);
-    // Make sure dependencies are fetched after order is fetched to introduce a
-    // slight 1 network call delay (xlayer chain problem)
-    const deps = await ob.orderDependency(digest);
-    if (order && deps) {
-      order.parentChildOrderIds = [deps[0], deps[1]];
     }
 
     return order;
@@ -427,7 +426,7 @@ export default class Executor {
   ) {
     digest = digest.toLowerCase();
     if (this.bots[botIdx].busy || this.locked.has(digest) || !this.ready) {
-      console.log({
+      logger.info({
         info:
           this.bots[botIdx].busy || !this.ready
             ? "bot unavailable"
@@ -459,7 +458,7 @@ export default class Executor {
         this.bots[botIdx].api
       );
       if (onChainOrder) {
-        console.log({
+        logger.info({
           info: "order fetched from blockchain",
           symbol,
           digest,
@@ -467,7 +466,7 @@ export default class Executor {
           onChainOrder,
         });
       } else {
-        console.log({
+        logger.info({
           info: "failed to fetch order",
           symbol,
           digest,
@@ -476,7 +475,7 @@ export default class Executor {
         });
       }
     } else {
-      console.log({
+      logger.debug({
         info: "order found in distributor",
         symbol,
         digest,
@@ -485,14 +484,11 @@ export default class Executor {
       });
     }
 
-    const onChainTS = (() => {
-      if (onChainOrder != undefined) {
-        return onChainOrder.submittedTimestamp;
-      }
-    })();
+    const isMarket = onChainOrder?.type === ORDER_TYPE_MARKET;
+    const onChainTS = onChainOrder?.submittedTimestamp;
 
-    if (!onChainTS) {
-      console.log({
+    if (!onChainOrder) {
+      logger.debug({
         reason: "order not found",
         symbol: symbol,
         digest: digest,
@@ -504,7 +500,7 @@ export default class Executor {
     }
 
     if (!this.checkOrderDependenciesResolved(onChainOrder!)) {
-      console.log({
+      logger.debug({
         reason: "unresolved/unfetched order dependencies",
         symbol: symbol,
         digest: digest,
@@ -525,7 +521,7 @@ export default class Executor {
 
     if (!px) {
       // oracle problem
-      console.log({
+      logger.warn({
         reason: "oracle error",
         symbol: symbol,
         error: error?.toString(),
@@ -545,7 +541,7 @@ export default class Executor {
       px.submission.priceFeedVaas[0] == "0x"
     ) {
       // odin problem?
-      console.log({
+      logger.warn({
         reason: "no vaa(s)",
         symbol: symbol,
         digest: digest,
@@ -564,9 +560,9 @@ export default class Executor {
     }
 
     const oracleTS = Math.min(...px.submission.timestamps);
-    if (oracleTS < onChainTS) {
+    if (!isMarket && onChainTS && oracleTS < onChainTS) {
       // let oracle cache expire before trying
-      console.log({
+      logger.debug({
         reason: "outdated off-chain oracle(s)",
         symbol: symbol,
         digest: digest,
@@ -589,7 +585,7 @@ export default class Executor {
       !this.distributor?.isExecutableIfOnChain(savedOrder, px.pxS2S3[0])
     ) {
       // prices moved - retreat
-      console.log({
+      logger.debug({
         reason: "no longer executable",
         symbol: symbol,
         digest: digest,
@@ -601,7 +597,7 @@ export default class Executor {
     }
 
     // submit txn
-    console.log({
+    logger.info({
       info: "submitting txn...",
       symbol: symbol,
       executor: this.bots[botIdx].api.getAddress(),
@@ -633,7 +629,7 @@ export default class Executor {
       // blockchain so that any child orders can be executed.
       this.recentlyExecutedOrders.set(digest, new Date());
 
-      console.log({
+      logger.info({
         info: "txn accepted",
         symbol: symbol,
         orderBook: tx.to,
@@ -654,7 +650,7 @@ export default class Executor {
       // didn't make it on-chain - handle it (possibly re-throw error)
       const error = e?.toString();
       const addr = this.bots[botIdx].api.getAddress();
-      console.log({
+      logger.info({
         info: "txn rejected",
         reason: error,
         symbol: symbol,
@@ -700,7 +696,7 @@ export default class Executor {
           // https://docs.ethers.org/v5/troubleshooting/errors/#help-NUMERIC_FAULT-underflow
           this.config.gasLimit = Math.floor(this.config.gasLimit);
           this.gasLimitIncreaseCounter++;
-          console.log("intrinsic gas too low, increasing gas limit", {
+          logger.warn("intrinsic gas too low, increasing gas limit", {
             new_gas_limit: this.config.gasLimit,
           });
           this.locked.delete(digest);
@@ -714,7 +710,7 @@ export default class Executor {
           // false positive: order can be tried again later
           // so just unlock it after waiting (unless it's a repeat offender)
           if (this.timesTried.get(digest)! > 20) {
-            console.log({
+            logger.info({
               info: "restart",
               reason: "too many false positives",
               tried: this.timesTried.get(digest),
@@ -749,7 +745,7 @@ export default class Executor {
       if (!receipt) {
         throw new Error("null receipt");
       }
-      console.log({
+      logger.info({
         info: "txn confirmed",
         symbol: symbol,
         orderBook: receipt.to,
@@ -776,7 +772,7 @@ export default class Executor {
       // could not confirm
       const error = e?.toString();
       const addr = this.bots[botIdx].api.getAddress();
-      console.log({
+      logger.warn({
         info: "txn not confirmed",
         reason: error,
         symbol: symbol,
@@ -797,7 +793,7 @@ export default class Executor {
       if (ordr !== undefined && ordr.quantity > 0) {
         // order is still on chain - maybe still processing, so wait and check again,
         // then unlock if it hasn't been trashed
-        console.log({
+        logger.debug({
           info: "order is still on-chain",
           symbol: symbol,
           executor: addr,
@@ -813,7 +809,7 @@ export default class Executor {
             // check one last time before declaring an error
             const receipt = await executeWithTimeout(tx.wait(), 1_000);
             if (receipt?.status !== 1) {
-              console.log({
+              logger.warn({
                 info: "confirmed that tx failed",
                 symbol: symbol,
                 executor: addr,
@@ -826,7 +822,7 @@ export default class Executor {
               }
               // return BotStatus.Error;
             } else {
-              console.log({
+              logger.warn({
                 info: "could not confirm tx status - unlocking order",
                 symbol: symbol,
                 executor: addr,
@@ -847,7 +843,7 @@ export default class Executor {
       // order is gone, relock to be safe
       this.locked.add(digest);
       this.trash.add(digest);
-      console.log({
+      logger.debug({
         info: "order is gone",
         symbol: symbol,
         executor: addr,
@@ -911,7 +907,13 @@ export default class Executor {
           responses.busy++;
         }
       } else {
-        throw new Error(`uncaught error: ${result.reason.toString()}`);
+        logger.error({
+          info: "uncaught error in executeOrderByBot - restarting",
+          reason: result.reason?.toString(),
+          time: new Date(Date.now()).toISOString(),
+        });
+        this.redisPubClient.publish("Restart", "uncaught error");
+        process.exit(1);
       }
     }
 
@@ -952,7 +954,7 @@ export default class Executor {
       fundAmount = parseUnits(this.config.fundGasAmountETH.toString(), "ether");
     }
 
-    console.log({
+    logger.info({
       info: "running fundWallets",
       minBalance: formatUnits(minBalance),
       fundAmount:
@@ -964,7 +966,7 @@ export default class Executor {
       const botBalance = await provider.getBalance(addr);
       const treasuryBalance = await provider.getBalance(treasury.address);
 
-      console.log({
+      logger.info({
         treasuryAddr: treasury.address,
         treasuryBalance: formatUnits(treasuryBalance),
         botAddress: addr,
@@ -976,7 +978,7 @@ export default class Executor {
         // transfer twice the min so it doesn't transfer every time
         const transferAmount = fundAmount == 0n ? minBalance * 10n : fundAmount;
         if (transferAmount < treasuryBalance) {
-          console.log({
+          logger.info({
             info: "transferring funds...",
             to: addr,
             transferAmount: formatUnits(transferAmount),
@@ -990,7 +992,7 @@ export default class Executor {
             maxPriorityFeePerGas,
           });
           await tx.wait();
-          console.log({
+          logger.info({
             transferAmount: formatUnits(transferAmount),
             txn: tx.hash,
           });

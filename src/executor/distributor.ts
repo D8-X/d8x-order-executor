@@ -1,9 +1,11 @@
 import {
   ABK64x64ToFloat,
   BUY_SIDE,
-  COLLATERAL_CURRENCY_QUOTE,
+  containsFlag,
   IdxPriceInfo,
   MarketData,
+  MASK_CLOSE_ONLY,
+  MASK_KEEP_POS_LEVERAGE,
   Multicall3,
   Multicall3__factory,
   MULTICALL_ADDRESS,
@@ -13,6 +15,7 @@ import {
   ORDER_TYPE_STOP_LIMIT,
   ORDER_TYPE_STOP_MARKET,
   PerpetualDataHandler,
+  priceToProb,
   SELL_SIDE,
   ZERO_ORDER_ID,
 } from "@d8-x/d8x-node-sdk";
@@ -40,75 +43,112 @@ import {
 } from "../types.js";
 import { constructRedis, executeWithTimeout, sleep } from "../utils.js";
 import Executor from "./executor.js";
+import { logger } from "../logger.js";
+
+// Bounded-concurrency runner. Returns a function that takes a thunk and
+// resolves with the thunk's result; at most `concurrency` thunks run at once.
+function withLimit(concurrency: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  const release = () => {
+    active--;
+    queue.shift()?.();
+  };
+  return <T>(fn: () => Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const run = () => {
+        active++;
+        try {
+          fn().then(resolve, reject).finally(release);
+        } catch (e) {
+          release();
+          reject(e);
+        }
+      };
+      if (active < concurrency) run();
+      else queue.push(run);
+    });
+}
+
+// Iterate Promise.allSettled results and warn-log any rejections so
+// per-symbol failures inside parallel fan-outs aren't silent.
+function logRejections(
+  results: PromiseSettledResult<unknown>[],
+  symbols: string[],
+  context: string
+) {
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    if (r.status === "rejected") {
+      logger.warn(
+        { context, symbol: symbols[i], err: String(r.reason) },
+        `${context} rejected`
+      );
+    }
+  }
+}
 
 export default class Distributor {
-  // objects
+  // SDK instance
   private md: MarketData;
   private redisSubClient: Redis;
   public providers: MultiUrlJsonRpcProvider[];
 
-  // state
+  // Dynamic state info
   private blockNumber = 0;
   private priceCurveUpdatedAtBlock: Map<string, number> = new Map(); // symbol => block number
   private lastRefreshTime: Map<string, number> = new Map();
   private openPositions: Map<string, Map<string, Position>> = new Map(); // symbol => (trader => Position)
   public openOrders: Map<string, Map<string, OrderBundle>> = new Map(); // symbol => (digest => order bundle)
-  private brokerOrders: Map<string, Map<string, number>> = new Map(); // symbol => (digest => received ts)
   private pxSubmission: Map<string, IdxPriceInfo> = new Map(); // symbol => px submission
   private markPremium: Map<string, number> = new Map();
   private midPremium: Map<string, number> = new Map();
   private unitAccumulatedFunding: Map<string, number> = new Map();
   private tradePremium: Map<string, [number, number]> = new Map();
-  // order digest => sent for execution timestamp
   private messageSentAt: Map<string, number> = new Map();
   private pricesFetchedAt: Map<string, number> = new Map();
+  private refreshRpcIdx = 0;
   public ready: boolean = false;
 
-  // static info
+  // Static info
   private config: ExecutorConfig;
-  private isQuote: Map<string, boolean> = new Map();
   private symbols: string[] = [];
-  private maintenanceRate: Map<string, number> = new Map();
   private chainId: number;
-
-  // constants
-
-  // calculated block time in milliseconds, used for delaying broker orders
-  // execution
-  public blockTimeMS = 0;
-  // Last block timestamp for blockTimeMS measurement
-  public lastBlockTs = 0;
-  // blockTimeMS * brokerOrderBlockSizeDelayFactor is the delay in milliseconds
-  // for broker orders, ideally below 1
-  public brokerOrderBlockSizeDelayFactor = 0.5;
-
-  // publish times must be within 10 seconds of each other, or submission will fail on-chain
-  private MAX_OUTOFSYNC_SECONDS: number = 10;
 
   // Last time when refreshAllOpenOrders was called
   private lastRefreshOfAllOpenOrders: Date = new Date();
+  // RPC timeout for calls made in distributor. Sized for parallel refreshOpenOrders
+  // fan-out where each pollRange can take 12-20s under contention.
+  private readonly RPC_TIMEOUT_MS = 30_000;
+  // Digests whose broker WS handler has taken ownership of execution
+  private brokerHandled: Set<string> = new Set();
+  // Earliest wall clock ms at which a digest may be sent for execution
+  private eligibleAfterTs: Map<string, number> = new Map();
+  // Which path learned about each digest first
+  private orderSource: Map<string, "broker" | "sentinel" | "refresh"> = new Map();
+  // Re-entry guard for refreshAllOpenOrders so concurrent fire-and-forget
+  // callers don't fan out duplicate RPC bursts.
+  private refreshAllInFlight = false;
 
   constructor(config: ExecutorConfig, private executor: Executor) {
     this.config = config;
     const sdkConfig = PerpetualDataHandler.readSDKConfig(config.sdkConfig);
+
     if (config.priceFeedConfigNetwork !== undefined) {
       sdkConfig.priceFeedConfigNetwork = config.priceFeedConfigNetwork;
     }
     if (config.configSource !== undefined) {
       sdkConfig.configSource = config.configSource;
     }
+
     this.chainId = sdkConfig.chainId;
     this.redisSubClient = constructRedis("commanderSubClient");
-    // this.providers = this.config.rpcWatch.map(
-    //   (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
-    // );
     this.md = new MarketData(sdkConfig);
     this.providers = [
       new MultiUrlJsonRpcProvider(this.config.rpcWatch, this.md.network, {
         timeoutSeconds: 25,
         logErrors: true,
         logRpcSwitches: true,
-        // Distributor uses free rpcs, make sure to switch on each call.
         switchRpcOnEachRequest: true,
         staticNetwork: true,
       }),
@@ -120,7 +160,6 @@ export default class Distributor {
    * If none of the RPCs work, it sleeps before crashing.
    */
   public async initialize() {
-    // Create a proxy instance to access the blockchain
     let success = false;
     let i = 0;
     this.providers = this.providers.sort(() => Math.random() - 0.5);
@@ -134,7 +173,7 @@ export default class Distributor {
       i++;
     }
     if (!success) {
-      console.log(
+      logger.info(
         `${new Date(
           Date.now()
         ).toISOString()}: all rpcs are down ${this.config.rpcWatch.join(", ")}`
@@ -142,33 +181,32 @@ export default class Distributor {
     }
 
     const info = await this.md.exchangeInfo();
-    console.log(JSON.stringify(info, undefined, "  "));
+    const runningPools = info.pools.filter((p) => p.isRunning);
+    const allPerps = runningPools.flatMap((p) => p.perpetuals);
+    logger.info({
+      info: "exchange info",
+      proxyAddr: info.proxyAddr,
+      chainId: Number(this.md.chainId),
+      runningPools: runningPools.length,
+      totalPerps: allPerps.length,
+      normalPerps: allPerps.filter((p) => p.state === "NORMAL").length,
+      poolSymbols: runningPools.map((p) => p.poolSymbol),
+    });
+    logger.debug({ info: "full exchange info", exchange: info });
 
-    const symbols = info.pools
-      .filter(({ isRunning }) => isRunning)
-      .map((pool) =>
+    const symbols = runningPools
+      .flatMap((pool) =>
         pool.perpetuals
           .filter(({ state }) => state === "NORMAL")
           .map(
             (perpetual) =>
               `${perpetual.baseCurrency}-${perpetual.quoteCurrency}-${pool.poolSymbol}`
           )
-      )
-      .flat();
-    console.log({ symbols });
+      );
+    logger.info({ info: "tracked symbols", count: symbols.length });
+    logger.debug({ info: "tracked symbols", symbols });
 
     for (const symbol of symbols) {
-      // static info
-      this.maintenanceRate.set(
-        symbol,
-        this.md.getPerpetualStaticInfo(symbol).maintenanceMarginRate
-      );
-      this.isQuote.set(
-        symbol,
-        this.md.getPerpetualStaticInfo(symbol).collateralCurrencyType ==
-        COLLATERAL_CURRENCY_QUOTE
-      );
-
       try {
         // price info
         this.pxSubmission.set(
@@ -201,13 +239,10 @@ export default class Distributor {
         // "preallocate" trader set
         this.openPositions.set(symbol, new Map());
         this.openOrders.set(symbol, new Map());
-        this.brokerOrders.set(symbol, new Map());
-        // dummy values
-        this.lastRefreshTime.set(symbol, 0);
         this.symbols.push(symbol);
-      } catch (e) {
+      } catch {
         // symbol is ignored if cannot fetch data about it
-        console.log(`Could not fetch data for symbol ${symbol}`);
+        logger.info(`Could not fetch data for symbol ${symbol}`);
       }
     }
 
@@ -226,7 +261,7 @@ export default class Distributor {
       "listener-error",
       (err, count) => {
         if (err) {
-          console.log(
+          logger.info(
             `${new Date(
               Date.now()
             ).toISOString()}: redis subscription failed: ${err}`
@@ -237,14 +272,6 @@ export default class Distributor {
     );
 
     this.ready = true;
-  }
-
-  private log(obj: Object | string) {
-    if (typeof obj == "string") {
-      console.log(obj);
-    } else {
-      console.log(JSON.stringify(obj));
-    }
   }
 
   private requireReady() {
@@ -263,20 +290,30 @@ export default class Distributor {
     return new Promise<void>(async (resolve, reject) => {
       // fetch all accounts
       setInterval(async () => {
-        if (
-          Date.now() - Math.min(...this.lastRefreshTime.values()) <
-          this.config.refreshOrdersIntervalSecondsMax * 1_000
-        ) {
-          return;
+        try {
+          if (
+            Date.now() - Math.min(...this.lastRefreshTime.values()) <
+            this.config.refreshOrdersIntervalSecondsMax * 1_000
+          ) {
+            return;
+          }
+          await this.refreshAllOpenOrders();
+        } catch (e) {
+          logger.warn({ err: String(e) }, "refresh-all interval failure");
         }
-        await this.refreshAllOpenOrders();
       }, 10_000);
 
       setInterval(async () => {
-        for (const symbol of this.symbols) {
-          if (this.openOrders.get(symbol)?.size ?? 0 > 0) {
-            await this.checkOrders(symbol);
-          }
+        try {
+          const active = this.symbols.filter(
+            (s) => (this.openOrders.get(s)?.size ?? 0) > 0
+          );
+          const results = await Promise.allSettled(
+            active.map((s) => this.checkOrders(s))
+          );
+          logRejections(results, active, "checkOrders/tick");
+        } catch (e) {
+          logger.warn({ err: String(e) }, "checkOrders tick failure");
         }
       }, 500);
 
@@ -284,22 +321,15 @@ export default class Distributor {
         switch (channel) {
           case "block": {
             this.blockNumber = +msg;
-            for (const symbol of this.symbols) {
-              await this.checkOrders(symbol);
-            }
+            const results = await Promise.allSettled(
+              this.symbols.map((s) => this.checkOrders(s))
+            );
+            logRejections(results, this.symbols, "checkOrders/block");
             if (
               Date.now() - Math.min(...this.lastRefreshTime.values()) >
               this.config.refreshOrdersIntervalSecondsMax * 1_000
             ) {
               this.refreshAllOpenOrders();
-            }
-
-            // Periodically recalculate the block time for broker order delay
-            if (this.lastBlockTs == 0) {
-              this.lastBlockTs = Date.now();
-            } else {
-              this.blockTimeMS = Date.now() - this.lastBlockTs;
-              this.lastBlockTs = Date.now();
             }
             break;
           }
@@ -350,6 +380,17 @@ export default class Distributor {
             if (chainId !== this.chainId) {
               break;
             }
+            // Hold off execution until orderDelaySec has elapsed since the
+            // order was first observed, so we don't submit before the on-chain
+            // delay-required window has passed. The gate must be set before
+            // any await and before addOrder, otherwise checkOrders can pick
+            // up the order with no gate in place. The broker WS path owns
+            // the gate when it has already claimed the digest.
+            if (!this.brokerHandled.has(digest)) {
+              const delayMs = (this.config.orderDelaySec ?? 0) * 1_000;
+              this.eligibleAfterTs.set(digest, Date.now() + delayMs);
+              if (!this.orderSource.has(digest)) this.orderSource.set(digest, "sentinel");
+            }
             this.addOrder(
               symbol,
               trader,
@@ -358,11 +399,28 @@ export default class Distributor {
               order
             );
             await this.updatePriceCurve(symbol);
-            if (!this.openPositions.get(symbol)?.has(trader)) {
-              // new trader, refresh
+            if (
+              order.reduceOnly &&
+              !this.openPositions.get(symbol)?.has(trader)
+            ) {
               await this.refreshAccount(symbol, trader);
             }
-            await this.checkOrders(symbol);
+            break;
+          }
+
+          case "BrokerOrderCreatedEvent": {
+            const m: BrokerOrderMsg = JSON.parse(msg);
+            if (m.chainId !== this.chainId) {
+              break;
+            }
+            this.brokerHandled.add(m.digest);
+            this.orderSource.set(m.digest, "broker");
+            this.addOrder(m.symbol, m.traderAddr, m.digest, m.type, this.brokerMsgToOrder(m));
+            if (!this.eligibleAfterTs.has(m.digest)) {
+              const delayMs = ((this.config.orderDelaySec ?? 0) + 1) * 1_000;
+              this.eligibleAfterTs.set(m.digest, Date.now() + delayMs);
+            }
+            this.scheduleBrokerExecution(m.symbol, m.digest);
             break;
           }
 
@@ -396,50 +454,25 @@ export default class Distributor {
           }
 
           case "ExecutionFailedEvent": {
-            const {
-              chainId,
+            const parsed: ExecutionFailedMsg = JSON.parse(msg);
+            const { chainId, symbol, digest, trader, reason, hash, block } =
+              parsed;
+            if (chainId !== this.chainId) {
+              break;
+            }
+            logger.warn({
+              info: "ExecutionFailedEvent",
               symbol,
               digest,
               trader,
               reason,
-            }: ExecutionFailedMsg = JSON.parse(msg);
-            if (chainId !== this.chainId) {
-              break;
-            }
+              source: this.orderSource.get(digest) ?? "unknown",
+              txHash: hash,
+              block,
+            });
             if (reason != "cancel delay required") {
               this.removeOrder(symbol, digest, reason, trader);
             }
-            break;
-          }
-
-          case "BrokerOrderCreatedEvent": {
-            const {
-              chainId,
-              symbol,
-              traderAddr,
-              digest,
-              type,
-            }: BrokerOrderMsg = JSON.parse(msg);
-            if (chainId !== this.chainId) {
-              break;
-            }
-            // introduce delay of less than 1 block for broker orders
-            console.log({
-              info: "delaying broker order",
-              amountMS: this.blockTimeMS * this.brokerOrderBlockSizeDelayFactor,
-              digest: digest,
-              time: new Date(Date.now()).toISOString(),
-            });
-            await sleep(
-              Math.min(
-                500,
-                this.blockTimeMS * this.brokerOrderBlockSizeDelayFactor
-              )
-            );
-
-            this.addOrder(symbol, traderAddr, digest, type, undefined);
-            this.brokerOrders.get(symbol)!.set(digest, Date.now());
-            await this.checkOrders(symbol);
             break;
           }
 
@@ -453,7 +486,7 @@ export default class Distributor {
             if (
               new Date(Date.now() - 30_000) > this.lastRefreshOfAllOpenOrders
             ) {
-              console.log({
+              logger.info({
                 message: "Refreshing all open orders due to sentinel error",
                 time: new Date(Date.now()).toISOString(),
                 lastRefreshOfAllOpenOrders:
@@ -465,7 +498,7 @@ export default class Distributor {
             break;
 
           case "Restart": {
-            console.log("Restarting upong signal received...");
+            logger.info("Restarting upong signal received...");
             process.exit(0);
           }
         }
@@ -501,11 +534,22 @@ export default class Distributor {
    * @param symbol
    */
   private async updatePriceCurve(symbol: string) {
+    const orders = this.openOrders.get(symbol);
+    if (orders) {
+      let hasPriceGated = false;
+      for (const { order } of orders.values()) {
+        if (order && order.type !== ORDER_TYPE_MARKET) {
+          hasPriceGated = true;
+          break;
+        }
+      }
+      if (!hasPriceGated) return;
+    }
     const blockLatency = 2;
     if (
       this.priceCurveUpdatedAtBlock.has(symbol) &&
       this.priceCurveUpdatedAtBlock.get(symbol)! >=
-      this.blockNumber + blockLatency
+        this.blockNumber + blockLatency
     ) {
       // price curve already updated at most X blocks ago
       return;
@@ -536,6 +580,28 @@ export default class Distributor {
     this.tradePremium.set(symbol, prem);
   }
 
+  private brokerMsgToOrder(m: BrokerOrderMsg): Order {
+    const flags = BigInt(m.flags);
+    const fAmount = BigInt(m.fAmount);
+    const fLimit = BigInt(m.fLimitPrice);
+    const fStop = BigInt(m.fTriggerPrice);
+    const isPM = this.md.isPredictionMarket(m.symbol);
+    const limit = fLimit === 0n ? undefined : ABK64x64ToFloat(fLimit);
+    const stop = fStop === 0n ? undefined : ABK64x64ToFloat(fStop);
+    return {
+      symbol: m.symbol,
+      side: fAmount >= 0n ? BUY_SIDE : SELL_SIDE,
+      type: m.type,
+      quantity: Math.abs(ABK64x64ToFloat(fAmount)),
+      reduceOnly: containsFlag(flags, MASK_CLOSE_ONLY),
+      limitPrice: isPM && limit !== undefined ? priceToProb(limit) : limit,
+      keepPositionLvg: containsFlag(flags, MASK_KEEP_POS_LEVERAGE),
+      stopPrice: isPM && stop !== undefined ? priceToProb(stop) : stop,
+      deadline: m.iDeadline,
+      executionTimestamp: m.executionTimestamp,
+    };
+  }
+
   private addOrder(
     symbol: string,
     trader: string,
@@ -555,7 +621,7 @@ export default class Distributor {
         type: type,
         isPredictionMarket: this.md.isPredictionMarket(symbol),
       });
-      console.log({
+      logger.debug({
         info: "order added",
         symbol: symbol,
         trader: trader,
@@ -578,7 +644,11 @@ export default class Distributor {
       return;
     }
     this.openOrders.get(symbol)?.delete(digest);
-    console.log({
+    this.brokerHandled.delete(digest);
+    this.eligibleAfterTs.delete(digest);
+    // keep orderSource around briefly so late ExecutionFailed logs can still show path
+    setTimeout(() => this.orderSource.delete(digest), 30_000);
+    logger.debug({
       info: "order removed",
       reason: reason,
       symbol: symbol,
@@ -609,13 +679,26 @@ export default class Distributor {
   }
 
   /**
-   * Refresh open orders, in parallel over perpetuals
+   * Refresh open orders for every tracked symbol with bounded parallelism.
+   * Each refreshOpenOrders call self-throttles via refreshOrdersIntervalSecondsMin
+   * for the same symbol, but different symbols can fire together; the
+   * concurrency limit caps the per-cycle RPC burst so we don't tip over
+   * provider rate limits or socket budgets. The refreshAllInFlight flag
+   * prevents overlapping fan-outs when called fire-and-forget from multiple
+   * paths.
    */
   public async refreshAllOpenOrders() {
-    this.lastRefreshOfAllOpenOrders = new Date();
-    // in serial to avoid rate limits
-    for (const symbol of this.symbols) {
-      await this.refreshOpenOrders(symbol);
+    if (this.refreshAllInFlight) return;
+    this.refreshAllInFlight = true;
+    try {
+      this.lastRefreshOfAllOpenOrders = new Date();
+      const limit = withLimit(3);
+      const results = await Promise.allSettled(
+        this.symbols.map((s) => limit(() => this.refreshOpenOrders(s)))
+      );
+      logRejections(results, this.symbols, "refreshOpenOrders");
+    } finally {
+      this.refreshAllInFlight = false;
     }
   }
 
@@ -625,104 +708,96 @@ export default class Distributor {
       Date.now() - (this.lastRefreshTime.get(symbol) ?? 0) <
       this.config.refreshOrdersIntervalSecondsMin * 1_000
     ) {
-      console.log({
+      logger.debug({
         symbol: symbol,
         orders: this.openOrders.get(symbol)?.size,
         time: new Date(Date.now()).toISOString(),
         nextRefresh: new Date(
           (this.lastRefreshTime.get(symbol) ?? 0) +
-          this.config.refreshOrdersIntervalSecondsMin * 1_000
+            this.config.refreshOrdersIntervalSecondsMin * 1_000
         ),
       });
       return;
     }
-    console.log(`refreshing open orders for symbol ${symbol}...`);
-    const chunkSize1 = 2 ** 6; // for orders
-    const rpcProviders = this.config.rpcWatch.map(
-      (url) => new JsonRpcProvider(url, undefined, { staticNetwork: true })
-    );
-    let providerIdx = Math.floor(Math.random() * rpcProviders.length);
+    logger.info(`refreshing open orders for symbol ${symbol}...`);
     this.lastRefreshTime.set(symbol, Date.now());
+    const tsStart = Date.now();
+    const isPred = this.md.isPredictionMarket(symbol);
 
-    let tsStart = Date.now();
-
-    const numOpenOrders = Number(
-      await executeWithTimeout(
-        this.md
-          .getOrderBookContract(symbol, rpcProviders[providerIdx])!
-          .orderCount(),
-        10_000
-      )
-    );
-    console.log(`found ${numOpenOrders} open ${symbol} orders.`);
-
-    // fetch orders
-    const promises = [];
-    for (let i = 0; i < numOpenOrders; i += chunkSize1) {
-      const ob = this.md!.getOrderBookContract(
-        symbol,
-        rpcProviders[providerIdx]
-      );
-      promises.push(ob.pollRange(i, chunkSize1));
-      providerIdx = (providerIdx + 1) % rpcProviders.length;
-    }
-
-    if (!this.openOrders.has(symbol)) {
-      this.openOrders.set(symbol, new Map<string, OrderBundle>());
-    }
     const orderBundles: Map<string, OrderBundle> = new Map();
-    for (let i = 0; i < promises.length; i += rpcProviders.length) {
-      try {
-        const chunks = await executeWithTimeout(
-          Promise.allSettled(promises.slice(i, i + rpcProviders.length)),
-          10_000
-        );
-        for (const result of chunks) {
-          if (result.status === "fulfilled") {
-            const [orders, orderHashes, submittedTs] = result.value;
-            for (let j = 0; j < orders.length; j++) {
-              if (orderHashes[j] == ZERO_ORDER_ID) {
-                continue;
-              }
-              const bundle = {
-                symbol: symbol,
-                trader: orders[j].traderAddr,
-                digest: orderHashes[j],
-                isPredictionMarket: this.md.isPredictionMarket(symbol),
-                order: this.md!.smartContractOrderToOrder({
-                  brokerAddr: orders[j].brokerAddr,
-                  brokerFeeTbps: orders[j].brokerFeeTbps,
-                  brokerSignature: orders[j].brokerSignature,
-                  executionTimestamp: orders[j].executionTimestamp,
-                  fAmount: orders[j].fAmount,
-                  flags: orders[j].flags,
-                  fLimitPrice: orders[j].fLimitPrice,
-                  fTriggerPrice: orders[j].fTriggerPrice,
-                  iDeadline: orders[j].iDeadline,
-                  leverageTDR: orders[j].leverageTDR,
-                  traderAddr: orders[j].traderAddr,
-                  iPerpetualId: this.md!.getPerpIdFromSymbol(symbol),
-                  executorAddr: this.config.rewardsAddress,
-                  submittedTimestamp: submittedTs[j],
-                } as IPerpetualOrder.OrderStruct),
-                type: ORDER_TYPE_MARKET as OrderType,
-              };
-              bundle.type = bundle.order.type as OrderType;
-              bundle.order.parentChildOrderIds = [
-                orders[j].parentChildDigest1,
-                orders[j].parentChildDigest2,
-              ];
-              orderBundles.set(orderHashes[j], bundle);
-            }
+    const rpcUrls = this.config.rpcWatch;
+    const rpcURL = rpcUrls[this.refreshRpcIdx % rpcUrls.length];
+    this.refreshRpcIdx = (this.refreshRpcIdx + 1) % rpcUrls.length;
+    let succeeded = false;
+    try {
+      const provider = new JsonRpcProvider(rpcURL, this.md.network, {
+        staticNetwork: true,
+      });
+      const ob = this.md.getOrderBookContract(symbol, provider);
+      const chunkSize = 500;
+      let start = 0;
+      while (true) {
+        const [orders, digests, submittedTs] = (await executeWithTimeout(
+          ob.pollRange(start, chunkSize),
+          this.RPC_TIMEOUT_MS
+        )) as [any[], string[], bigint[]];
+        let found = 0;
+        for (let j = 0; j < orders.length; j++) {
+          const digest = digests[j];
+          if (!digest || digest === ZERO_ORDER_ID) break;
+          const co = orders[j];
+          const order = this.md.smartContractOrderToOrder(co);
+          order.parentChildOrderIds = [
+            co.parentChildDigest1,
+            co.parentChildDigest2,
+          ];
+          order.submittedTimestamp = Number(submittedTs[j]);
+          orderBundles.set(digest, {
+            symbol,
+            trader: co.traderAddr,
+            digest,
+            isPredictionMarket: isPred,
+            order,
+            type: order.type as OrderType,
+          });
+          if (!this.orderSource.has(digest)) this.orderSource.set(digest, "refresh");
+          if (!this.eligibleAfterTs.has(digest)) {
+            const delaySec = this.config.orderDelaySec ?? 0;
+            const ageSec = Math.max(
+              0,
+              Math.floor(Date.now() / 1_000) - order.submittedTimestamp
+            );
+            const remainingSec = Math.max(0, delaySec - ageSec);
+            this.eligibleAfterTs.set(digest, Date.now() + remainingSec * 1_000);
           }
+          found++;
         }
-      } catch (e) {
-        console.log(
-          `${symbol} ${new Date(Date.now()).toISOString()}: error`,
-          e
-        );
+        if (found < chunkSize) break;
+        start += found;
       }
+      succeeded = true;
+    } catch (e) {
+      logger.warn(
+        `${symbol} ${new Date(
+          Date.now()
+        ).toISOString()}: error refreshing open orders`,
+        e
+      );
     }
+
+    if (!succeeded) {
+      // Preserve the existing in-memory order book; an empty result from a
+      // timed-out poll would otherwise wipe digests learned via broker WS or
+      // sentinel events.
+      logger.warn({
+        info: "refresh failed, keeping cached orders",
+        symbol,
+        cached: this.openOrders.get(symbol)?.size ?? 0,
+      });
+      return;
+    }
+
+    logger.info(`found ${orderBundles.size} open ${symbol} orders.`);
     this.openOrders.set(symbol, orderBundles);
 
     const orderArray = [...orderBundles.values()];
@@ -743,9 +818,8 @@ export default class Distributor {
       ).length,
       offChain: orderArray.filter(({ order }) => order == undefined).length,
     };
-    // if (orderBundles.size > 0) {
-    // found some orders, report
-    console.log({
+
+    logger.info({
       info: "open orders",
       symbol: symbol,
       orderBook: this.md!.getOrderBookContract(symbol)!.target,
@@ -753,8 +827,7 @@ export default class Distributor {
       ...numOrders,
       waited: `${Date.now() - tsStart} ms`,
     });
-    // }
-    // console.log(orderBundles);
+
     await this.updatePriceCurve(symbol);
     await this.refreshAccounts(symbol);
   }
@@ -779,7 +852,7 @@ export default class Distributor {
   }
 
   private async refreshAccounts(symbol: string) {
-    console.log(`refreshing accounts for symbol ${symbol}...`);
+    logger.debug(`refreshing accounts for symbol ${symbol}...`);
     const chunkSize2 = 2 ** 4; // for margin accounts
     const perpId = this.md.getPerpIdFromSymbol(symbol)!;
     const proxy = this.md.getReadOnlyProxyInstance();
@@ -822,7 +895,7 @@ export default class Distributor {
         const addressChunkBin = addressChunks.slice(i, i + rpcProviders.length);
         const accountChunk = await executeWithTimeout(
           Promise.allSettled(promises2.slice(i, i + rpcProviders.length)),
-          10_000
+          this.RPC_TIMEOUT_MS
         );
         accountChunk.map((results, j) => {
           if (results.status === "fulfilled") {
@@ -850,13 +923,13 @@ export default class Distributor {
             });
           }
         });
-      } catch (e) {
-        console.log("Error fetching account chunk (RPC?)");
+      } catch {
+        logger.warn("Error fetching account chunk (RPC?)");
       }
     }
     if (this.openPositions.get(symbol)!.size > 0) {
       // found something, report
-      console.log({
+      logger.info({
         info: "traders",
         symbol: symbol,
         time: new Date(Date.now()).toISOString(),
@@ -886,65 +959,80 @@ export default class Distributor {
    */
   private async checkOrders(symbol: string) {
     this.requireReady();
-    const orders = this.openOrders.get(symbol)!;
-    if (orders.size == 0) {
-      // console.log(`no open orders for symbol ${symbol}`);
-      return;
+    const orders = this.openOrders.get(symbol);
+    if (!orders || orders.size === 0) return;
+    for (const digest of [...orders.keys()]) {
+      await this.tryExecute(symbol, digest);
     }
+  }
 
-    try {
-      await this.refreshPrices(symbol);
-    } catch (e) {
-      console.log("error fetching from price service");
-      throw e;
+  // Returns true if a send was attempted
+  private async tryExecute(symbol: string, digest: string): Promise<boolean> {
+    const orderBundle = this.openOrders.get(symbol)?.get(digest);
+    if (!orderBundle || orderBundle.order === undefined) return false;
+    const eligibleAt = this.eligibleAfterTs.get(digest);
+    if (eligibleAt === undefined) {
+      logger.warn({
+        info: "missing eligibility timestamp for order",
+        symbol,
+        digest,
+      });
+      return false;
     }
-
-    const curPx = this.pxSubmission.get(symbol)!;
-    if (curPx.s2MktClosed || curPx.s3MktClosed) {
-      // console.log(`${symbol} market is closed`);
-      return;
+    if (eligibleAt > Date.now()) return false;
+    if (
+      Date.now() - (this.messageSentAt.get(digest) ?? 0) <
+      this.config.executeIntervalSecondsMin * 500
+    ) {
+      return false;
     }
-
-    const removeOrders: string[] = [];
-    for (const [digest, orderBundle] of orders) {
-      const command: ExecuteOrderCommand = {
-        symbol: orderBundle.symbol,
-        digest: orderBundle.digest,
-        trader: orderBundle.trader,
-        reduceOnly: orderBundle.order?.reduceOnly,
-      };
-      // check if it's not too soon to send order for execution again
-      if (
-        Date.now() - (this.messageSentAt.get(command.digest) ?? 0) <
-        this.config.executeIntervalSecondsMin * 500
-      ) {
-        continue;
-      }
-
-      const isExecOnChain = this.isExecutableIfOnChain(orderBundle, curPx.s2);
-      if (isExecOnChain) {
-        await this.sendCommand(command);
-      } else {
-        // console.log("Not executable:", { orderBundle, curPx });
-      }
-      if (
-        orderBundle.order == undefined &&
-        Date.now() - (this.brokerOrders.get(symbol)?.get(digest) ?? 0) > 60_000
-      ) {
-        removeOrders.push(orderBundle.digest);
-        this.removeOrder(
-          orderBundle.symbol,
-          orderBundle.digest,
-          "broker order expired"
-        );
+    const isMarket = orderBundle.order?.type === ORDER_TYPE_MARKET;
+    if (!isMarket) {
+      try {
+        await this.refreshPrices(symbol);
+      } catch {
+        logger.warn("error fetching from price service");
+        return false;
       }
     }
-    // cleanup
-    for (const digest of removeOrders) {
-      this.openOrders.get(symbol)?.delete(digest);
-      this.brokerOrders.get(symbol)?.delete(digest);
+    const curPx = this.pxSubmission.get(symbol);
+    if (!curPx || curPx.s2MktClosed || curPx.s3MktClosed) return false;
+    if (!this.isExecutableIfOnChain(orderBundle, curPx.s2)) return false;
+    const command: ExecuteOrderCommand = {
+      symbol: orderBundle.symbol,
+      digest: orderBundle.digest,
+      trader: orderBundle.trader,
+      reduceOnly: orderBundle.order?.reduceOnly,
+    };
+    await this.sendCommand(command);
+    return true;
+  }
+
+  // broker-ws path
+  // wait 1 + delay seconds, then try execute; retry up to 4x1s if
+  // sentinel hasn't fired yet
+  private async scheduleBrokerExecution(symbol: string, digest: string) {
+    const waitMs = ((this.config.orderDelaySec ?? 0) + 1) * 1_000;
+    await sleep(waitMs);
+    for (let i = 0; i < 4; i++) {
+      if (this.messageSentAt.has(digest)) {
+        logger.debug({
+          info: "broker path skipped: already handled by main path",
+          symbol,
+          digest,
+        });
+        this.brokerHandled.delete(digest);
+        return;
+      }
+      if (!this.openOrders.get(symbol)?.has(digest)) return;
+      if (await this.tryExecute(symbol, digest)) return;
+      await sleep(1_000);
     }
-    return;
+    // that's delay + 1 + 4 
+    const bundle = this.openOrders.get(symbol)?.get(digest);
+    if (bundle && bundle.order === undefined) {
+      this.removeOrder(symbol, digest, "broker stub timed out");
+    }
   }
 
   private async sendCommand(msg: ExecuteOrderCommand) {
@@ -954,7 +1042,7 @@ export default class Distributor {
       this.config.executeIntervalSecondsMin * 2000
     ) {
       if (!this.messageSentAt.has(msg.digest)) {
-        console.log({
+        logger.info({
           info: "execute",
           order: msg,
           time: new Date(Date.now()).toISOString(),
@@ -972,10 +1060,9 @@ export default class Distributor {
    * @returns
    */
   public isExecutableIfOnChain(order: OrderBundle, indexPrice: number) {
-    // console.log(order);
+    // broker order need to follow the main orders checking path too
     if (order.order == undefined) {
-      // broker order: if it's market and on chain, it's executable, nothing to check
-      return order.type == ORDER_TYPE_MARKET;
+      return false;
     }
 
     if (
@@ -1052,7 +1139,7 @@ export default class Distributor {
     tradePrice = order.isPredictionMarket
       ? indexPrice + this.tradePremium.get(order.symbol)![sideIdx] * scale
       : indexPrice *
-      (1 + this.tradePremium.get(order.symbol)![sideIdx] * scale);
+        (1 + this.tradePremium.get(order.symbol)![sideIdx] * scale);
 
     let execute = false;
 
@@ -1064,7 +1151,6 @@ export default class Distributor {
     switch (order.order.type) {
       case ORDER_TYPE_MARKET:
         execute = true;
-        // console.log("mkt");
         break;
 
       case ORDER_TYPE_LIMIT:
@@ -1094,38 +1180,7 @@ export default class Distributor {
       default:
         break;
     }
-    // if (execute) {
-    //   console.log({
-    //     side: order.order.side,
-    //     indexPrice,
-    //     tradePrice,
-    //     limitPrice,
-    //     markPrice,
-    //     triggerPrice,
-    //     size: order.order.quantity,
-    //     refSize,
-    //     scale,
-    //     tradePrem: this.tradePremium.get(order.symbol)![sideIdx],
-    //     timestamp: new Date(Date.now()).toISOString(),
-    //   });
-    // }
     return execute;
-  }
-
-  /**
-   * Check that max(t) - min (t) <= threshold
-   * @param timestamps Array of timestamps
-   * @returns True if the timestamps are sufficiently close to each other
-   */
-  private checkSubmissionsInSync(timestamps: number[]): boolean {
-    let gap = Math.max(...timestamps) - Math.min(...timestamps);
-    if (
-      gap > this.MAX_OUTOFSYNC_SECONDS &&
-      Math.min(...timestamps) >= Math.floor(Date.now() / 1_000 - 5)
-    ) {
-      return false;
-    }
-    return true;
   }
 
   public getOrder(symbol: string, digest: string) {

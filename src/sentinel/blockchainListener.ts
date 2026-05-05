@@ -3,6 +3,7 @@ import {
   IPerpetualManager__factory,
   LimitOrderBook__factory,
   MarketData,
+  Order,
   PerpetualDataHandler,
 } from "@d8-x/d8x-node-sdk";
 import { Redis } from "ioredis";
@@ -17,7 +18,7 @@ import {
   UpdateMarginAccountMsg,
   UpdateMarkPriceMsg,
 } from "../types.js";
-import { constructRedis, executeWithTimeout, sleep } from "../utils.js";
+import { constructRedis, executeWithTimeout, isEthersConnError, sleep } from "../utils.js";
 
 import {
   IPerpetualOrder,
@@ -34,6 +35,7 @@ import {
 import { Log, LogDescription, Network, Result } from "ethers";
 import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider.js";
 import { MultiUrlWebSocketProvider } from "../multiUrlWebsocketProvider.js";
+import { logger } from "../logger.js";
 
 enum ListeningMode {
   Polling = "Polling",
@@ -112,7 +114,7 @@ export default class BlockhainListener {
   }
 
   public unsubscribe() {
-    console.log(
+    logger.debug(
       `${new Date(Date.now()).toISOString()} BlockchainListener: unsubscribing`
     );
     if (this.listeningProvider) {
@@ -125,14 +127,14 @@ export default class BlockhainListener {
       (Date.now() - this.lastBlockReceivedAt) / 1_000
     );
     if (blockTime > this.config.waitForBlockSeconds) {
-      console.log({
+      logger.warn({
         info: "Last block received too long ago - heartbeat check failed",
         receivedSecondsAgo: blockTime,
         time: new Date(Date.now()).toISOString(),
       });
       return false;
     }
-    console.log({
+    logger.debug({
       info: "Last block received within expected time",
       receivedSecondsAgo: blockTime,
       time: new Date(Date.now()).toISOString(),
@@ -142,7 +144,7 @@ export default class BlockhainListener {
 
   private async switchListeningMode() {
     if (this.switchingRPC) {
-      console.log(
+      logger.debug(
         `${new Date(Date.now()).toISOString()}: already switching RPC`
       );
       return;
@@ -164,14 +166,14 @@ export default class BlockhainListener {
       this.mode == ListeningMode.Events ||
       this.config.rpcListenWs.length < 1
     ) {
-      console.log({
+      logger.info({
         info: "Switching from Websocket to HTTP provider",
         time: new Date(Date.now()).toISOString(),
       });
       this.mode = ListeningMode.Polling;
       this.listeningProvider = this.httpProvider;
     } else if (this.config.rpcListenWs.length > 0) {
-      console.log({
+      logger.info({
         info: "Switching from HTTP to WS",
         nexRpcUrl: this.multiUrlWsProvider.getCurrentRpcUrl(),
         time: new Date(Date.now()).toISOString(),
@@ -197,7 +199,7 @@ export default class BlockhainListener {
     this.blockNumber = undefined;
     setTimeout(async () => {
       if (!this.blockNumber) {
-        console.log(
+        logger.info(
           `${new Date(
             Date.now()
           ).toISOString()}: websocket connection could not be established`
@@ -227,13 +229,13 @@ export default class BlockhainListener {
         // startNextWebsocket(), multi url provider will handle the switching
         // internally
         await this.multiUrlWsProvider.startNextWebsocket();
-        console.log(
+        logger.info(
           `[${new Date(
             Date.now()
           ).toISOString()}] attempting to switch to WS ${this.multiUrlWsProvider.getCurrentRpcUrl()}`
         );
         const blockReceivedCb = () => {
-          console.log(
+          logger.debug(
             "block received",
             this.multiUrlWsProvider.getCurrentRpcUrl()
           );
@@ -248,7 +250,7 @@ export default class BlockhainListener {
           } else {
             // Otherwise just stop the multi url ws provider and try again later
             await this.multiUrlWsProvider.stop();
-            console.log(
+            logger.info(
               `[${new Date(
                 Date.now()
               ).toISOString()}] attempting to switch to WS failed - block not received`
@@ -257,20 +259,6 @@ export default class BlockhainListener {
         }, this.config.waitForBlockSeconds * 1_000);
       }
     }, this.config.healthCheckSeconds * 1_000);
-  }
-
-  public containsEthersConnErrors(error: string) {
-    const ethersErrors = [
-      "Unexpected server response",
-      "SERVER_ERROR",
-      "WebSocket was closed before the connection was established",
-    ];
-    for (const err of ethersErrors) {
-      if (error.includes(err)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   public async start() {
@@ -314,7 +302,7 @@ export default class BlockhainListener {
         "Please specify RPC URLs for listening to blockchain events"
       );
     }
-    console.log({
+    logger.info({
       info: "BlockchainListener started",
       time: new Date(Date.now()).toISOString(),
       network: {
@@ -338,20 +326,25 @@ export default class BlockhainListener {
     }
     // on error terminate
     this.listeningProvider.on("error", (e) => {
-      console.log(
-        `${new Date(
-          Date.now()
-        ).toISOString()} BlockchainListener received error msg in ${this.mode
-        } mode:`,
-        e
+      const isConn = isEthersConnError(e);
+      logger.warn(
+        {
+          mode: this.mode,
+          connError: isConn,
+          error: (e as Error)?.message ?? e,
+        },
+        "BlockchainListener provider error"
       );
+      if (!isConn) {
+        // don't tear down the listener. just flag it.
+        return;
+      }
       // Submit last block received ts to executor/distributor to take action if
       // needed.
       this.redisPubClient.publish(
         "listener-error",
         this.lastBlockReceivedAt.toString()
       );
-
       this.unsubscribe();
       this.switchListeningMode();
     });
@@ -402,7 +395,7 @@ export default class BlockhainListener {
   private handleProxyEvent(event: Log) {
     const parsedEvent = this.proxyInterface.parseLog(event);
     if (!parsedEvent) {
-      console.log("Unexpected event log:", event);
+      logger.warn("Unexpected event log:", event);
       return;
     }
     let msg:
@@ -414,15 +407,20 @@ export default class BlockhainListener {
 
     // handle different events
     switch (parsedEvent.name) {
-      case "TransferAddressTo":
-      case "SetEmergencyState":
       case "SetNormalState":
+      case "SetEmergencyState":
+        logger.info({
+          event: parsedEvent.name,
+          args: parsedEvent.args,
+          time: new Date(Date.now()).toISOString(),
+        });
+        return;
+
+      case "TransferAddressTo":
         this.redisPubClient.publish("Restart", parsedEvent.args[0]);
         this.unsubscribe();
-        // force restart
-        sleep(1_000).then(() => {
-          process.exit(0);
-        });
+        setTimeout(() => process.exit(0), 1_000);
+        return;
 
       case "Liquidate":
         {
@@ -435,7 +433,11 @@ export default class BlockhainListener {
             fFeeCC,
             newPositionSizeBC,
           } = parsedEvent.args as unknown as LiquidateEvent.OutputObject;
-          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
+          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId));
+          if (!symbol) {
+            logger.warn({ event: "Liquidate", perpetualId: Number(perpetualId) }, "unknown perpetualId");
+            return;
+          }
           msg = {
             chainId: this.chainId,
             perpetualId: Number(perpetualId),
@@ -460,14 +462,22 @@ export default class BlockhainListener {
             trader,
             orderDigest,
           } = parsedEvent.args as unknown as TradeEvent.OutputObject;
-          const order = this.md!.smartContractOrderToOrder(scOrder);
+          let order: Order;
+          try {
+            order = this.md.smartContractOrderToOrder(scOrder);
+          } catch (e) {
+            logger.warn(
+              { event: "Trade", perpetualId: Number(perpetualId), error: (e as Error)?.message ?? e },
+              "smartContractOrderToOrder failed"
+            );
+            return;
+          }
           msg = {
             chainId: this.chainId,
             perpetualId: Number(perpetualId),
             trader: trader,
             digest: orderDigest,
             ...order,
-            brokerAddr: scOrder.brokerAddr,
             executor: scOrder.executorAddr,
             block: event.blockNumber,
             hash: event.transactionHash,
@@ -479,7 +489,11 @@ export default class BlockhainListener {
         {
           const { perpetualId, trader, fFundingPaymentCC } =
             parsedEvent.args as unknown as UpdateMarginAccountEvent.OutputObject;
-          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
+          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId));
+          if (!symbol) {
+            logger.warn({ event: "UpdateMarginAccount", perpetualId: Number(perpetualId) }, "unknown perpetualId");
+            return;
+          }
           msg = {
             chainId: this.chainId,
             perpetualId: Number(perpetualId),
@@ -500,7 +514,11 @@ export default class BlockhainListener {
             fMidPricePremium,
             fMarkIndexPrice,
           } = parsedEvent.args as unknown as UpdateMarkPriceEvent.OutputObject;
-          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId))!;
+          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId));
+          if (!symbol) {
+            logger.warn({ event: "UpdateMarkPrice", perpetualId: Number(perpetualId) }, "unknown perpetualId");
+            return;
+          }
           msg = {
             chainId: this.chainId,
             perpetualId: Number(perpetualId),
@@ -518,7 +536,11 @@ export default class BlockhainListener {
         {
           const { perpetualId, orderHash } =
             parsedEvent.args as unknown as PerpetualLimitOrderCancelledEvent.OutputObject;
-          const symbol = this.md!.getSymbolFromPerpId(Number(perpetualId))!;
+          const symbol = this.md.getSymbolFromPerpId(Number(perpetualId));
+          if (!symbol) {
+            logger.warn({ event: "PerpetualLimitOrderCancelled", perpetualId: Number(perpetualId) }, "unknown perpetualId");
+            return;
+          }
           msg = {
             chainId: this.chainId,
             symbol: symbol,
@@ -531,7 +553,7 @@ export default class BlockhainListener {
         }
         break;
       default:
-        console.log("Unexpected event:", parsedEvent);
+        logger.warn({ event: parsedEvent.name }, "unexpected perpetual event");
         return;
     }
     this.sendMsg(parsedEvent, msg);
@@ -540,7 +562,7 @@ export default class BlockhainListener {
   private async handleOrderBookEvent(event: Log) {
     const parsedEvent = this.orderBookInterface.parseLog(event);
     if (!parsedEvent) {
-      console.log("Unexpected order book event log:", event);
+      logger.warn("Unexpected order book event log:", event);
       return;
     }
 
@@ -599,7 +621,7 @@ export default class BlockhainListener {
         break;
 
       default:
-        console.log("Unexpected event:", parsedEvent);
+        logger.info("Unexpected event:", parsedEvent);
         return;
     }
     this.sendMsg(parsedEvent, msg);
@@ -616,7 +638,7 @@ export default class BlockhainListener {
   }
 
   private sendMsg(parsedEvent: LogDescription, msg: RedisMsg) {
-    console.log({
+    logger.info({
       event: parsedEvent.name,
       time: new Date(Date.now()).toISOString(),
       mode: this.mode,
