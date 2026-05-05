@@ -45,6 +45,44 @@ import { constructRedis, executeWithTimeout, sleep } from "../utils.js";
 import Executor from "./executor.js";
 import { logger } from "../logger.js";
 
+// Bounded-concurrency runner. Returns a function that takes a thunk and
+// resolves with the thunk's result; at most `concurrency` thunks run at once.
+function withLimit(concurrency: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  const release = () => {
+    active--;
+    queue.shift()?.();
+  };
+  return <T>(fn: () => Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const run = () => {
+        active++;
+        fn().then(resolve, reject).finally(release);
+      };
+      if (active < concurrency) run();
+      else queue.push(run);
+    });
+}
+
+// Iterate Promise.allSettled results and warn-log any rejections so
+// per-symbol failures inside parallel fan-outs aren't silent.
+function logRejections(
+  results: PromiseSettledResult<unknown>[],
+  symbols: string[],
+  context: string
+) {
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    if (r.status === "rejected") {
+      logger.warn(
+        { context, symbol: symbols[i], err: String(r.reason) },
+        `${context} rejected`
+      );
+    }
+  }
+}
+
 export default class Distributor {
   // SDK instance
   private md: MarketData;
@@ -82,6 +120,9 @@ export default class Distributor {
   private eligibleAfterTs: Map<string, number> = new Map();
   // Which path learned about each digest first
   private orderSource: Map<string, "broker" | "sentinel" | "refresh"> = new Map();
+  // Re-entry guard for refreshAllOpenOrders so concurrent fire-and-forget
+  // callers don't fan out duplicate RPC bursts.
+  private refreshAllInFlight = false;
 
   constructor(config: ExecutorConfig, private executor: Executor) {
     this.config = config;
@@ -243,20 +284,30 @@ export default class Distributor {
     return new Promise<void>(async (resolve, reject) => {
       // fetch all accounts
       setInterval(async () => {
-        if (
-          Date.now() - Math.min(...this.lastRefreshTime.values()) <
-          this.config.refreshOrdersIntervalSecondsMax * 1_000
-        ) {
-          return;
+        try {
+          if (
+            Date.now() - Math.min(...this.lastRefreshTime.values()) <
+            this.config.refreshOrdersIntervalSecondsMax * 1_000
+          ) {
+            return;
+          }
+          await this.refreshAllOpenOrders();
+        } catch (e) {
+          logger.warn({ err: String(e) }, "refresh-all interval failure");
         }
-        await this.refreshAllOpenOrders();
       }, 10_000);
 
       setInterval(async () => {
-        for (const symbol of this.symbols) {
-          if (this.openOrders.get(symbol)?.size ?? 0 > 0) {
-            await this.checkOrders(symbol);
-          }
+        try {
+          const active = this.symbols.filter(
+            (s) => (this.openOrders.get(s)?.size ?? 0) > 0
+          );
+          const results = await Promise.allSettled(
+            active.map((s) => this.checkOrders(s))
+          );
+          logRejections(results, active, "checkOrders/tick");
+        } catch (e) {
+          logger.warn({ err: String(e) }, "checkOrders tick failure");
         }
       }, 500);
 
@@ -264,9 +315,10 @@ export default class Distributor {
         switch (channel) {
           case "block": {
             this.blockNumber = +msg;
-            for (const symbol of this.symbols) {
-              await this.checkOrders(symbol);
-            }
+            const results = await Promise.allSettled(
+              this.symbols.map((s) => this.checkOrders(s))
+            );
+            logRejections(results, this.symbols, "checkOrders/block");
             if (
               Date.now() - Math.min(...this.lastRefreshTime.values()) >
               this.config.refreshOrdersIntervalSecondsMax * 1_000
@@ -621,13 +673,26 @@ export default class Distributor {
   }
 
   /**
-   * Refresh open orders, in parallel over perpetuals
+   * Refresh open orders for every tracked symbol with bounded parallelism.
+   * Each refreshOpenOrders call self-throttles via refreshOrdersIntervalSecondsMin
+   * for the same symbol, but different symbols can fire together; the
+   * concurrency limit caps the per-cycle RPC burst so we don't tip over
+   * provider rate limits or socket budgets. The refreshAllInFlight flag
+   * prevents overlapping fan-outs when called fire-and-forget from multiple
+   * paths.
    */
   public async refreshAllOpenOrders() {
-    this.lastRefreshOfAllOpenOrders = new Date();
-    // in serial to avoid rate limits
-    for (const symbol of this.symbols) {
-      await this.refreshOpenOrders(symbol);
+    if (this.refreshAllInFlight) return;
+    this.refreshAllInFlight = true;
+    try {
+      this.lastRefreshOfAllOpenOrders = new Date();
+      const limit = withLimit(3);
+      const results = await Promise.allSettled(
+        this.symbols.map((s) => limit(() => this.refreshOpenOrders(s)))
+      );
+      logRejections(results, this.symbols, "refreshOpenOrders");
+    } finally {
+      this.refreshAllInFlight = false;
     }
   }
 
