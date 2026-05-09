@@ -129,6 +129,9 @@ export default class Distributor {
   // Re-entry guard for refreshAllOpenOrders so concurrent fire-and-forget
   // callers don't fan out duplicate RPC bursts.
   private refreshAllInFlight = false;
+  // Per-symbol in-flight init promises so concurrent first-touch events for
+  // the same new symbol coalesce on a single init.
+  private symbolInitInFlight: Map<string, Promise<boolean>> = new Map();
 
   constructor(config: ExecutorConfig, private executor: Executor) {
     this.config = config;
@@ -207,43 +210,7 @@ export default class Distributor {
     logger.debug({ info: "tracked symbols", symbols });
 
     for (const symbol of symbols) {
-      try {
-        // price info
-        this.pxSubmission.set(
-          symbol,
-          await this.md.fetchPricesForPerpetual(symbol)
-        );
-        // mark premium, accumulated funding per BC unit
-        const perpState = await this.md
-          .getReadOnlyProxyInstance()
-          .getPerpetual(this.md.getPerpIdFromSymbol(symbol));
-        this.markPremium.set(
-          symbol,
-          ABK64x64ToFloat(perpState.currentMarkPremiumRate.fPrice)
-        );
-        // mid premium = mark premium only at initialization time, will be updated with events
-        this.midPremium.set(
-          symbol,
-          ABK64x64ToFloat(perpState.currentMarkPremiumRate.fPrice)
-        );
-
-        this.unitAccumulatedFunding.set(
-          symbol,
-          ABK64x64ToFloat(perpState.fUnitAccumulatedFunding)
-        );
-
-        this.tradePremium.set(symbol, [
-          this.midPremium.get(symbol)! + 5e-4,
-          this.midPremium.get(symbol)! - 5e-4,
-        ]);
-        // "preallocate" trader set
-        this.openPositions.set(symbol, new Map());
-        this.openOrders.set(symbol, new Map());
-        this.symbols.push(symbol);
-      } catch {
-        // symbol is ignored if cannot fetch data about it
-        logger.info(`Could not fetch data for symbol ${symbol}`);
-      }
+      await this.ensureSymbolTracked(symbol);
     }
 
     // Subscribe to blockchain events
@@ -278,6 +245,87 @@ export default class Distributor {
     if (!this.ready) {
       throw new Error("not ready: await distributor.initialize()");
     }
+  }
+
+  /**
+   * Ensure all per-symbol state maps are populated for `symbol`. Used both at
+   * startup and lazily when an event arrives for a perp slot we don't track
+   * yet (e.g. a slot rotated to a new game, or a perp transitioned from
+   * EMERGENCY/INITIALIZING back to NORMAL during executor uptime).
+   *
+   * Concurrent calls for the same symbol coalesce on a single in-flight init.
+   * If the symbol is unknown to MarketData, the SDK is force-refreshed once;
+   * if still unknown the symbol is presumed bogus and we no-op. All RPC calls
+   * happen up front so a failure can't leave partial state in the maps.
+   */
+  private async ensureSymbolTracked(symbol: string): Promise<boolean> {
+    if (this.symbols.includes(symbol)) return true;
+    const inFlight = this.symbolInitInFlight.get(symbol);
+    if (inFlight) return inFlight;
+
+    const p = (async () => {
+      try {
+        let perpId: number;
+        try {
+          perpId = this.md.getPerpIdFromSymbol(symbol);
+        } catch {
+          // SDK's MD doesn't know this symbol yet — refresh and retry.
+          // SDK has internal mutex (refreshPromise) so concurrent
+          // refreshes coalesce.
+          await this.md.refreshSymbols(true);
+          try {
+            perpId = this.md.getPerpIdFromSymbol(symbol);
+          } catch (e) {
+            logger.warn({
+              info: "symbol unknown after MD refresh",
+              symbol,
+              err: (e as Error)?.message ?? String(e),
+            });
+            return false;
+          }
+        }
+        // RPC up front so a failure can't leave partial state.
+        const px = await this.md.fetchPricesForPerpetual(symbol);
+        const perpState = await this.md
+          .getReadOnlyProxyInstance()
+          .getPerpetual(perpId);
+        const markPrem = ABK64x64ToFloat(
+          perpState.currentMarkPremiumRate.fPrice
+        );
+
+        // Synchronous block: maps populated atomically from the runtime's
+        // view. `this.symbols.push` is the last write — `includes(symbol)`
+        // is the canonical "fully tracked" marker.
+        this.pxSubmission.set(symbol, px);
+        this.markPremium.set(symbol, markPrem);
+        this.midPremium.set(symbol, markPrem);
+        this.unitAccumulatedFunding.set(
+          symbol,
+          ABK64x64ToFloat(perpState.fUnitAccumulatedFunding)
+        );
+        this.tradePremium.set(symbol, [markPrem + 5e-4, markPrem - 5e-4]);
+        if (!this.openPositions.has(symbol)) {
+          this.openPositions.set(symbol, new Map());
+        }
+        if (!this.openOrders.has(symbol)) {
+          this.openOrders.set(symbol, new Map());
+        }
+        this.symbols.push(symbol);
+        return true;
+      } catch (e) {
+        logger.warn({
+          info: "symbol init failed",
+          symbol,
+          err: (e as Error)?.message ?? String(e),
+        });
+        return false;
+      } finally {
+        this.symbolInitInFlight.delete(symbol);
+      }
+    })();
+
+    this.symbolInitInFlight.set(symbol, p);
+    return p;
   }
 
   /**
@@ -364,6 +412,10 @@ export default class Distributor {
             if (chainId !== this.chainId) {
               break;
             }
+            // Lazily init the symbol if this is the first event we've seen
+            // for it (e.g. perp slot rotated mid-uptime). If init fails the
+            // markPremium write below would be orphaned, so bail.
+            if (!(await this.ensureSymbolTracked(symbol))) break;
             this.markPremium.set(symbol, markPremium);
             this.midPremium.set(symbol, midPremium);
             break;
@@ -380,6 +432,10 @@ export default class Distributor {
             if (chainId !== this.chainId) {
               break;
             }
+            // Lazy init must run before addOrder so we never leave a
+            // openOrders[symbol] entry with the symbol absent from
+            // this.symbols (would never be checked or refreshed).
+            if (!(await this.ensureSymbolTracked(symbol))) break;
             // Hold off execution until orderDelaySec has elapsed since the
             // order was first observed, so we don't submit before the on-chain
             // delay-required window has passed. The gate must be set before
@@ -413,6 +469,8 @@ export default class Distributor {
             if (m.chainId !== this.chainId) {
               break;
             }
+            // Lazy init before addOrder, same rationale as the sentinel path.
+            if (!(await this.ensureSymbolTracked(m.symbol))) break;
             this.brokerHandled.add(m.digest);
             this.orderSource.set(m.digest, "broker");
             this.addOrder(m.symbol, m.traderAddr, m.digest, m.type, this.brokerMsgToOrder(m));
@@ -556,13 +614,14 @@ export default class Distributor {
     }
     this.priceCurveUpdatedAtBlock.set(symbol, this.blockNumber);
     const prem = this.tradePremium.get(symbol)!;
+    const pxS2S3 = this.pxSubmission.get(symbol);
+    if (!pxS2S3 || pxS2S3.s2MktClosed || pxS2S3.s3MktClosed) {
+      // not initialized for this symbol (e.g. event arrived for a perp slot
+      // we don't track), or mkt is closed
+      return;
+    }
     for (const i of [0, 1]) {
       const side = [BUY_SIDE, SELL_SIDE][i];
-      const pxS2S3 = this.pxSubmission.get(symbol)!;
-      if (pxS2S3.s2MktClosed || pxS2S3.s3MktClosed) {
-        // mkt is closed
-        return;
-      }
       const tradeSize = this.getOrderAverage(symbol, side);
       if (tradeSize) {
         // empirical

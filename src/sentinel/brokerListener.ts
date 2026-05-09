@@ -33,6 +33,12 @@ export default class BackendListener {
   private chainId: number;
   private lastRpcIndex = { http: -1, ws: -1 };
 
+  // Periodic refresh of MarketData's perpetualId -> symbol map. BrokerListener
+  // has its own MarketData instance, so it needs its own refresh path —
+  // symmetric to the one in BlockchainListener.
+  private symbolCacheRefreshTimer?: NodeJS.Timeout;
+  private readonly SYMBOL_CACHE_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+
   constructor(config: ExecutorConfig, wsIndex: number) {
     this.config = config;
     this.wsIndex = wsIndex;
@@ -62,6 +68,19 @@ export default class BackendListener {
     );
   }
 
+  private async refreshSymbolMap(reason: string): Promise<void> {
+    try {
+      await this.md.refreshSymbols(true);
+      logger.info({ info: "broker symbol cache refreshed", reason });
+    } catch (e) {
+      logger.warn({
+        info: "broker symbol cache refresh failed",
+        reason,
+        err: (e as Error)?.message ?? String(e),
+      });
+    }
+  }
+
   public async start() {
     // infer chain from provider
     const network = await executeWithTimeout(
@@ -82,19 +101,28 @@ export default class BackendListener {
       ).toISOString()}: http connection established with proxy @ ${this.md.getProxyAddress()}`
     );
 
-    // get perpetuals and order books
+    // Subscribe to ALL deployed perpetuals (not just NORMAL). Subscriptions
+    // for non-NORMAL perps sit idle on the broker side until the perp
+    // transitions to NORMAL — no resubscribe needed when state changes.
+    // Avoids the gap where perps that were INVALID/EMERGENCY/MARKET_CLOSED at
+    // startup never got a broker WS subscription and only reached the
+    // executor via the slower chain path.
     const info = await this.md.exchangeInfo();
     this.perpIds = info.pools
       .filter(({ isRunning }) => isRunning)
-      .map((pool) =>
-        pool.perpetuals
-          .filter(({ state }) => state === "NORMAL")
-          .map(({ id }) => BigInt(id))
-      )
+      .map((pool) => pool.perpetuals.map(({ id }) => BigInt(id)))
       .flat();
 
     // subscribe
     this.addListeners();
+
+    // Refresh perpetualId -> symbol cache periodically so events for a
+    // rotated slot get labeled with the current symbol. SDK has internal
+    // mutex (refreshPromise) so concurrent refreshes coalesce.
+    this.symbolCacheRefreshTimer = setInterval(
+      () => void this.refreshSymbolMap("periodic"),
+      this.SYMBOL_CACHE_REFRESH_INTERVAL_MS
+    );
 
     // reconnect
     setInterval(() => {
@@ -167,9 +195,21 @@ export default class BackendListener {
             executionTimestamp,
             orderId,
           } = msg.data as BrokerWSUpdateData;
+          const symbol = this.md.getSymbolFromPerpId(+perpId);
+          if (!symbol) {
+            // MD doesn't know this perpId yet (e.g. brand-new slot deployed
+            // after our last refresh). Drop the event rather than publish
+            // {symbol: undefined}; the periodic refresh will pick it up.
+            logger.warn({
+              info: "broker WS update for unknown perpId",
+              perpId,
+              topic: msg.topic,
+            });
+            break;
+          }
           const eventMsg: BrokerOrderMsg = {
             chainId: this.chainId,
-            symbol: this.md!.getSymbolFromPerpId(+perpId)!,
+            symbol,
             perpetualId: +perpId,
             traderAddr,
             digest: `0x${orderId}`,
