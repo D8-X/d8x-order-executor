@@ -1,7 +1,7 @@
 import pino from "pino";
 
 const level = process.env.LOG_LEVEL ?? "info";
-const pretty = process.env.LOG_PRETTY === "1";
+const pretty = process.env.LOG_PRETTY !== "0";
 
 const base = pino(
   pretty

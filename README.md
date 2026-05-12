@@ -57,3 +57,11 @@ $ sudo docker compose up --build -d
 ## Slack webhook url
 Edit the `prometheus_alertmanager_slack_url.txt` file and paste your slack
 webhook url.
+
+# Logging
+- `LOG_LEVEL`: minimum level to emit (default `info`). Levels are ordered
+  `debug < info < warn < error`; setting one enables it and every level
+  above it. E.g. `LOG_LEVEL=debug` shows everything, `LOG_LEVEL=warn` shows
+  only `warn` and `error`.
+- `LOG_PRETTY`: human-readable colorized output, on by default. Set to `0`
+  to get plain JSON logs.
