@@ -176,10 +176,9 @@ export default class Distributor {
       i++;
     }
     if (!success) {
-      logger.info(
-        `${new Date(
-          Date.now()
-        ).toISOString()}: all rpcs are down ${this.config.rpcWatch.join(", ")}`
+      logger.error(
+        { rpcWatch: this.config.rpcWatch },
+        "all rpcWatch endpoints are down"
       );
     }
 
@@ -228,11 +227,7 @@ export default class Distributor {
       "listener-error",
       (err, count) => {
         if (err) {
-          logger.info(
-            `${new Date(
-              Date.now()
-            ).toISOString()}: redis subscription failed: ${err}`
-          );
+          logger.error({ err }, "redis subscription failed");
           process.exit(1);
         }
       }
@@ -556,7 +551,7 @@ export default class Distributor {
             break;
 
           case "Restart": {
-            logger.info("Restarting upong signal received...");
+            logger.info("Restarting upon signal received...");
             process.exit(0);
           }
         }
@@ -836,12 +831,7 @@ export default class Distributor {
       }
       succeeded = true;
     } catch (e) {
-      logger.warn(
-        `${symbol} ${new Date(
-          Date.now()
-        ).toISOString()}: error refreshing open orders`,
-        e
-      );
+      logger.warn({ symbol, err: e }, "error refreshing open orders");
     }
 
     if (!succeeded) {

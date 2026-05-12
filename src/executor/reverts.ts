@@ -19,11 +19,15 @@ export const sendTxRevertedMessage = async (
       return;
     }
   }
-  logger.info("transaction reverted with non-whitelisted reason", {
-    revertReasonMessage: revertMsg,
-    txHash,
-    orderDigest,
-  });
+  logger.warn(
+    {
+      revertReasonMessage: revertMsg,
+      txHash,
+      orderDigest,
+      perpetualSymbol,
+    },
+    "transaction reverted with non-whitelisted reason"
+  );
 
   // Send message to Slack
   const endpoint = process.env.SLACK_WEBHOOK_URL!;

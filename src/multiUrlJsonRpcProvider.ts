@@ -156,18 +156,13 @@ export class MultiUrlJsonRpcProvider
       }
     } catch (err) {
       if (this.options.logErrors) {
-        logger.error(
-          `[(${new Date().toISOString()}) MultiUrlJsonRpcProvider@${currentRpcUrl}] request error: `,
-          err
-        );
+        logger.error({ url: currentRpcUrl, err }, "MultiUrlJsonRpcProvider: request error");
       }
       this.switchRpcOnError();
 
       // When max number of errors is reached - throw.
       if (this.currentNumberOfErrors >= this.options.maxRetries!) {
-        logger.error(
-          `[(${new Date().toISOString()}) MultiUrlJsonRpcProvider@${currentRpcUrl}] Max retries reached`
-        );
+        logger.error({ url: currentRpcUrl }, "MultiUrlJsonRpcProvider: max retries reached");
         throw err;
       }
 
@@ -183,8 +178,8 @@ export class MultiUrlJsonRpcProvider
     if (resp.length > 0 && Object.hasOwnProperty.call(resp[0], "error")) {
       if (this.options.logErrors) {
         logger.error(
-          `[(${new Date().toISOString()}) MultiUrlJsonRpcProvider@${currentRpcUrl}] JSON-RPC response error: `,
-          resp[0].error
+          { url: currentRpcUrl, err: resp[0].error },
+          "MultiUrlJsonRpcProvider: JSON-RPC response error"
         );
       }
       this.switchRpcOnError();
