@@ -86,7 +86,7 @@ export function constructRedis(name: string): Redis {
   let client;
   let redisConfig = getRedisConfig();
   client = new Redis(redisConfig);
-  client.on("error", (err) => logger.info(`${name} Redis Client Error:` + err));
+  client.on("error", (err) => logger.error({ err, name }, "Redis Client Error"));
   return client;
 }
 

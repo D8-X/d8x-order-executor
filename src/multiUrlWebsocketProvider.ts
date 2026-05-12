@@ -177,7 +177,7 @@ export class MultiUrlWebSocketProvider extends SocketProvider implements MultiUr
         await this._start();
         this.resume();
       } catch (error) {
-        logger.warn("failed to start WebsocketProvider", error);
+        logger.warn({ err: error }, "failed to start WebsocketProvider");
       }
 
       // Resolve _waitUntilReady promise once connected
@@ -208,8 +208,8 @@ export class MultiUrlWebSocketProvider extends SocketProvider implements MultiUr
       if (!this.isCurrentRpcUrl(url) && this.switchingRpc) {
         if (this.options.logErrors) {
           logger.debug(
-            `[(${new Date().toISOString()}) MultiUrlWebSocketProvider@${url}] Ignoring error from previous connection, currently switching rpc.`,
-            this.getCurrentRpcUrl()
+            { failedUrl: url, currentUrl: this.getCurrentRpcUrl() },
+            "MultiUrlWebSocketProvider: ignoring error from previous connection, currently switching rpc"
           );
         }
         return;
@@ -218,10 +218,10 @@ export class MultiUrlWebSocketProvider extends SocketProvider implements MultiUr
       this.emit("error", error);
       // Connection failure, attempt to switch to next rpc url
       if (this.options.logErrors) {
-        logger.warn(`[(${new Date().toISOString()}) MultiUrlWebSocketProvider@${url}] Connection error:`, error);
+        logger.warn({ url, err: error }, "MultiUrlWebSocketProvider: connection error");
       }
       if (this.currentErrorsNumber >= this.options.maxRetries!) {
-        logger.error(`[(${new Date().toISOString()}) MultiUrlWebSocketProvider] Max retries reached`);
+        logger.error("MultiUrlWebSocketProvider: max retries reached");
         throw error;
       }
       this.currentErrorsNumber++;
@@ -241,8 +241,8 @@ export class MultiUrlWebSocketProvider extends SocketProvider implements MultiUr
       if (!this.isCurrentRpcUrl(url) && this.switchingRpc) {
         if (this.options.logErrors) {
           logger.debug(
-            `[(${new Date().toISOString()}) MultiUrlWebSocketProvider@${event.target.url
-            }] Ignoring message from previous connection, currently switching rpc.`
+            { url: event.target.url },
+            "MultiUrlWebSocketProvider: ignoring message from previous connection, currently switching rpc"
           );
         }
         return;
@@ -254,8 +254,8 @@ export class MultiUrlWebSocketProvider extends SocketProvider implements MultiUr
         const result = <JsonRpcResult | JsonRpcError>JSON.parse(data);
         if ("error" in result) {
           logger.warn(
-            `[(${new Date().toISOString()}) MultiUrlWebSocketProvider@${event.target.url}] Received error in message:`,
-            result.error
+            { url: event.target.url, err: result.error },
+            "MultiUrlWebSocketProvider: received error in message"
           );
           this.startNextWebsocketIfNotStopped();
           return;
@@ -263,8 +263,8 @@ export class MultiUrlWebSocketProvider extends SocketProvider implements MultiUr
       } catch (e) {
         if (this.options.logErrors) {
           logger.warn(
-            `[(${new Date().toISOString()}) MultiUrlWebSocketProvider@${event.target.url}] Invalid JSON in message:`,
-            data
+            { url: event.target.url, data, err: e },
+            "MultiUrlWebSocketProvider: invalid JSON in message"
           );
           this.startNextWebsocketIfNotStopped();
         }

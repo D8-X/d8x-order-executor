@@ -34,7 +34,7 @@ async function start() {
   try {
     await executor.fundWallets(addr);
   } catch (e) {
-    logger.info(e);
+    logger.error({ err: e }, "fundWallets failed");
     await sleep(60_000);
     process.exit(1);
   }
@@ -49,4 +49,7 @@ async function start() {
   executor.run();
 }
 
-start();
+start().catch((e) => {
+  logger.error({ err: e }, "executor start failed");
+  process.exit(1);
+});

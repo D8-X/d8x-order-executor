@@ -429,7 +429,7 @@ export default class BlockhainListener {
   private handleProxyEvent(event: Log) {
     const parsedEvent = this.proxyInterface.parseLog(event);
     if (!parsedEvent) {
-      logger.warn("Unexpected event log:", event);
+      logger.warn({ event }, "unexpected event log");
       return;
     }
     let msg:
@@ -602,7 +602,7 @@ export default class BlockhainListener {
   private async handleOrderBookEvent(event: Log) {
     const parsedEvent = this.orderBookInterface.parseLog(event);
     if (!parsedEvent) {
-      logger.warn("Unexpected order book event log:", event);
+      logger.warn({ event }, "unexpected order book event log");
       return;
     }
 
@@ -661,7 +661,7 @@ export default class BlockhainListener {
         break;
 
       default:
-        logger.info("Unexpected event:", parsedEvent);
+        logger.warn({ event: parsedEvent }, "unexpected event");
         return;
     }
     this.sendMsg(parsedEvent, msg);
