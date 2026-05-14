@@ -457,7 +457,12 @@ export default class BlockhainListener {
         return;
 
       case "TransferAddressTo":
-        this.redisPubClient.publish("Restart", parsedEvent.args[0]);
+        // Per-chain Restart channel so the broker address transfer on this
+        // chain doesn't also recycle the executor for the other chain.
+        this.redisPubClient.publish(
+          `Restart:${this.chainId}`,
+          parsedEvent.args[0]
+        );
         this.unsubscribe();
         setTimeout(() => process.exit(0), 1_000);
         return;
