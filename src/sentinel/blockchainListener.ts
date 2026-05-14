@@ -72,6 +72,12 @@ export default class BlockhainListener {
 
   private orderBooks: Set<string> = new Set();
 
+  // Periodic refresh of MarketData's perpetualId -> symbol map. Without this,
+  // the cache built at startup goes stale when prediction-market perp slots
+  // are reused for new games, and we keep publishing events with old symbols.
+  private symbolCacheRefreshTimer?: NodeJS.Timeout;
+  private readonly SYMBOL_CACHE_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+
   constructor(config: ExecutorConfig) {
     if (config.rpcListenHttp.length <= 0) {
       throw new Error(
@@ -272,25 +278,34 @@ export default class BlockhainListener {
 
     await this.md.createProxyInstance(this.httpProvider);
 
-    const perps = await this.md
+    // Load orderbook addresses for ALL deployed perps (regardless of state),
+    // so we don't have to maintain this set as perps transition between
+    // NORMAL / EMERGENCY / MARKET_CLOSED / etc. The address is stable per
+    // slot, so once added it stays correct even when the slot rotates to a
+    // new game. Perps with no orderbook deployed yet (empty
+    // limitOrderBookAddr — typically fresh INVALID slots) throw and are
+    // skipped silently.
+    const allPerpSymbols = await this.md
       .exchangeInfo()
       .then(({ pools }) =>
         pools
           .map(({ perpetuals, poolSymbol }) =>
-            perpetuals
-              .filter(({ state }) => state === "NORMAL")
-              .map(
-                ({ baseCurrency, quoteCurrency }) =>
-                  `${baseCurrency}-${quoteCurrency}-${poolSymbol}`
-              )
+            perpetuals.map(
+              ({ baseCurrency, quoteCurrency }) =>
+                `${baseCurrency}-${quoteCurrency}-${poolSymbol}`
+            )
           )
           .flat()
       );
 
-    for (const symbol of perps) {
-      this.orderBooks.add(
-        this.md.getOrderBookContract(symbol).target.toString()
-      );
+    for (const symbol of allPerpSymbols) {
+      try {
+        this.orderBooks.add(
+          this.md.getOrderBookContract(symbol).target.toString()
+        );
+      } catch {
+        // No orderbook deployed for this slot yet — skip.
+      }
     }
 
     if (this.config.rpcListenWs.length > 0) {
@@ -318,6 +333,25 @@ export default class BlockhainListener {
     this.connectWsOrSwitchToHttp();
     this.addListeners();
     this.resetHealthChecks();
+
+    this.symbolCacheRefreshTimer = setInterval(
+      () => void this.refreshSymbolMap("periodic"),
+      this.SYMBOL_CACHE_REFRESH_INTERVAL_MS
+    );
+  }
+
+  // SDK has internal mutex (refreshPromise) so concurrent calls coalesce.
+  private async refreshSymbolMap(reason: string): Promise<void> {
+    try {
+      await this.md.refreshSymbols(true);
+      logger.info({ info: "symbol cache refreshed", reason });
+    } catch (e) {
+      logger.warn({
+        info: "symbol cache refresh failed",
+        reason,
+        err: (e as Error)?.message ?? String(e),
+      });
+    }
   }
 
   private async addListeners() {
@@ -395,7 +429,7 @@ export default class BlockhainListener {
   private handleProxyEvent(event: Log) {
     const parsedEvent = this.proxyInterface.parseLog(event);
     if (!parsedEvent) {
-      logger.warn("Unexpected event log:", event);
+      logger.warn({ event }, "unexpected event log");
       return;
     }
     let msg:
@@ -414,10 +448,21 @@ export default class BlockhainListener {
           args: parsedEvent.args,
           time: new Date(Date.now()).toISOString(),
         });
+        // SetNormalState fires when a perp slot becomes active with a
+        // (possibly new) symbol — e.g., a sports prediction slot rotates
+        // to the next game. Refresh so subsequent events resolve correctly.
+        if (parsedEvent.name === "SetNormalState") {
+          void this.refreshSymbolMap("SetNormalState");
+        }
         return;
 
       case "TransferAddressTo":
-        this.redisPubClient.publish("Restart", parsedEvent.args[0]);
+        // Per-chain Restart channel so the broker address transfer on this
+        // chain doesn't also recycle the executor for the other chain.
+        this.redisPubClient.publish(
+          `Restart:${this.chainId}`,
+          parsedEvent.args[0]
+        );
         this.unsubscribe();
         setTimeout(() => process.exit(0), 1_000);
         return;
@@ -562,7 +607,7 @@ export default class BlockhainListener {
   private async handleOrderBookEvent(event: Log) {
     const parsedEvent = this.orderBookInterface.parseLog(event);
     if (!parsedEvent) {
-      logger.warn("Unexpected order book event log:", event);
+      logger.warn({ event }, "unexpected order book event log");
       return;
     }
 
@@ -621,7 +666,7 @@ export default class BlockhainListener {
         break;
 
       default:
-        logger.info("Unexpected event:", parsedEvent);
+        logger.warn({ event: parsedEvent }, "unexpected event");
         return;
     }
     this.sendMsg(parsedEvent, msg);

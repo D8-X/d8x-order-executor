@@ -56,6 +56,10 @@ export default class Executor {
   private timesTried: Map<string, number> = new Map();
   private trash: Set<string> = new Set();
   public ready: boolean = false;
+  // Per-chain Restart pub/sub channel. On one server, chains run against the same Redis,
+  // so an unscoped "Restart" message from one chain's executor would also exit
+  // the other chain's executor. Scope by chainId to keep restarts chain-local.
+  private restartChannel: string;
 
   protected metrics: ExecutorMetrics;
 
@@ -88,6 +92,13 @@ export default class Executor {
     this.redisPubClient = constructRedis("executorPubClient");
 
     const sdkConfig = PerpetualDataHandler.readSDKConfig(this.config.sdkConfig);
+    // Chain id may be overridden by env (see below); use the resolved value
+    // here for the restart channel so subscribers and publishers agree.
+    const resolvedChainId =
+      process.env.CHAIN_ID !== undefined
+        ? parseInt(process.env.CHAIN_ID)
+        : sdkConfig.chainId;
+    this.restartChannel = `Restart:${resolvedChainId}`;
     this.providers = [
       new MultiUrlJsonRpcProvider(
         this.config.rpcExec,
@@ -118,13 +129,13 @@ export default class Executor {
     if (this.config.priceFeedEndpoints.length > 0) {
       sdkConfig.priceFeedEndpoints = this.config.priceFeedEndpoints;
       logger.info(
-        "Using user specified price feed endpoints",
-        sdkConfig.priceFeedEndpoints
+        { priceFeedEndpoints: sdkConfig.priceFeedEndpoints },
+        "Using user-specified price feed endpoints"
       );
     } else {
       logger.warn(
-        "No price feed endpoints specified in config. Using default endpoints from SDK.",
-        sdkConfig.priceFeedEndpoints
+        { priceFeedEndpoints: sdkConfig.priceFeedEndpoints },
+        "No price feed endpoints specified in config; using SDK defaults"
       );
     }
 
@@ -192,14 +203,10 @@ export default class Executor {
     await this.redisSubClient.subscribe(
       "block",
       "TradeEvent",
-      "Restart",
+      this.restartChannel,
       (err, count) => {
         if (err) {
-          logger.info(
-            `${new Date(
-              Date.now()
-            ).toISOString()}: redis subscription failed: ${err}`
-          );
+          logger.error({ err }, "redis subscription failed");
           process.exit(1);
         }
       }
@@ -213,11 +220,7 @@ export default class Executor {
     try {
       await this.execute();
     } catch (e) {
-      logger.warn({
-        info: "ExecuteOrder error",
-        reason: e?.toString(),
-        time: new Date(Date.now()).toISOString(),
-      });
+      logger.warn({ err: e }, "ExecuteOrder error");
     }
   }
 
@@ -241,11 +244,7 @@ export default class Executor {
         try {
           await this.execute();
         } catch (e) {
-          logger.warn({
-            info: "execute() error",
-            reason: e?.toString(),
-            time: new Date(Date.now()).toISOString(),
-          });
+          logger.warn({ err: e }, "execute() error");
         }
       }, this.config.executeIntervalSecondsMax * 1_000);
 
@@ -270,19 +269,7 @@ export default class Executor {
         switch (channel) {
           case "block": {
             if (+msg % 1000 == 0) {
-              logger.info(
-                JSON.stringify(
-                  {
-                    busy: busy,
-                    errors: errors,
-                    success: success,
-                    msgs: msgs,
-                    time: new Date(Date.now()).toISOString(),
-                  },
-                  undefined,
-                  "  "
-                )
-              );
+              logger.info({ busy, errors, success, msgs }, "block stats");
             }
             break;
           }
@@ -294,7 +281,8 @@ export default class Executor {
             break;
           }
 
-          case "Restart": {
+          case this.restartChannel: {
+            logger.info("Restarting upon signal received...");
             process.exit(0);
           }
         }
@@ -466,12 +454,11 @@ export default class Executor {
           onChainOrder,
         });
       } else {
-        logger.info({
+        logger.warn({
           info: "failed to fetch order",
           symbol,
           digest,
           rpc: this.bots[botIdx].rpc,
-          time: new Date(Date.now()).toISOString(),
         });
       }
     } else {
@@ -650,13 +637,12 @@ export default class Executor {
       // didn't make it on-chain - handle it (possibly re-throw error)
       const error = e?.toString();
       const addr = this.bots[botIdx].api.getAddress();
-      logger.info({
+      logger.warn({
         info: "txn rejected",
-        reason: error,
-        symbol: symbol,
+        err: e,
+        symbol,
         executor: addr,
-        digest: digest,
-        time: new Date(Date.now()).toISOString(),
+        digest,
       });
 
       switch (true) {
@@ -696,9 +682,10 @@ export default class Executor {
           // https://docs.ethers.org/v5/troubleshooting/errors/#help-NUMERIC_FAULT-underflow
           this.config.gasLimit = Math.floor(this.config.gasLimit);
           this.gasLimitIncreaseCounter++;
-          logger.warn("intrinsic gas too low, increasing gas limit", {
-            new_gas_limit: this.config.gasLimit,
-          });
+          logger.warn(
+            { new_gas_limit: this.config.gasLimit },
+            "intrinsic gas too low, increasing gas limit"
+          );
           this.locked.delete(digest);
           this.bots[botIdx].busy = false;
           return BotStatus.PartialError;
@@ -706,20 +693,20 @@ export default class Executor {
           error.includes("trigger cond not met") ||
           error.includes("price exceeds limit") ||
           error.includes("0xf4d678b8") || // another form of price exceeds limit
-          error.includes("could not replace existing tx"): // <- for zkevm: txns may get stuck in the node
+          error.includes("could not replace existing tx") || // <- for zkevm: txns may get stuck in the node
+          error.includes("delay required"): // perp / oracle cooldown between operations; resolves after the cooldown window
           // false positive: order can be tried again later
           // so just unlock it after waiting (unless it's a repeat offender)
           if (this.timesTried.get(digest)! > 20) {
-            logger.info({
+            logger.error({
               info: "restart",
               reason: "too many false positives",
               tried: this.timesTried.get(digest),
-              symbol: symbol,
+              symbol,
               executor: addr,
-              digest: digest,
-              time: new Date(Date.now()).toISOString(),
+              digest,
             });
-            this.redisPubClient.publish("Restart", "false positives");
+            this.redisPubClient.publish(this.restartChannel, "false positives");
             process.exit(1);
           }
           this.bots[botIdx].busy = false;
@@ -907,12 +894,11 @@ export default class Executor {
           responses.busy++;
         }
       } else {
-        logger.error({
-          info: "uncaught error in executeOrderByBot - restarting",
-          reason: result.reason?.toString(),
-          time: new Date(Date.now()).toISOString(),
-        });
-        this.redisPubClient.publish("Restart", "uncaught error");
+        logger.error(
+          { err: result.reason },
+          "uncaught error in executeOrderByBot - restarting"
+        );
+        this.redisPubClient.publish(this.restartChannel, "uncaught error");
         process.exit(1);
       }
     }

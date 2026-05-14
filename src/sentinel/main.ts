@@ -1,6 +1,7 @@
 import { loadConfig } from "../utils.js";
 import BlockhainListener from "./blockchainListener.js";
 import BrokerListener from "./brokerListener.js";
+import { logger } from "../logger.js";
 
 import 'dotenv/config';
 
@@ -21,4 +22,7 @@ async function start() {
   }
 }
 
-start();
+start().catch((e) => {
+  logger.error({ err: e }, "sentinel start failed");
+  process.exit(1);
+});
