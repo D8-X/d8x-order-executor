@@ -143,6 +143,13 @@ export default class Distributor {
     if (config.configSource !== undefined) {
       sdkConfig.configSource = config.configSource;
     }
+    // Honor the same CHAIN_ID env override that Executor applies, so the
+    // Restart:<chainId> pub/sub channel matches across both ends in the
+    // hardhat-testing path. Otherwise executor publishes to one channel and
+    // distributor subscribes to another.
+    if (process.env.CHAIN_ID !== undefined) {
+      sdkConfig.chainId = parseInt(process.env.CHAIN_ID);
+    }
 
     this.chainId = sdkConfig.chainId;
     this.redisSubClient = constructRedis("commanderSubClient");
@@ -212,7 +219,8 @@ export default class Distributor {
       await this.ensureSymbolTracked(symbol);
     }
 
-    // Subscribe to blockchain events
+    // Subscribe to blockchain events. Restart is per-chain (e.g. "Restart:84532")
+    // so a restart on the other chain's stack doesn't take this distributor down too.
     await this.redisSubClient.subscribe(
       "block",
       "UpdateMarkPriceEvent",
@@ -222,7 +230,7 @@ export default class Distributor {
       "PerpetualLimitOrderCreatedEvent",
       "PerpetualLimitOrderCancelledEvent",
       "BrokerOrderCreatedEvent",
-      "Restart",
+      `Restart:${this.chainId}`,
       "switch-mode",
       "listener-error",
       (err, count) => {
@@ -550,7 +558,7 @@ export default class Distributor {
             }
             break;
 
-          case "Restart": {
+          case `Restart:${this.chainId}`: {
             logger.info("Restarting upon signal received...");
             process.exit(0);
           }

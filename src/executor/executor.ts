@@ -56,6 +56,10 @@ export default class Executor {
   private timesTried: Map<string, number> = new Map();
   private trash: Set<string> = new Set();
   public ready: boolean = false;
+  // Per-chain Restart pub/sub channel. On one server, chains run against the same Redis,
+  // so an unscoped "Restart" message from one chain's executor would also exit
+  // the other chain's executor. Scope by chainId to keep restarts chain-local.
+  private restartChannel: string;
 
   protected metrics: ExecutorMetrics;
 
@@ -88,6 +92,13 @@ export default class Executor {
     this.redisPubClient = constructRedis("executorPubClient");
 
     const sdkConfig = PerpetualDataHandler.readSDKConfig(this.config.sdkConfig);
+    // Chain id may be overridden by env (see below); use the resolved value
+    // here for the restart channel so subscribers and publishers agree.
+    const resolvedChainId =
+      process.env.CHAIN_ID !== undefined
+        ? parseInt(process.env.CHAIN_ID)
+        : sdkConfig.chainId;
+    this.restartChannel = `Restart:${resolvedChainId}`;
     this.providers = [
       new MultiUrlJsonRpcProvider(
         this.config.rpcExec,
@@ -192,7 +203,7 @@ export default class Executor {
     await this.redisSubClient.subscribe(
       "block",
       "TradeEvent",
-      "Restart",
+      this.restartChannel,
       (err, count) => {
         if (err) {
           logger.error({ err }, "redis subscription failed");
@@ -270,7 +281,8 @@ export default class Executor {
             break;
           }
 
-          case "Restart": {
+          case this.restartChannel: {
+            logger.info("Restarting upon signal received...");
             process.exit(0);
           }
         }
@@ -681,7 +693,8 @@ export default class Executor {
           error.includes("trigger cond not met") ||
           error.includes("price exceeds limit") ||
           error.includes("0xf4d678b8") || // another form of price exceeds limit
-          error.includes("could not replace existing tx"): // <- for zkevm: txns may get stuck in the node
+          error.includes("could not replace existing tx") || // <- for zkevm: txns may get stuck in the node
+          error.includes("delay required"): // perp / oracle cooldown between operations; resolves after the cooldown window
           // false positive: order can be tried again later
           // so just unlock it after waiting (unless it's a repeat offender)
           if (this.timesTried.get(digest)! > 20) {
@@ -693,7 +706,7 @@ export default class Executor {
               executor: addr,
               digest,
             });
-            this.redisPubClient.publish("Restart", "false positives");
+            this.redisPubClient.publish(this.restartChannel, "false positives");
             process.exit(1);
           }
           this.bots[botIdx].busy = false;
@@ -885,7 +898,7 @@ export default class Executor {
           { err: result.reason },
           "uncaught error in executeOrderByBot - restarting"
         );
-        this.redisPubClient.publish("Restart", "uncaught error");
+        this.redisPubClient.publish(this.restartChannel, "uncaught error");
         process.exit(1);
       }
     }
