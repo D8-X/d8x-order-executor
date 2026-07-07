@@ -885,8 +885,28 @@ export default class Distributor {
       waited: `${Date.now() - tsStart} ms`,
     });
 
+    this.publishOpenOrderMetrics(symbol, orderArray);
+
     await this.updatePriceCurve(symbol);
     await this.refreshAccounts(symbol);
+  }
+
+  private publishOpenOrderMetrics(symbol: string, orderArray: OrderBundle[]) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const types = ["market", "limit", "stop_market", "stop_limit", "unknown"];
+    const buckets = new Map<string, { count: number; oldestTs: number }>();
+    for (const t of types) buckets.set(t, { count: 0, oldestTs: nowSec });
+    for (const ob of orderArray) {
+      const raw = ((ob.order?.type ?? ob.type) as string | undefined)?.toLowerCase() ?? "unknown";
+      const bucket = buckets.get(raw) ?? buckets.get("unknown")!;
+      const submitted = ob.order?.submittedTimestamp ?? nowSec;
+      bucket.count += 1;
+      if (submitted > 0 && submitted < bucket.oldestTs) bucket.oldestTs = submitted;
+    }
+    for (const [type, bucket] of buckets) {
+      const oldestAge = bucket.count > 0 ? Math.max(0, nowSec - bucket.oldestTs) : 0;
+      this.executor.metrics.setOpenOrders(symbol, type, bucket.count, oldestAge);
+    }
   }
 
   private async refreshAccount(symbol: string, traderAddr: string) {

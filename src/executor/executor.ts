@@ -61,7 +61,7 @@ export default class Executor {
   // the other chain's executor. Scope by chainId to keep restarts chain-local.
   private restartChannel: string;
 
-  protected metrics: ExecutorMetrics;
+  public metrics: ExecutorMetrics;
 
   // Distributor must be set
   protected distributor: Distributor | undefined;
@@ -81,7 +81,7 @@ export default class Executor {
     pkLiquidators: string[],
     config: ExecutorConfig
   ) {
-    this.metrics = new ExecutorMetrics();
+    this.metrics = new ExecutorMetrics(config.sdkConfig);
     this.metrics.start();
 
     this.treasury = pkTreasury;
@@ -744,6 +744,8 @@ export default class Executor {
         time: new Date(Date.now()).toISOString(),
       });
       this.metrics.incrementOrderExecutionConfirmations();
+      this.metrics.observeLastExecution(botIdx, receipt.from);
+      this.metrics.incExecutionOutcome(botIdx, receipt.from, "confirmed");
 
       if (this.gasLimitIncreaseCounter > 0) {
         this.config.gasLimit = this.originalGasLimit;
@@ -768,6 +770,7 @@ export default class Executor {
         time: new Date(Date.now()).toISOString(),
       });
       this.metrics.incrementOrderExecutionFailedConfirmations();
+      this.metrics.incExecutionOutcome(botIdx, this.bots[botIdx].api.getAddress(), "failed");
 
       // Send message to slack whenever there is a revert reason that interests
       // us
