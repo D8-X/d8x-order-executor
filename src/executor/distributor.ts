@@ -674,29 +674,26 @@ export default class Distributor {
     trader: string,
     digest: string,
     type: OrderType,
-    order?: Order
+    order: Order
   ) {
     if (!this.openOrders.has(symbol)) {
       this.openOrders.set(symbol, new Map());
     }
-    if (order != undefined || !this.openOrders.get(symbol)?.has(digest)) {
-      this.openOrders.get(symbol)!.set(digest, {
-        trader: trader,
-        digest: digest,
-        order: order,
-        symbol: symbol,
-        type: type,
-        isPredictionMarket: this.md.isPredictionMarket(symbol),
-      });
-      logger.debug({
-        info: "order added",
-        symbol: symbol,
-        trader: trader,
-        digest: digest,
-        onChain: order !== undefined,
-        time: new Date(Date.now()).toISOString(),
-      });
-    }
+    this.openOrders.get(symbol)!.set(digest, {
+      trader: trader,
+      digest: digest,
+      order: order,
+      symbol: symbol,
+      type: type,
+      isPredictionMarket: this.md.isPredictionMarket(symbol),
+    });
+    logger.debug({
+      info: "order added",
+      symbol: symbol,
+      trader: trader,
+      digest: digest,
+      time: new Date(Date.now()).toISOString(),
+    });
   }
 
   private removeOrder(
@@ -1090,11 +1087,6 @@ export default class Distributor {
       if (!this.openOrders.get(symbol)?.has(digest)) return;
       if (await this.tryExecute(symbol, digest)) return;
       await sleep(1_000);
-    }
-    // that's delay + 1 + 4 
-    const bundle = this.openOrders.get(symbol)?.get(digest);
-    if (bundle && bundle.order === undefined) {
-      this.removeOrder(symbol, digest, "broker stub timed out");
     }
   }
 
