@@ -35,6 +35,15 @@ export function loadConfig(sdkConfig: string): ExecutorConfig {
     throw new Error(`SDK Config ${sdkConfig} not found in config file.`);
   }
 
+  for (const field of ["orderDelaySec", "brokerExtraDelaySec"] as const) {
+    const value = config[field];
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      throw new Error(
+        `Config ${sdkConfig}: "${field}" must be defined in ${cfgPath}.`
+      );
+    }
+  }
+
   config.rpcExec = shuffle(config.rpcExec);
   config.rpcListenHttp = shuffle(config.rpcListenHttp);
   config.rpcWatch = shuffle(config.rpcWatch);

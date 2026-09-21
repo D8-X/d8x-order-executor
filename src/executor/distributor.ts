@@ -445,8 +445,11 @@ export default class Distributor {
             // any await and before addOrder, otherwise checkOrders can pick
             // up the order with no gate in place. The broker WS path owns
             // the gate when it has already claimed the digest.
-            if (!this.brokerHandled.has(digest)) {
-              const delayMs = (this.config.orderDelaySec ?? 0) * 1_000;
+            if (
+              !this.brokerHandled.has(digest) &&
+              !this.eligibleAfterTs.has(digest)
+            ) {
+              const delayMs = this.config.orderDelaySec * 1_000;
               this.eligibleAfterTs.set(digest, Date.now() + delayMs);
               if (!this.orderSource.has(digest)) this.orderSource.set(digest, "sentinel");
             }
@@ -478,7 +481,9 @@ export default class Distributor {
             this.orderSource.set(m.digest, "broker");
             this.addOrder(m.symbol, m.traderAddr, m.digest, m.type, this.brokerMsgToOrder(m));
             if (!this.eligibleAfterTs.has(m.digest)) {
-              const delayMs = ((this.config.orderDelaySec ?? 0) + 1) * 1_000;
+              const delayMs =
+                (this.config.orderDelaySec + this.config.brokerExtraDelaySec) *
+                1_000;
               this.eligibleAfterTs.set(m.digest, Date.now() + delayMs);
             }
             this.scheduleBrokerExecution(m.symbol, m.digest);
@@ -824,7 +829,7 @@ export default class Distributor {
           });
           if (!this.orderSource.has(digest)) this.orderSource.set(digest, "refresh");
           if (!this.eligibleAfterTs.has(digest)) {
-            const delaySec = this.config.orderDelaySec ?? 0;
+            const delaySec = this.config.orderDelaySec;
             const ageSec = Math.max(
               0,
               Math.floor(Date.now() / 1_000) - order.submittedTimestamp
@@ -1066,10 +1071,11 @@ export default class Distributor {
   }
 
   // broker-ws path
-  // wait 1 + delay seconds, then try execute; retry up to 4x1s if
+  // wait orderDelaySec + brokerExtraDelaySec, then try execute; retry up to 4x1s if
   // sentinel hasn't fired yet
   private async scheduleBrokerExecution(symbol: string, digest: string) {
-    const waitMs = ((this.config.orderDelaySec ?? 0) + 1) * 1_000;
+    const waitMs =
+      (this.config.orderDelaySec + this.config.brokerExtraDelaySec) * 1_000;
     await sleep(waitMs);
     for (let i = 0; i < 4; i++) {
       if (this.messageSentAt.has(digest)) {

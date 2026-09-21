@@ -66,8 +66,12 @@ export interface ExecutorConfig {
   priceFeedConfigNetwork?: string;
   // override default config (defaults to 1.2x RPC gas px), multiplier (e.g. 1.5 means 1.5x the gas price)
   gasPriceMultiplier?: number;
-  // imposed excution delay in seconds, if not defined, orders are executed as soon as possible
-  orderDelaySec?: number;
+  // Imposed execution delay in seconds, measured from when the executor first
+  // observes an order.
+  orderDelaySec: number;
+  // Extra delay in seconds added on top of orderDelaySec for orders that
+  // arrive via the broker websocket, which are seen before they are on chain.
+  brokerExtraDelaySec: number;
 }
 
 export interface BrokerWSErrorData {
