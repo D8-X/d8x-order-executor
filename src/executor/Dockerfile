@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.6
 
 # ---- builder ----
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 
 COPY package.json yarn.lock ./
@@ -16,7 +16,7 @@ RUN yarn build && yarn bundle:executor
 
 # ---- runtime ----
 # Single bundled CJS file: no node_modules, no source, no SDK files on disk.
-FROM node:20-alpine
+FROM node:24-alpine
 WORKDIR /app
 
 COPY --from=builder /app/bundles/executor.cjs ./executor.cjs
