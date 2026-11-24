@@ -280,8 +280,6 @@ export default class BlockhainListener {
       } else if (this.config.rpcListenWs.length > 0) {
         // currently on HTTP - check if we can switch to WS by seeing if we get
         // blocks with next WS connection.
-        let success = false;
-
         // await this.multiUrlWsProvider.startNextWebsocket(); Do not use once
         // with MultiUrlWebsocketProvider. Also, do not call
         // startNextWebsocket(), multi url provider will handle the switching
@@ -292,31 +290,43 @@ export default class BlockhainListener {
             Date.now()
           ).toISOString()}] attempting to switch to WS ${this.multiUrlWsProvider.getCurrentRpcUrl()}`
         );
-        const blockReceivedCb = () => {
-          logger.debug(
-            "block received",
-            this.multiUrlWsProvider.getCurrentRpcUrl()
+        if (await this.probeWebsocket()) {
+          await this.switchListeningMode();
+        } else {
+          // Otherwise just stop the multi url ws provider and try again later
+          await this.multiUrlWsProvider.stop();
+          logger.info(
+            `[${new Date(
+              Date.now()
+            ).toISOString()}] attempting to switch to WS failed - probe failed`
           );
-          success = true;
-        };
-        this.multiUrlWsProvider.on("block", blockReceivedCb);
-        // after N seconds, check if we received a block - if yes, switch
-        setTimeout(async () => {
-          if (success) {
-            this.multiUrlWsProvider.removeListener("block", blockReceivedCb);
-            await this.switchListeningMode();
-          } else {
-            // Otherwise just stop the multi url ws provider and try again later
-            await this.multiUrlWsProvider.stop();
-            logger.info(
-              `[${new Date(
-                Date.now()
-              ).toISOString()}] attempting to switch to WS failed - block not received`
-            );
-          }
-        }, this.config.waitForBlockSeconds * 1_000);
+        }
       }
     }, this.config.healthCheckSeconds * 1_000);
+  }
+
+  private async probeWebsocket(): Promise<boolean> {
+    try {
+      await executeWithTimeout(
+        (async () => {
+          await this.multiUrlWsProvider.getBlockNumber();
+          const subId: string = await this.multiUrlWsProvider.send(
+            "eth_subscribe",
+            ["logs", { address: this.md.getProxyAddress() }]
+          );
+          await this.multiUrlWsProvider.send("eth_unsubscribe", [subId]);
+        })(),
+        this.config.waitForBlockSeconds * 1_000,
+        "websocket probe timeout"
+      );
+      return true;
+    } catch (e) {
+      logger.warn(
+        { error: (e as Error)?.message ?? e },
+        "BlockchainListener websocket probe failed"
+      );
+      return false;
+    }
   }
 
   public async start() {
