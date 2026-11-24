@@ -192,10 +192,12 @@ export default class BlockhainListener {
         this.redisPubClient.publish("block", blockNumber.toString());
       }
     } catch (e) {
-      logger.warn(
-        { mode: this.mode, error: (e as Error)?.message ?? e },
-        "BlockchainListener head poll failed"
-      );
+      if (provider === this.listeningProvider) {
+        logger.warn(
+          { mode: this.mode, error: (e as Error)?.message ?? e },
+          "BlockchainListener head poll failed"
+        );
+      }
     } finally {
       this.headPollsInflight.delete(provider);
     }
