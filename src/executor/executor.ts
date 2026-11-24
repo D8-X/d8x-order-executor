@@ -270,7 +270,7 @@ export default class Executor {
         switch (channel) {
           case "block": {
             const statsBlock = Math.floor(+msg / 1000);
-            if (statsBlock !== lastStatsBlock) {
+            if (statsBlock > lastStatsBlock) {
               lastStatsBlock = statsBlock;
               logger.info({ busy, errors, success, msgs }, "block stats");
             }
