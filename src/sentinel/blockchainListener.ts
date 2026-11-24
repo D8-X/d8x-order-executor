@@ -32,7 +32,7 @@ import {
   ExecutionFailedEvent,
   PerpetualLimitOrderCreatedEvent,
 } from "@d8-x/d8x-node-sdk/contracts/LimitOrderBook";
-import { Log, LogDescription, Network, Result } from "ethers";
+import { Log, LogDescription, Network, Result, ZeroAddress } from "ethers";
 import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider.js";
 import { MultiUrlWebSocketProvider } from "../multiUrlWebsocketProvider.js";
 import { LogPollingJsonRpcProvider } from "../logPollingProvider.js";
@@ -48,6 +48,7 @@ const HEAD_POLL_TIMEOUT_MS = 8_000;
 const DELIVERY_CHECK_LAG_BLOCKS = 10;
 const DELIVERY_CHECK_MAX_BLOCKS = 2_000;
 const DELIVERY_CHECK_TIMEOUT_MS = 20_000;
+const PROBE_ATTEMPT_TIMEOUT_MS = 5_000;
 
 export default class BlockhainListener {
   private config: ExecutorConfig;
@@ -301,7 +302,11 @@ export default class BlockhainListener {
             Date.now()
           ).toISOString()}] attempting to switch to WS ${this.multiUrlWsProvider.getCurrentRpcUrl()}`
         );
-        if (await this.probeWebsocket()) {
+        const probeOk = await this.probeWebsocket();
+        if (this.mode !== ListeningMode.Polling || this.switchingRPC) {
+          return;
+        }
+        if (probeOk) {
           await this.switchListeningMode();
         } else {
           // Otherwise just stop the multi url ws provider and try again later
@@ -375,18 +380,40 @@ export default class BlockhainListener {
   }
 
   private async probeWebsocket(): Promise<boolean> {
-    try {
-      await executeWithTimeout(
-        (async () => {
-          await this.multiUrlWsProvider.getBlockNumber();
-          const subId: string = await this.multiUrlWsProvider.send(
-            "eth_subscribe",
-            ["logs", { address: this.md.getProxyAddress() }]
+    const deadline = Date.now() + this.config.waitForBlockSeconds * 1_000;
+    const remainingMs = () => Math.max(1, deadline - Date.now());
+    for (;;) {
+      try {
+        await executeWithTimeout(
+          this.multiUrlWsProvider.getBlockNumber(),
+          Math.min(PROBE_ATTEMPT_TIMEOUT_MS, remainingMs()),
+          "websocket probe timeout"
+        );
+        break;
+      } catch (e) {
+        if (Date.now() >= deadline) {
+          logger.warn(
+            { error: (e as Error)?.message ?? e },
+            "BlockchainListener websocket probe failed"
           );
-          await this.multiUrlWsProvider.send("eth_unsubscribe", [subId]);
-        })(),
-        this.config.waitForBlockSeconds * 1_000,
-        "websocket probe timeout"
+          return false;
+        }
+        await sleep(Math.min(1_000, remainingMs()));
+      }
+    }
+    try {
+      const subId: string = await executeWithTimeout(
+        this.multiUrlWsProvider.send("eth_subscribe", [
+          "logs",
+          { address: ZeroAddress },
+        ]),
+        remainingMs(),
+        "websocket subscribe probe timeout"
+      );
+      await executeWithTimeout(
+        this.multiUrlWsProvider.send("eth_unsubscribe", [subId]),
+        remainingMs(),
+        "websocket unsubscribe probe timeout"
       );
       return true;
     } catch (e) {
