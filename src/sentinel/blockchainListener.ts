@@ -42,6 +42,9 @@ enum ListeningMode {
   Events = "Events",
 }
 
+const HEAD_POLL_INTERVAL_MS = 2_000;
+const HEAD_POLL_TIMEOUT_MS = 8_000;
+
 export default class BlockhainListener {
   private config: ExecutorConfig;
   // Network is initialized in start() method
@@ -66,6 +69,10 @@ export default class BlockhainListener {
   private lastBlockReceivedAt: number;
   private lastRpcIndex = { http: -1, ws: -1 };
   private switchingRPC = false;
+  private headPollTimer?: NodeJS.Timeout;
+  private headPollsInflight = new Set<
+    MultiUrlJsonRpcProvider | MultiUrlWebSocketProvider
+  >();
 
   private proxyInterface = IPerpetualManager__factory.createInterface();
   private orderBookInterface = LimitOrderBook__factory.createInterface();
@@ -146,6 +153,51 @@ export default class BlockhainListener {
       time: new Date(Date.now()).toISOString(),
     });
     return true;
+  }
+
+  private startHeadPolling() {
+    if (this.headPollTimer) {
+      clearInterval(this.headPollTimer);
+    }
+    this.headPollTimer = setInterval(
+      () => void this.pollHead(),
+      HEAD_POLL_INTERVAL_MS
+    );
+    void this.pollHead();
+  }
+
+  private async pollHead() {
+    const provider = this.listeningProvider;
+    if (
+      provider === undefined ||
+      this.switchingRPC ||
+      this.headPollsInflight.has(provider)
+    ) {
+      return;
+    }
+    this.headPollsInflight.add(provider);
+    try {
+      const blockNumber = await executeWithTimeout(
+        provider.getBlockNumber(),
+        HEAD_POLL_TIMEOUT_MS,
+        "head poll timeout"
+      );
+      if (provider !== this.listeningProvider || this.switchingRPC) {
+        return;
+      }
+      if (this.blockNumber === undefined || blockNumber > this.blockNumber) {
+        this.lastBlockReceivedAt = Date.now();
+        this.blockNumber = blockNumber;
+        this.redisPubClient.publish("block", blockNumber.toString());
+      }
+    } catch (e) {
+      logger.warn(
+        { mode: this.mode, error: (e as Error)?.message ?? e },
+        "BlockchainListener head poll failed"
+      );
+    } finally {
+      this.headPollsInflight.delete(provider);
+    }
   }
 
   private async switchListeningMode() {
@@ -332,6 +384,7 @@ export default class BlockhainListener {
 
     this.connectWsOrSwitchToHttp();
     this.addListeners();
+    this.startHeadPolling();
     this.resetHealthChecks();
 
     this.symbolCacheRefreshTimer = setInterval(
@@ -381,12 +434,6 @@ export default class BlockhainListener {
       );
       this.unsubscribe();
       this.switchListeningMode();
-    });
-
-    this.listeningProvider.on("block", (blockNumber) => {
-      this.lastBlockReceivedAt = Date.now();
-      this.redisPubClient.publish("block", blockNumber.toString());
-      this.blockNumber = blockNumber;
     });
 
     // const proxy = IPerpetualManager__factory.connect(this.md.getProxyAddress(), this.listeningProvider);
