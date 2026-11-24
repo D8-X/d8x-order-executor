@@ -35,6 +35,7 @@ import {
 import { Log, LogDescription, Network, Result } from "ethers";
 import { MultiUrlJsonRpcProvider } from "../multiUrlJsonRpcProvider.js";
 import { MultiUrlWebSocketProvider } from "../multiUrlWebsocketProvider.js";
+import { LogPollingJsonRpcProvider } from "../logPollingProvider.js";
 import { logger } from "../logger.js";
 
 enum ListeningMode {
@@ -98,7 +99,7 @@ export default class BlockhainListener {
     );
     this.chainId = Number(this.md.chainId);
     this.redisPubClient = constructRedis("sentinelPubClient");
-    this.httpProvider = new MultiUrlJsonRpcProvider(
+    this.httpProvider = new LogPollingJsonRpcProvider(
       this.config.rpcListenHttp,
       this.md.network,
       {
