@@ -45,6 +45,9 @@ enum ListeningMode {
 
 const HEAD_POLL_INTERVAL_MS = 2_000;
 const HEAD_POLL_TIMEOUT_MS = 8_000;
+const DELIVERY_CHECK_LAG_BLOCKS = 10;
+const DELIVERY_CHECK_MAX_BLOCKS = 2_000;
+const DELIVERY_CHECK_TIMEOUT_MS = 20_000;
 
 export default class BlockhainListener {
   private config: ExecutorConfig;
@@ -74,6 +77,9 @@ export default class BlockhainListener {
   private headPollsInflight = new Set<
     MultiUrlJsonRpcProvider | MultiUrlWebSocketProvider
   >();
+  private listenTopics: string[][] = [];
+  private deliveredLogs = new Map<string, number>();
+  private deliveryCheckFromBlock?: number;
 
   private proxyInterface = IPerpetualManager__factory.createInterface();
   private orderBookInterface = LimitOrderBook__factory.createInterface();
@@ -213,6 +219,8 @@ export default class BlockhainListener {
 
     this.blockNumber = undefined;
     this.switchingRPC = true;
+    this.deliveredLogs.clear();
+    this.deliveryCheckFromBlock = undefined;
 
     // Remove existing listeners. MultiUrlWebSocketProvider handles this
     // internally, so this is only for Http providers.
@@ -277,7 +285,7 @@ export default class BlockhainListener {
       if (this.mode == ListeningMode.Events) {
         // currently on WS - check that block time is still reasonable or if we
         // need to switch
-        if (!this.checkHeartbeat()) {
+        if (!this.checkHeartbeat() || !(await this.subscriptionsDelivered())) {
           this.switchListeningMode();
         }
       } else if (this.config.rpcListenWs.length > 0) {
@@ -306,6 +314,64 @@ export default class BlockhainListener {
         }
       }
     }, this.config.healthCheckSeconds * 1_000);
+  }
+
+  private async subscriptionsDelivered(): Promise<boolean> {
+    if (this.blockNumber === undefined || this.listenTopics.length === 0) {
+      return true;
+    }
+    const toBlock = this.blockNumber - DELIVERY_CHECK_LAG_BLOCKS;
+    if (this.deliveryCheckFromBlock === undefined) {
+      this.deliveryCheckFromBlock = toBlock + 1;
+      return true;
+    }
+    if (toBlock < this.deliveryCheckFromBlock) {
+      return true;
+    }
+    const fromBlock = Math.max(
+      this.deliveryCheckFromBlock,
+      toBlock - DELIVERY_CHECK_MAX_BLOCKS + 1
+    );
+    let logs: Log[];
+    try {
+      logs = await executeWithTimeout(
+        this.httpProvider.getLogs({
+          topics: this.listenTopics,
+          fromBlock,
+          toBlock,
+        }),
+        DELIVERY_CHECK_TIMEOUT_MS,
+        "delivery check timeout"
+      );
+    } catch (e) {
+      logger.warn(
+        { error: (e as Error)?.message ?? e },
+        "BlockchainListener delivery check failed"
+      );
+      return true;
+    }
+    this.deliveryCheckFromBlock = toBlock + 1;
+    const missed = logs.filter(
+      (l) => !this.deliveredLogs.has(`${l.blockHash}:${l.index}`)
+    );
+    for (const [key, block] of this.deliveredLogs) {
+      if (block <= toBlock) {
+        this.deliveredLogs.delete(key);
+      }
+    }
+    if (missed.length > 0) {
+      logger.warn(
+        {
+          missed: missed.length,
+          firstTx: missed[0].transactionHash,
+          fromBlock,
+          toBlock,
+        },
+        "BlockchainListener websocket did not deliver logs"
+      );
+      return false;
+    }
+    return true;
   }
 
   private async probeWebsocket(): Promise<boolean> {
@@ -474,8 +540,15 @@ export default class BlockhainListener {
         ),
       ],
     ];
+    this.listenTopics = filters;
 
     this.listeningProvider.on(filters, async (event: Log) => {
+      if (this.mode === ListeningMode.Events) {
+        this.deliveredLogs.set(
+          `${event.blockHash}:${event.index}`,
+          event.blockNumber
+        );
+      }
       if (event.address === this.md.getProxyAddress()) {
         // event was emitted by the proxy contract
         this.handleProxyEvent(event);
