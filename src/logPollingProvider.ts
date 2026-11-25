@@ -71,17 +71,18 @@ class IntervalLogSubscriber implements Subscriber {
         this.nextBlock = head + 1;
         return;
       }
+      fromBlock = Math.max(
+        this.startBlock,
+        this.nextBlock -
+          Math.min(LOG_POLL_OVERLAP_BLOCKS, Math.floor(this.range / 2))
+      );
       toBlock = Math.min(
         head - LOG_POLL_LAG_BLOCKS,
-        this.nextBlock + this.range - 1
+        fromBlock + this.range - 1
       );
       if (toBlock < this.nextBlock) {
         return;
       }
-      fromBlock = Math.max(
-        this.startBlock,
-        this.nextBlock - Math.min(LOG_POLL_OVERLAP_BLOCKS, this.range)
-      );
       const logs = await this.provider.getLogs({
         ...this.filter,
         fromBlock,
