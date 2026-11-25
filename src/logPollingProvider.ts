@@ -62,6 +62,8 @@ class IntervalLogSubscriber implements Subscriber {
       return;
     }
     this.inflight = true;
+    let fromBlock: number | undefined;
+    let toBlock: number | undefined;
     try {
       const head = await this.provider.getBlockNumber();
       if (this.startBlock === undefined || this.nextBlock === undefined) {
@@ -69,14 +71,14 @@ class IntervalLogSubscriber implements Subscriber {
         this.nextBlock = head + 1;
         return;
       }
-      const toBlock = Math.min(
+      toBlock = Math.min(
         head - LOG_POLL_LAG_BLOCKS,
         this.nextBlock + this.range - 1
       );
       if (toBlock < this.nextBlock) {
         return;
       }
-      const fromBlock = Math.max(
+      fromBlock = Math.max(
         this.startBlock,
         this.nextBlock - Math.min(LOG_POLL_OVERLAP_BLOCKS, this.range)
       );
@@ -103,7 +105,13 @@ class IntervalLogSubscriber implements Subscriber {
     } catch (e) {
       this.range = Math.max(1, Math.floor(this.range / 2));
       logger.warn(
-        { error: (e as Error)?.message ?? e, nextRange: this.range },
+        {
+          error: (e as Error)?.message ?? e,
+          request: fromBlock === undefined ? "eth_blockNumber" : "eth_getLogs",
+          fromBlock,
+          toBlock,
+          nextRange: this.range,
+        },
         "LogPollingJsonRpcProvider log poll failed"
       );
     } finally {
