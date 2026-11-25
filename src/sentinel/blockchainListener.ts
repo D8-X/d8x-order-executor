@@ -351,7 +351,7 @@ export default class BlockhainListener {
       );
     } catch (e) {
       logger.warn(
-        { error: (e as Error)?.message ?? e },
+        { error: (e as Error)?.message ?? e, fromBlock, toBlock },
         "BlockchainListener delivery check failed"
       );
       return true;
@@ -362,6 +362,12 @@ export default class BlockhainListener {
       this.deliveryCheckFromBlock === undefined
     ) {
       return true;
+    }
+    if (fromBlock > this.deliveryCheckFromBlock) {
+      logger.warn(
+        { fromBlock: this.deliveryCheckFromBlock, toBlock: fromBlock - 1 },
+        "BlockchainListener delivery check skipped blocks"
+      );
     }
     this.deliveryCheckFromBlock = toBlock + 1;
     const missed = logs.filter(
@@ -401,7 +407,10 @@ export default class BlockhainListener {
       } catch (e) {
         if (Date.now() >= deadline) {
           logger.warn(
-            { error: (e as Error)?.message ?? e },
+            {
+              error: (e as Error)?.message ?? e,
+              rpcUrl: this.multiUrlWsProvider.getCurrentRpcUrl(),
+            },
             "BlockchainListener websocket probe failed"
           );
           return false;
@@ -426,7 +435,10 @@ export default class BlockhainListener {
       return true;
     } catch (e) {
       logger.warn(
-        { error: (e as Error)?.message ?? e },
+        {
+          error: (e as Error)?.message ?? e,
+          rpcUrl: this.multiUrlWsProvider.getCurrentRpcUrl(),
+        },
         "BlockchainListener websocket probe failed"
       );
       return false;
