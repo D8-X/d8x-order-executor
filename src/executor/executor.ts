@@ -265,10 +265,13 @@ export default class Executor {
         this.cleanupRecentOrderExecutions();
       }, RECENT_ORDER_TIME_S * 2 * 1_000);
 
+      let lastStatsBlock = -1;
       this.redisSubClient.on("message", async (channel, msg) => {
         switch (channel) {
           case "block": {
-            if (+msg % 1000 == 0) {
+            const statsBlock = Math.floor(+msg / 1000);
+            if (statsBlock > lastStatsBlock) {
+              lastStatsBlock = statsBlock;
               logger.info({ busy, errors, success, msgs }, "block stats");
             }
             break;
